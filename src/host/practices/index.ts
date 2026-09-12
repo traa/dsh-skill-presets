@@ -1,0 +1,161 @@
+/**
+ * Per-session practice tracking.
+ *
+ * Holds the observed calls and cached git facts for each live agent, re-runs
+ * the pure detectors when something relevant happens, records status changes
+ * as telemetry, and answers the scorecard RPC. Git facts are refreshed lazily
+ * and only when a call could have changed them.
+ * @module dsh-skill-presets/host/practices
+ */
+
+import { evaluate, isMutatingCall, worst, type ObservedCall, type SessionView } from './detectors.ts'
+import { readGitFacts, type GitFacts, type Runner } from './git.ts'
+import type { PracticeId, PracticeResult, PracticesDoc, Stage } from '../types.ts'
+
+export interface SessionState {
+  readonly sessionId: string
+  cwd?: string
+  agentPreset?: string
+  calls: ObservedCall[]
+  userTurns: number[]
+  currentTurn: number
+  facts?: GitFacts
+  factsDirty: boolean
+  factsPending?: Promise<void>
+  teamAttached: boolean
+  ended: boolean
+  results: PracticeResult[]
+  lastReported: Map<PracticeId, string>
+  turnsSincePrCheck: number
+}
+
+export interface TrackerDeps {
+  practices: () => Promise<PracticesDoc>
+  activeStage: () => Promise<Stage | undefined>
+  /** Emit a practice status change. */
+  onResult: (sessionId: string, result: PracticeResult) => void
+  run?: Runner
+  log?: (message: string) => void
+}
+
+export class PracticeTracker {
+  private readonly sessions = new Map<string, SessionState>()
+
+  constructor(private readonly deps: TrackerDeps) {}
+
+  /** Create or fetch state for a session. */
+  session(sessionId: string, cwd?: string, agentPreset?: string): SessionState {
+    let state = this.sessions.get(sessionId)
+    if (state === undefined) {
+      state = {
+        sessionId, calls: [], userTurns: [], currentTurn: 0, factsDirty: true, teamAttached: false, ended: false,
+        results: [], lastReported: new Map(), turnsSincePrCheck: 0,
+      }
+      this.sessions.set(sessionId, state)
+    }
+    if (cwd !== undefined && state.cwd !== cwd) { state.cwd = cwd; state.factsDirty = true }
+    if (agentPreset !== undefined) state.agentPreset = agentPreset
+    return state
+  }
+
+  has(sessionId: string): boolean {
+    return this.sessions.has(sessionId)
+  }
+
+  /** A new step is about to run; `turn` comes from the loop. */
+  async onPreStep(sessionId: string, turn: number, teamAttached: boolean, cwd?: string, agentPreset?: string): Promise<void> {
+    const state = this.session(sessionId, cwd, agentPreset)
+    if (turn !== state.currentTurn) {
+      state.currentTurn = turn
+      state.userTurns.push(turn)
+      state.turnsSincePrCheck += 1
+      const every = Number((await this.deps.practices()).practices.find(p => p.id === 'pull-request')?.params.checkEveryTurns ?? 10)
+      if (state.turnsSincePrCheck >= every) { state.turnsSincePrCheck = 0; state.factsDirty = true }
+    }
+    if (state.teamAttached !== teamAttached) state.teamAttached = teamAttached
+    await this.evaluate(state)
+  }
+
+  /** A tool finished. */
+  async onToolResult(sessionId: string, call: ObservedCall): Promise<void> {
+    const state = this.session(sessionId)
+    state.calls.push(call)
+    if (isMutatingCall(call) || (call.target !== undefined && /\b(?:git|gh|glab)\b/u.test(call.target))) state.factsDirty = true
+    await this.evaluate(state)
+  }
+
+  /** The session is over; run the final checks and forget it. */
+  async onDisposed(sessionId: string): Promise<PracticeResult[]> {
+    const state = this.sessions.get(sessionId)
+    if (state === undefined) return []
+    state.ended = true
+    state.factsDirty = true
+    await this.evaluate(state, true)
+    this.sessions.delete(sessionId)
+    return state.results
+  }
+
+  /** Current results for the scorecard. */
+  results(sessionId: string): { results: PracticeResult[], facts?: GitFacts, worst: PracticeResult['status'], teamAttached: boolean, calls: number } | undefined {
+    const state = this.sessions.get(sessionId)
+    if (state === undefined) return undefined
+    return {
+      results: state.results,
+      ...(state.facts !== undefined ? { facts: state.facts } : {}),
+      worst: worst(state.results),
+      teamAttached: state.teamAttached,
+      calls: state.calls.length,
+    }
+  }
+
+  /** Force a re-read of git facts (after a preset switch, for the scorecard). */
+  async refresh(sessionId: string): Promise<void> {
+    const state = this.sessions.get(sessionId)
+    if (state === undefined) return
+    state.factsDirty = true
+    await this.evaluate(state, true)
+  }
+
+  private async evaluate(state: SessionState, awaitFacts = false): Promise<void> {
+    const doc = await this.deps.practices()
+    const enabled = doc.practices.filter(p => p.mode !== 'off').map(p => p.id)
+    if (state.factsDirty && state.cwd !== undefined) {
+      state.factsDirty = false
+      const root = String(doc.practices.find(p => p.id === 'artifact-chain')?.params.root ?? 'docs/sdlc')
+      const pending = readGitFacts(state.cwd, {
+        ...(this.deps.run !== undefined ? { run: this.deps.run } : {}),
+        artifactRoot: root,
+        instructionFiles: doc.instructionFiles,
+        skipPr: state.facts?.ghAvailable === false,
+      }).then((facts) => { state.facts = facts }).catch((error) => {
+        this.deps.log?.(`git facts for ${state.sessionId}: ${(error as Error).message}`)
+      })
+      state.factsPending = pending
+      if (awaitFacts) await pending
+      else void pending.then(() => this.evaluate(state))
+    }
+    const view: SessionView = {
+      calls: state.calls,
+      ...(state.facts !== undefined ? { facts: state.facts } : {}),
+      teamAttached: state.teamAttached,
+      userTurns: state.userTurns,
+      protectedBranches: doc.protectedBranches,
+      ended: state.ended,
+    }
+    const stage = await this.deps.activeStage()
+    const results = evaluate({ ...view, ...(stage !== undefined ? { activeStage: stage } : {}) }, enabled)
+    state.results = results
+    for (const result of results) {
+      const key = `${result.status}:${result.evidence.join('|')}`
+      if (state.lastReported.get(result.id) !== key) {
+        state.lastReported.set(result.id, key)
+        this.deps.onResult(state.sessionId, result)
+      }
+    }
+  }
+
+  /** Every live session id. */
+  live(): string[] {
+    return [...this.sessions.keys()]
+  }
+}

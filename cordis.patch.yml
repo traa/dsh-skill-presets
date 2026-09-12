@@ -1,0 +1,23 @@
+# Host layer: skill library, SDLC-stage presets, practice guardrails, usage insight.
+#
+# HOST plane deliberately. The plugin registers ONE skill provider into the
+# global layer of `ctx.skills`, which is how a skill reaches every agent preset
+# (standard, cordis, ptc, …) without copying a preset. It also observes
+# `tools/result` for every agent, which only a host row can do.
+#
+# No config: the store lives under the workbench's `skills/` subsystem, resolved
+# from `ctx.get('workbench')` when dsh-workbench is composed, otherwise from
+# $DSH_WORKBENCH, $DSH_SETTINGS_REPO, then $DSH_HOME/settings-repo.
+#
+# When this row is active, DISABLE the profile's `skill-filesystem` row that
+# exposes `<workbench>/skills` as `customSkillDirs` — the library now lives under
+# that directory and would otherwise be discovered twice. In the profile's
+# cordis.patch.yml:
+#
+#   - id: skill-filesystem
+#     disabled: true
+#
+# Loader patch syntax is `- id:` + `config:`; there is no `target:`/`patch:`.
+- insert:
+    - id: skill-presets
+      name: 'dsh-skill-presets'

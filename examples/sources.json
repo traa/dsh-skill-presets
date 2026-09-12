@@ -1,0 +1,43 @@
+[
+  {
+    "id": "addyosmani-agent-skills",
+    "title": "addyosmani/agent-skills",
+    "kind": "github",
+    "repo": "addyosmani/agent-skills",
+    "paths": [
+      "skills"
+    ],
+    "enabled": true,
+    "note": "Production-grade engineering skills; MIT."
+  },
+  {
+    "id": "obra-superpowers",
+    "title": "obra/superpowers",
+    "kind": "github",
+    "repo": "obra/superpowers",
+    "paths": [
+      "skills"
+    ],
+    "enabled": true,
+    "note": "Process skills: brainstorming, plans, TDD, worktrees, review; MIT."
+  },
+  {
+    "id": "mattpocock-skills",
+    "title": "mattpocock/skills",
+    "kind": "github",
+    "repo": "mattpocock/skills",
+    "paths": [
+      "skills/engineering",
+      "skills/productivity"
+    ],
+    "enabled": true,
+    "note": "Engineering and productivity skills; `in-progress` and `misc` are excluded by default."
+  },
+  {
+    "id": "local",
+    "title": "Local (this workbench)",
+    "kind": "local",
+    "enabled": true,
+    "note": "Hand-written skills, including the SDLC practice skills seeded by dsh-skill-presets."
+  }
+]

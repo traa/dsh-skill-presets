@@ -1,0 +1,233 @@
+[
+  {
+    "id": "plan",
+    "title": "Plan",
+    "stage": "plan",
+    "summary": "Turn an idea, ticket, or alert into a committed intent.md: problem, outcome, constraints, evidence.",
+    "color": "#7c3aed",
+    "skills": [
+      {
+        "ref": "obra-superpowers/brainstorming"
+      },
+      {
+        "ref": "addyosmani-agent-skills/idea-refine"
+      },
+      {
+        "ref": "addyosmani-agent-skills/interview-me"
+      },
+      {
+        "ref": "addyosmani-agent-skills/spec-driven-development"
+      },
+      {
+        "ref": "mattpocock-skills/grill-me"
+      },
+      {
+        "ref": "mattpocock-skills/to-spec"
+      },
+      {
+        "ref": "local/sdlc-stage-handoff"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  },
+  {
+    "id": "design",
+    "title": "Design",
+    "stage": "design",
+    "summary": "Shape the intent into spec.md and an implementation plan.md that names files, order, and the tests that prove it.",
+    "color": "#2563eb",
+    "skills": [
+      {
+        "ref": "obra-superpowers/writing-plans"
+      },
+      {
+        "ref": "addyosmani-agent-skills/planning-and-task-breakdown"
+      },
+      {
+        "ref": "addyosmani-agent-skills/api-and-interface-design"
+      },
+      {
+        "ref": "addyosmani-agent-skills/documentation-and-adrs"
+      },
+      {
+        "ref": "mattpocock-skills/codebase-design"
+      },
+      {
+        "ref": "mattpocock-skills/domain-modeling"
+      },
+      {
+        "ref": "mattpocock-skills/to-tickets"
+      },
+      {
+        "ref": "local/sdlc-stage-handoff"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  },
+  {
+    "id": "build",
+    "title": "Build",
+    "stage": "build",
+    "summary": "Execute the plan in an isolated worktree with a test-first loop; finish by opening a PR, never by merging.",
+    "color": "#059669",
+    "skills": [
+      {
+        "ref": "obra-superpowers/executing-plans"
+      },
+      {
+        "ref": "obra-superpowers/test-driven-development"
+      },
+      {
+        "ref": "obra-superpowers/using-git-worktrees"
+      },
+      {
+        "ref": "obra-superpowers/verification-before-completion"
+      },
+      {
+        "ref": "addyosmani-agent-skills/incremental-implementation"
+      },
+      {
+        "ref": "addyosmani-agent-skills/git-workflow-and-versioning"
+      },
+      {
+        "ref": "mattpocock-skills/implement"
+      },
+      {
+        "ref": "local/worktree-first"
+      },
+      {
+        "ref": "local/pr-always"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  },
+  {
+    "id": "test-review",
+    "title": "Test & Review",
+    "stage": "test",
+    "summary": "Review the diff against plan.md and spec.md, write findings into the PR, and reserve human review for the risky parts.",
+    "color": "#d97706",
+    "skills": [
+      {
+        "ref": "obra-superpowers/requesting-code-review"
+      },
+      {
+        "ref": "obra-superpowers/receiving-code-review"
+      },
+      {
+        "ref": "obra-superpowers/finishing-a-development-branch"
+      },
+      {
+        "ref": "addyosmani-agent-skills/code-review-and-quality"
+      },
+      {
+        "ref": "addyosmani-agent-skills/security-and-hardening"
+      },
+      {
+        "ref": "addyosmani-agent-skills/browser-testing-with-devtools"
+      },
+      {
+        "ref": "mattpocock-skills/code-review"
+      },
+      {
+        "ref": "local/pr-review-against-plan"
+      },
+      {
+        "ref": "local/pr-always"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  },
+  {
+    "id": "deploy",
+    "title": "Deploy",
+    "stage": "deploy",
+    "summary": "Ship through the pipeline with evidence: environment checks, migrations, flags, canary, telemetry, rollback.",
+    "color": "#dc2626",
+    "skills": [
+      {
+        "ref": "addyosmani-agent-skills/ci-cd-and-automation"
+      },
+      {
+        "ref": "addyosmani-agent-skills/shipping-and-launch"
+      },
+      {
+        "ref": "addyosmani-agent-skills/deprecation-and-migration"
+      },
+      {
+        "ref": "local/pr-always"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  },
+  {
+    "id": "maintain",
+    "title": "Maintain",
+    "stage": "maintain",
+    "summary": "Diagnose a breached control band, write the incident record, and turn it into the next intent.md.",
+    "color": "#0891b2",
+    "skills": [
+      {
+        "ref": "obra-superpowers/systematic-debugging"
+      },
+      {
+        "ref": "addyosmani-agent-skills/debugging-and-error-recovery"
+      },
+      {
+        "ref": "addyosmani-agent-skills/observability-and-instrumentation"
+      },
+      {
+        "ref": "addyosmani-agent-skills/performance-optimization"
+      },
+      {
+        "ref": "mattpocock-skills/diagnosing-bugs"
+      },
+      {
+        "ref": "mattpocock-skills/triage"
+      },
+      {
+        "ref": "local/incident-to-intent"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  },
+  {
+    "id": "delegate",
+    "title": "Delegate",
+    "stage": "cross",
+    "summary": "Conduct a team or fan work out to subagents with self-contained briefs; reconcile and report.",
+    "color": "#4b5563",
+    "skills": [
+      {
+        "ref": "obra-superpowers/dispatching-parallel-agents"
+      },
+      {
+        "ref": "obra-superpowers/subagent-driven-development"
+      },
+      {
+        "ref": "local/conductor-protocol"
+      },
+      {
+        "ref": "local/gemini-agent"
+      },
+      {
+        "ref": "local/qoder-agent"
+      }
+    ],
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-01-01T00:00:00.000Z",
+    "builtin": true
+  }
+]

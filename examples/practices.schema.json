@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dsh-skill-presets practices",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "strictSkills",
+    "instructionFiles",
+    "protectedBranches",
+    "practices"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "strictSkills": {
+      "type": "boolean"
+    },
+    "instructionFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "protectedBranches": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "practices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "mode",
+          "params"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "worktree",
+              "pull-request",
+              "conductor",
+              "artifact-chain",
+              "plan-before-code"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "off",
+              "advisory",
+              "hard"
+            ]
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

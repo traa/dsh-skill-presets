@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dsh-skill-presets normalize rules",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "pattern",
+      "replacement",
+      "why"
+    ],
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "pattern": {
+        "type": "string"
+      },
+      "ignoreCase": {
+        "type": "boolean"
+      },
+      "replacement": {
+        "type": "string"
+      },
+      "why": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "strictSkills": false,
+  "instructionFiles": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    ".agents/AGENTS.md",
+    "CONTRIBUTING.md"
+  ],
+  "protectedBranches": [
+    "main",
+    "master",
+    "develop",
+    "trunk"
+  ],
+  "practices": [
+    {
+      "id": "worktree",
+      "mode": "advisory",
+      "params": {}
+    },
+    {
+      "id": "pull-request",
+      "mode": "advisory",
+      "params": {
+        "checkEveryTurns": 10
+      }
+    },
+    {
+      "id": "conductor",
+      "mode": "advisory",
+      "params": {}
+    },
+    {
+      "id": "artifact-chain",
+      "mode": "advisory",
+      "params": {
+        "root": "docs/sdlc"
+      }
+    },
+    {
+      "id": "plan-before-code",
+      "mode": "advisory",
+      "params": {}
+    }
+  ]
+}

@@ -1,0 +1,194 @@
+/**
+ * Store paths and atomic JSON persistence.
+ *
+ * Every read tolerates an absent or malformed file and returns a default plus a
+ * `note`, because this plugin runs on the load path: a corrupt lock must never
+ * take the skill provider down with it.
+ * @module dsh-skill-presets/host/store
+ */
+
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import type { ActiveDoc, Lock, PracticesDoc } from './types.ts'
+
+/** Environment shape read by the resolver. Injected so tests never mutate globals. */
+export type Env = Readonly<Record<string, string | undefined>>
+
+/** Whether an environment value is present and not just whitespace. */
+function usable(value: string | undefined): value is string {
+  return value !== undefined && value.trim().length > 0
+}
+
+/** Expand a leading `~`. */
+function expandHome(path: string): string {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2))
+  return path
+}
+
+/**
+ * Resolve the harness home: `$DSH_HOME` or `~/.dsh`.
+ * @param env - environment source.
+ * @returns absolute path.
+ */
+export function resolveDshHome(env: Env = process.env): string {
+  const configured = env.DSH_HOME
+  return usable(configured) ? resolve(expandHome(configured.trim())) : join(homedir(), '.dsh')
+}
+
+/**
+ * Resolve the workbench root the same way dsh-workbench does when the service is
+ * absent: `$DSH_WORKBENCH`, `$DSH_SETTINGS_REPO`, then `<dsh home>/settings-repo`.
+ * @param env - environment source.
+ * @returns absolute path.
+ */
+export function resolveWorkbenchFallback(env: Env = process.env): string {
+  for (const key of ['DSH_WORKBENCH', 'DSH_SETTINGS_REPO']) {
+    const value = env[key]
+    if (usable(value)) return resolve(expandHome(value.trim()))
+  }
+  return join(resolveDshHome(env), 'settings-repo')
+}
+
+/** Every path the plugin touches, derived from one root. */
+export class StorePaths {
+  constructor(readonly root: string) {}
+
+  /** `<workbench>/skills`. */
+  get skills(): string { return join(this.root, 'skills') }
+  get library(): string { return join(this.skills, 'library') }
+  get staging(): string { return join(this.library, '.staging') }
+  get sources(): string { return join(this.skills, 'sources.json') }
+  get lock(): string { return join(this.skills, 'lock.json') }
+  get presets(): string { return join(this.skills, 'presets.json') }
+  get overlays(): string { return join(this.skills, 'overlays.json') }
+  get practices(): string { return join(this.skills, 'practices.json') }
+  get normalizeRules(): string { return join(this.skills, 'normalize-rules.json') }
+  get active(): string { return join(this.skills, 'active.json') }
+  get usage(): string { return join(this.skills, 'usage') }
+  get rollup(): string { return join(this.skills, 'usage-rollup.json') }
+  get migrated(): string { return join(this.skills, 'MIGRATED.md') }
+
+  /** Directory of one installed skill bundle. */
+  skillDir(source: string, dir: string): string {
+    return join(this.library, source, dir)
+  }
+
+  /** Usage log for one session. */
+  usageFile(sessionId: string): string {
+    return join(this.usage, `${sessionId.replaceAll(/[^A-Za-z0-9_-]/gu, '_')}.jsonl`)
+  }
+}
+
+/** Result of a tolerant read. */
+export interface Loaded<T> {
+  value: T
+  /** Present when the default was used and why. */
+  note?: string
+}
+
+/**
+ * Read a JSON file, falling back to a default.
+ * @param path - file path.
+ * @param fallback - value when absent or malformed.
+ * @param validate - optional shape check; a throw counts as malformed.
+ * @returns the value plus a note when the fallback was used.
+ */
+export async function readJson<T>(
+  path: string,
+  fallback: () => T,
+  validate?: (raw: unknown) => T,
+): Promise<Loaded<T>> {
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
+  } catch {
+    return { value: fallback(), note: `${path} is absent` }
+  }
+  try {
+    const raw: unknown = JSON.parse(text)
+    return { value: validate === undefined ? raw as T : validate(raw) }
+  } catch (error) {
+    return { value: fallback(), note: `${path} is malformed: ${(error as Error).message}` }
+  }
+}
+
+/**
+ * Write JSON atomically: temp file in the same directory, then rename.
+ * @param path - destination.
+ * @param value - JSON-serialisable value.
+ */
+export async function writeJson(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`
+  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+  await rename(temp, path)
+}
+
+/** Empty lock. */
+export function emptyLock(): Lock {
+  return { version: 1, sources: {}, skills: [] }
+}
+
+/** Validate the lock shape loosely: arrays exist and entries have the keys we index by. */
+export function validateLock(raw: unknown): Lock {
+  const doc = raw as Partial<Lock>
+  if (doc === null || typeof doc !== 'object') throw new TypeError('lock is not an object')
+  if (!Array.isArray(doc.skills)) throw new TypeError('lock.skills is not an array')
+  for (const skill of doc.skills) {
+    if (typeof skill.source !== 'string' || typeof skill.dir !== 'string' || typeof skill.name !== 'string') {
+      throw new TypeError('lock.skills entry lacks source/dir/name')
+    }
+  }
+  return {
+    version: 1,
+    sources: typeof doc.sources === 'object' && doc.sources !== null ? doc.sources : {},
+    skills: doc.skills,
+  }
+}
+
+/** Default active document: nothing active. */
+export function defaultActive(): ActiveDoc {
+  return { version: 1, preset: null, since: new Date(0).toISOString(), by: 'default' }
+}
+
+/** Validate the active document. */
+export function validateActive(raw: unknown): ActiveDoc {
+  const doc = raw as Partial<ActiveDoc>
+  if (doc === null || typeof doc !== 'object') throw new TypeError('active is not an object')
+  const preset = typeof doc.preset === 'string' && doc.preset.length > 0 ? doc.preset : null
+  return {
+    version: 1,
+    preset,
+    since: typeof doc.since === 'string' ? doc.since : new Date(0).toISOString(),
+    by: doc.by === 'ui' || doc.by === 'tool' || doc.by === 'cli' ? doc.by : 'default',
+  }
+}
+
+/** Validate the practices document, filling defaults for missing fields. */
+export function validatePractices(raw: unknown, fallback: () => PracticesDoc): PracticesDoc {
+  const base = fallback()
+  const doc = raw as Partial<PracticesDoc>
+  if (doc === null || typeof doc !== 'object') throw new TypeError('practices is not an object')
+  const practices = Array.isArray(doc.practices)
+    ? base.practices.map((entry) => {
+        const found = (doc.practices as PracticesDoc['practices']).find(p => p.id === entry.id)
+        if (found === undefined) return entry
+        const mode = found.mode === 'off' || found.mode === 'advisory' || found.mode === 'hard' ? found.mode : entry.mode
+        const params = typeof found.params === 'object' && found.params !== null ? found.params : entry.params
+        return { id: entry.id, mode, params }
+      })
+    : base.practices
+  return {
+    version: 1,
+    strictSkills: doc.strictSkills === true,
+    instructionFiles: Array.isArray(doc.instructionFiles) && doc.instructionFiles.every(f => typeof f === 'string')
+      ? doc.instructionFiles
+      : base.instructionFiles,
+    protectedBranches: Array.isArray(doc.protectedBranches) && doc.protectedBranches.every(f => typeof f === 'string')
+      ? doc.protectedBranches
+      : base.protectedBranches,
+    practices,
+  }
+}

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "team-attached",
+    "title": "Team attached (conductor)",
+    "when": "tool-visible:team_delegate",
+    "skills": [
+      {
+        "ref": "local/conductor-protocol"
+      }
+    ],
+    "enabled": true
+  },
+  {
+    "id": "git-repo",
+    "title": "Inside a git repository",
+    "when": "git-work-tree",
+    "skills": [
+      {
+        "ref": "local/worktree-first"
+      },
+      {
+        "ref": "local/pr-always"
+      }
+    ],
+    "enabled": true
+  }
+]

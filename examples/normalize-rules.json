@@ -1,0 +1,57 @@
+[
+  {
+    "id": "vendor-home-path",
+    "pattern": "~/\\.(?:claude|codex|gemini)/(?:skills/)?",
+    "replacement": "<your agent home>/skills/",
+    "why": "Vendor home directories are not where the harness keeps skills; the workbench library is."
+  },
+  {
+    "id": "instructions-file",
+    "pattern": "\\b(?:CLAUDE|GEMINI)\\.md\\b",
+    "replacement": "your project's instructions file (AGENTS.md or equivalent)",
+    "why": "The harness runs any provider; the instructions file is whatever the project configured."
+  },
+  {
+    "id": "skill-tool-namespace",
+    "pattern": "\\bsuperpowers:([a-z0-9-]+)",
+    "replacement": "the `$1` skill",
+    "why": "Skills are addressed by bare name through the `skill` tool; there is no plugin namespace."
+  },
+  {
+    "id": "skill-tool-call",
+    "pattern": "\\bSkill\\((?:name=)?[\"']?([a-z0-9-]+)[\"']?\\)",
+    "replacement": "skill({ name: \"$1\" })",
+    "why": "The harness skill loader is the `skill` tool."
+  },
+  {
+    "id": "todo-tool",
+    "pattern": "\\bTodoWrite\\b",
+    "replacement": "todo_write",
+    "why": "The harness todo tool is `todo_write`."
+  },
+  {
+    "id": "subagent-tool",
+    "pattern": "\\b(?:the )?Task tool\\b",
+    "ignoreCase": true,
+    "replacement": "the `subagent` tool",
+    "why": "Delegation in the harness goes through `subagent` (or `team_delegate` with a team attached)."
+  },
+  {
+    "id": "subagent-type",
+    "pattern": "\\bsubagent_type\\b",
+    "replacement": "subagent prompt",
+    "why": "The harness has no typed subagent roster; the prompt carries the role."
+  },
+  {
+    "id": "slash-commands",
+    "pattern": "(^|\\s)/(security-review|commit|review|init)\\b",
+    "replacement": "$1the corresponding skill or tool if available (`$2`)",
+    "why": "Vendor slash commands are not part of the harness; the equivalent is a skill or tool when one exists."
+  },
+  {
+    "id": "vendor-agent-name",
+    "pattern": "\\bClaude Code\\b",
+    "replacement": "the coding agent",
+    "why": "The text must read correctly under any provider."
+  }
+]

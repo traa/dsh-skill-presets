@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dsh-skill-presets presets",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "title",
+      "stage",
+      "summary",
+      "skills",
+      "createdAt",
+      "updatedAt"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "title": {
+        "type": "string"
+      },
+      "stage": {
+        "enum": [
+          "plan",
+          "design",
+          "build",
+          "test",
+          "deploy",
+          "maintain",
+          "cross"
+        ]
+      },
+      "summary": {
+        "type": "string"
+      },
+      "color": {
+        "type": "string"
+      },
+      "skills": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9._-]+$",
+              "description": "<source-id>/<skill-dir>"
+            },
+            "as": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              "description": "Exposed name override"
+            },
+            "whenToUse": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "createdAt": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "type": "string"
+      },
+      "builtin": {
+        "const": true
+      }
+    }
+  }
+}

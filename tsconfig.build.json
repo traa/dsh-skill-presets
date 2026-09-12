@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "outDir": "lib",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "emitDeclarationOnly": false,
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "typeRoots": [
+      "/Users/andriistepikov/Documents/bonfire/dsh/deepseek-harness/node_modules/@types"
+    ],
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "paths": {
+      "@deepseek-ai/cordis": [
+        "/Users/andriistepikov/Documents/bonfire/dsh/deepseek-harness/vendor/cordis/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-tools": [
+        "/Users/andriistepikov/Documents/bonfire/dsh/deepseek-harness/packages/core/tools/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-skill": [
+        "/Users/andriistepikov/Documents/bonfire/dsh/deepseek-harness/packages/skill/skill/lib/types/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts"
+  ]
+}

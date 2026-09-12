@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dsh-skill-presets overlays",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "title",
+      "when",
+      "skills",
+      "enabled"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      },
+      "title": {
+        "type": "string"
+      },
+      "when": {
+        "enum": [
+          "tool-visible:team_delegate",
+          "git-work-tree",
+          "always"
+        ]
+      },
+      "skills": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]*/[A-Za-z0-9._-]+$",
+              "description": "<source-id>/<skill-dir>"
+            },
+            "as": {
+              "type": "string",
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+              "description": "Exposed name override"
+            },
+            "whenToUse": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "enabled": {
+        "type": "boolean"
+      }
+    }
+  }
+}

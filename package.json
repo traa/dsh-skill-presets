@@ -1,0 +1,66 @@
+{
+  "name": "dsh-skill-presets",
+  "version": "0.1.0",
+  "description": "Out-of-tree DeepSeek Harness plugin: SDLC-stage skill presets, a versioned skill library, practice guardrails, and skill-usage insight. Provider-neutral.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "exports": {
+    ".": {
+      "types": "./lib/host/index.d.ts",
+      "default": "./lib/host/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./lib/host/index.js",
+  "types": "./lib/host/index.d.ts",
+  "files": [
+    "lib",
+    "src",
+    "skills",
+    "examples",
+    "cordis.patch.yml",
+    "README.md",
+    "tsdown.client.config.ts"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsdown -c tsdown.client.config.ts",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
+    "test": "node --test \"test/*.test.mjs\"",
+    "pretest": "npm run build",
+    "clean": "rm -rf lib",
+    "build:client": "tsdown -c tsdown.client.config.ts",
+    "gen:examples": "node lib/bin/gen-examples.js"
+  },
+  "bin": {
+    "dsh-skill-presets": "./lib/bin/cli.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-skill": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.6.0",
+    "tsdown": "^0.15.6"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  }
+}
