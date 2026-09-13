@@ -579,6 +579,7 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
     const snap = useStoreHook(React, controller)
     const visible = props.useTabInfo !== undefined ? props.useTabInfo().tab.visible : true
     React.useEffect(() => visible ? controller.watch() : undefined, [visible])
+    React.useEffect(() => { if (snap.templates === undefined) void controller.loadTemplates() }, [])
     const card = snap.card
     const status = snap.status
     if (card === undefined || status === undefined) return h('div', { className: 'skp skp-side' }, h('div', { className: 'skp-sub' }, snap.error ?? 'Reading scorecard…'))
@@ -660,6 +661,17 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
         card.worktrees.list.filter(w => !w.primary && w.verdict.kind === 'removable').length > 1
           ? h('div', { className: 'skp-row' }, h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.cleanupWorktrees() } }, 'Remove all merged'))
           : null,
+      ) : null,
+      snap.templates !== undefined && snap.templates.length > 0 ? h('div', { className: 'skp-col' },
+        h('h3', null, 'SDLC teams'),
+        h('div', { className: 'skp-sub' }, snap.agentTeamsPresent === true
+          ? 'Attach a team whose conductor instructions follow the practice skills. Members inherit this session\'s provider.'
+          : 'Templates for dsh-agent-teams. Install that plugin to attach with one click.'),
+        ...snap.templates.map(t => h('div', { key: t.id, className: 'skp-skill-row', title: t.objective },
+          h('span', { className: `skp-dot${card.activePreset?.stage === t.stage ? ' green' : ''}` }),
+          h('span', { className: 'skp-skill-name' }, h('strong', null, t.name), h('span', { className: 'skp-sub' }, ` · ${t.members.length} members · ${STAGE_LABEL[t.stage] ?? t.stage}`)),
+          h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined || card.summary.overlays.includes('team-attached'), onClick: () => { void controller.attachTemplate(t.id) } }, 'Attach'),
+        )),
       ) : null,
       h('div', { className: 'skp-col' },
         h('h3', null, 'Experiment'),

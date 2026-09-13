@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -226,6 +226,8 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
 export interface ScorecardSnapshot {
   card?: Scorecard
+  templates?: TeamTemplate[]
+  agentTeamsPresent?: boolean
   status?: Status
   loading: boolean
   error?: string
@@ -337,6 +339,26 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
       const out = await rpc<{ ok: boolean, message?: string, experiment?: { child: string } }>('experiments/fork', { sessionId: this.sessionId, preset })
       await this.refresh()
       this.set({ busy: undefined, ...(out.ok ? { notice: `Forked as ${out.experiment?.child.slice(0, 8)} under ${preset ?? 'no preset'}. Open it from the session list to run the same task.` } : { error: out.message }) })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async loadTemplates(): Promise<void> {
+    try {
+      const out = await rpc<{ templates: TeamTemplate[], agentTeamsPresent: boolean }>('teams/templates', {})
+      this.set({ templates: out.templates, agentTeamsPresent: out.agentTeamsPresent })
+    } catch (error) {
+      this.set({ error: (error as Error).message })
+    }
+  }
+
+  async attachTemplate(templateId: string): Promise<void> {
+    this.set({ busy: 'team', error: undefined })
+    try {
+      const out = await rpc<{ ok: boolean, message?: string, teamName?: string }>('teams/attach-template', { sessionId: this.sessionId, templateId })
+      await this.refresh(true)
+      this.set({ busy: undefined, ...(out.ok ? { notice: `Team "${out.teamName}" attached. The conductor protocol overlay applies on the model's next step.` } : { error: out.message }) })
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
     }

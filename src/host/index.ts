@@ -20,6 +20,7 @@ import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
 import { TeamReader, type AgentTeamsLike } from './teams.ts'
+import { loadTemplates, toBlueprintInput } from './templates.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -550,6 +551,43 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- SDLC team templates → dsh-agent-teams (feature-detected via its HTTP RPC)
+  const agentTeamsRpc = async (method: string, body: unknown): Promise<unknown> => {
+    const webServer = ctx.get('webServer') as { port?: number, address?: () => { port?: number } } | undefined
+    const harnessRef = (globalThis as { harness?: { call?(method: string, args: unknown): Promise<unknown> } }).harness
+    // Same-process first: the flat transport agent-teams also binds.
+    if (typeof harnessRef?.call === 'function') return await harnessRef.call(`agent-teams/${method}`, body)
+    const port = webServer?.port ?? webServer?.address?.().port
+    if (port === undefined) throw new Error('dsh-agent-teams RPC is not reachable from here; attach the team from the Agent Teams panel')
+    const response = await fetch(`http://127.0.0.1:${port}/plugins/dsh-agent-teams/rpc/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const text = await response.text()
+    const parsed = text.length > 0 ? JSON.parse(text) as { error?: string } : {}
+    if (!response.ok || typeof parsed.error === 'string') throw new Error(parsed.error ?? `agent-teams ${method} failed (${response.status})`)
+    return parsed
+  }
+  rpc.handle('teams/templates', async () => {
+    const { templates, problems } = await loadTemplates(join(service.paths().root, 'teams', 'templates'))
+    return { templates, problems, agentTeamsPresent: ctx.get('agentTeams') !== undefined }
+  })
+  rpc.handle('teams/attach-template', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const templateId = str(args, 'templateId')
+    const { templates } = await loadTemplates(join(service.paths().root, 'teams', 'templates'))
+    const template = templates.find(t => t.id === templateId)
+    if (template === undefined) throw new Error(`unknown template ${templateId}`)
+    if (ctx.get('agentTeams') === undefined && ctx.get('webServer') === undefined) {
+      return { ok: false, message: 'dsh-agent-teams is not composed; install it to attach teams' }
+    }
+    try {
+      const saved = await agentTeamsRpc('teams.save', { sessionId, team: toBlueprintInput(template) }) as { id: string, name: string }
+      await agentTeamsRpc('mode.attach', { sessionId, teamId: saved.id })
+      teams.invalidate(sessionId)
+      invalidate?.()
+      return { ok: true, teamId: saved.id, teamName: saved.name }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'attach failed' }
+    }
   })
   // ---- evals: save this session as a fixture; run the workbench set
   rpc.handle('evals/save', async (args) => {

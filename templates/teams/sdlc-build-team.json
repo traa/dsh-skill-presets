@@ -1,0 +1,34 @@
+{
+  "id": "sdlc-build-team",
+  "name": "SDLC build team",
+  "stage": "build",
+  "objective": "Implement an approved plan.md in an isolated worktree with a test-first loop, get the diff reviewed against the plan, and end with an open pull request — never a merge.",
+  "members": [
+    {
+      "id": "implementer",
+      "name": "Implementer",
+      "responsibility": "Owns source and test files named in plan.md. Works on the feature branch in the worktree the conductor names. Test-first: a failing test, then the change, then green. Commits small. Never edits plan.md without saying so; never opens or merges the PR.",
+      "engine": "harness",
+      "context": "fresh",
+      "autoStart": false
+    },
+    {
+      "id": "tester",
+      "name": "Tester",
+      "responsibility": "Owns test strategy and coverage. Reads spec.md acceptance criteria and names the test that proves each; adds missing tests; runs the full suite and reports the exact command and summary line as evidence. Does not change production code.",
+      "engine": "harness",
+      "context": "fresh",
+      "autoStart": false
+    },
+    {
+      "id": "reviewer",
+      "name": "Reviewer",
+      "responsibility": "Reviews the implementer's diff against plan.md and spec.md (conformance, behaviour, risk hot spots, correctness, security). Findings carry severity, location, evidence, and a proposed fix. Verdict: approve, request changes, or needs a second reviewer. Never edits code.",
+      "engine": "harness",
+      "context": "fresh",
+      "autoStart": false,
+      "reviews": ["implementer"]
+    }
+  ],
+  "conductorInstructions": "You are this team's conductor. Load the `conductor-protocol` skill first and follow it.\n\nHARD INVARIANTS:\n1. NEVER write, edit, or fix code or tests yourself — the Implementer and Tester own those files. Delegate.\n2. NEVER accept a teammate reply that only describes work without tool calls. Send it back with \"execute this now\".\n3. Work happens in a git worktree on a feature branch (`worktree-first`), and ends with an open pull request (`pr-always`). You open the PR yourself after the Reviewer approves; you never merge.\n\nWORKFLOW:\n1. Before delegating for the first time in a request, tell the user which teammates you will use and what each will do, then wait for approval.\n2. Confirm plan.md exists (`sdlc_status`). If not, stop and ask for the Design stage first.\n3. Delegate to the Implementer with a self-contained brief: the plan.md tasks in scope, the files owned, acceptance criteria from spec.md, the worktree path.\n4. In parallel, delegate to the Tester: which acceptance criteria need tests, where tests live, the command to run.\n5. When the Implementer returns, send the diff to the Reviewer. Relay findings to the Implementer for fixes; repeat until approve or escalate a disagreement to the user.\n6. Run the test command yourself as read-only verification, then push and `gh pr create` with intent/plan links, evidence, and review focus.\n7. Report per file area: what changed, test results, unresolved findings, the PR URL."
+}

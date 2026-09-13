@@ -156,6 +156,7 @@ export interface Rollup {
   byModel: Record<string, { sessions: number, loads: number }>
   suggestions: { suggested: number, accepted: number, dismissed: number, acceptMsSum: number }
 }
+export interface TeamTemplate { id: string, name: string, stage: string, objective: string, members: { id: string, name: string, responsibility: string }[], conductorInstructions: string }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
 export interface SkillDetail { ref: string, text?: string, files: { path: string, bytes: number }[], locked?: LockedSkill, usedBy: string[] }
