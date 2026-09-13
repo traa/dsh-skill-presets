@@ -18,6 +18,8 @@ import { PRACTICE_INFO } from '../host/curated.ts'
 import type { PracticeId } from '../host/types.ts'
 import { runEvals } from '../host/evals.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from '../host/bundle.ts'
+import { diagnose, probe, worstSeverity } from '../host/doctor.ts'
+import { lintLibrary } from '../host/lint.ts'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -197,6 +199,40 @@ async function main(): Promise<number> {
       console.log(`written: ${result.written.join(', ') || '-'}; installed: ${result.installed.join(', ') || '-'}; skipped: ${result.skipped.join(', ') || '-'}`)
       return 0
     }
+    case 'doctor': {
+      // doctor [--profile name] [--json]
+      const pi = rest.indexOf('--profile')
+      const profile = pi !== -1 ? rest[pi + 1] : undefined
+      const results = await probe({
+        ...(profile !== undefined ? { profile } : {}),
+        paths: service.paths(),
+        runEvals: async () => {
+          const shipped = await runEvals(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'evals', 'fixtures'))
+          return { total: shipped.length, failed: shipped.filter(r => !r.pass).length }
+        },
+      })
+      const findings = diagnose(results)
+      if (rest.includes('--json')) console.log(JSON.stringify({ findings, worst: worstSeverity(findings) }, null, 2))
+      else {
+        for (const f of findings) console.log(`${f.severity === 'ok' ? '  ok ' : f.severity === 'warn' ? 'WARN ' : 'FAIL '} ${f.id.padEnd(14)} ${f.message}${f.fix !== undefined && f.severity !== 'ok' ? `\n                    → ${f.fix}` : ''}`)
+        console.log(worstSeverity(findings) === 'ok' ? 'all clear' : worstSeverity(findings) === 'warn' ? 'degraded (warnings only)' : 'NOT HEALTHY')
+      }
+      return worstSeverity(findings) === 'fail' ? 1 : 0
+    }
+    case 'lint': {
+      // lint [ref] [--json]
+      await service.ensure()
+      const lint = await lintLibrary(await service.library.lock(), service.paths())
+      const only = rest.find(a => !a.startsWith('--'))
+      const entries = Object.entries(lint.byRef).filter(([ref]) => only === undefined || ref === only || ref.endsWith(`/${only}`))
+      if (rest.includes('--json')) { console.log(JSON.stringify({ ...lint, byRef: Object.fromEntries(entries) }, null, 2)); return lint.counts.error > 0 ? 1 : 0 }
+      for (const [ref, findings] of entries) {
+        console.log(ref)
+        for (const f of findings) console.log(`  ${f.severity.padEnd(5)} ${f.rule.padEnd(16)} ${f.message}`)
+      }
+      console.log(`${lint.counts.error} error(s), ${lint.counts.warn} warning(s), ${lint.counts.info} note(s)`)
+      return lint.counts.error > 0 ? 1 : 0
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -216,6 +252,8 @@ async function main(): Promise<number> {
         '  worktrees [cwd] [--dry-run|--clean]   list worktrees; remove merged+clean ones (and their branch)',
         '  export <file> [preset…]              write a shareable bundle (presets, overlays, pinned lock, local skill bodies)',
         '  import <file> [--replace|--rename] [--dry-run]   plan and apply a bundle; collisions kept as ours by default',
+        '  lint [ref] [--json]    provider-neutrality + routing quality of installed skills; exit 1 on errors',
+        '  doctor [--profile name] [--json]   is the running plugin the source? seams present? store sane?',
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',
         '  check <practice> [--cwd d] [--json] [--hook <dialect>]   replay one detector; exit 2 when red AND hard',

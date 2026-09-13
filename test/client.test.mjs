@@ -150,6 +150,7 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
     suggestion: { from: 'build', to: 'test', presetId: 'test-review', confidence: 0.85, why: ['PR open'] },
     experiments: [{ id: 'e1', parent: 's-2', child: 's-3', parentPreset: 'build', childPreset: 'design', at: 't' }],
     strict: { enabled: true, seam: true, applied: true },
+    loadTrace: [{ name: 'executing-plans', turn: 1, t: 't', ok: true, userLine: 'implement the plan', mentioned: true, deltas: [{ id: 'worktree', from: 'red', to: 'green' }] }],
     overlays: ['git-repo'],
     offered: [{ name: 'worktree-first', via: 'overlay:git-repo', description: 'd' }, { name: 'executing-plans', via: 'preset', description: 'd' }],
     unresolved: [],
@@ -186,6 +187,9 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   assert.match(words, /Switch to Test & Review\?/)
   assert.match(words, /unplanned\.ts/)
   assert.match(words, /s-3/)
+  assert.match(words, /Why each load/)
+  assert.match(words, /implement the plan/)
+  assert.match(words, /nudged/)
   // Stop the poll loop the body's watch() started.
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))

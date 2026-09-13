@@ -17,22 +17,27 @@ import { PracticeTracker } from './practices/index.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
-import { Experiments, type ForkLike } from './experiments.ts'
+import { Experiments, aggregateExperiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
 import { TeamReader, type AgentTeamsLike } from './teams.ts'
 import { loadTemplates, toBlueprintInput } from './templates.ts'
 import { KnowledgeBridge } from './knowledge.ts'
 import { pruningReport } from './pruning.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from './bundle.ts'
+import { diagnose, probe, worstSeverity } from './doctor.ts'
+import { presetImpact, sessionVsPeers, skillImpact } from './impact.ts'
+import { lintLibrary } from './lint.ts'
+import { orphanSkills, suggestPlacement } from './placement.ts'
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
-import { Telemetry } from './telemetry.ts'
+import { Telemetry, practiceDeltaAround } from './telemetry.ts'
 import { buildTools } from './tools.ts'
 import type { Overlay, PracticesDoc, Preset, SkillSource } from './types.ts'
 
@@ -91,6 +96,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     return resolveWorkbenchFallback()
   }
 
+  /** When THIS host process loaded the plugin — the reference for "server older than build". */
+  const startedAt = Date.now()
   const service = new SkillPresetsService({ root, log: warn })
   ctx.provide('skillPresets', service)
   const telemetry = new Telemetry(service.paths(), warn)
@@ -186,6 +193,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     warn('skill registry unavailable; presets are not exposed to the model')
   }
 
+  /** Rendered guardrails text per session (filled by the prompt block below); read by the why-trace. */
+  const promptCacheRef = new Map<string, string>()
+
   // ------------------------------------------------- per-agent observation --
   // Which agents we have seen, with the set offered at their last step, so
   // `offered` telemetry is written once per change rather than every step.
@@ -237,19 +247,34 @@ export function apply(ctx: Context, config: Config = {}): void {
       offeredState.delete(sessionId)
       overlayState.delete(sessionId)
       lastPreset.delete(sessionId)
+      for (const key of [...userLines.keys()]) if (key.startsWith(`${sessionId}#`)) userLines.delete(key)
       await telemetry.flush()
       await telemetry.rebuildRollup()
     })
   }) as never)
 
+  /** First user line per session+turn, for the why-trace on skill loads. */
+  const userLines = new Map<string, string>()
+  const userLineOf = (messages: unknown): string | undefined => {
+    if (!Array.isArray(messages)) return undefined
+    for (const m of messages as { source?: { kind?: string }, content?: unknown }[]) {
+      if (m?.source?.kind !== 'user') continue
+      const blocks = Array.isArray(m.content) ? m.content as { type?: string, text?: string }[] : []
+      const text = blocks.find(b => b.type === 'text' && typeof b.text === 'string')?.text
+      if (text !== undefined) return text.split('\n').find(l => l.trim().length > 0)?.trim().slice(0, 120)
+    }
+    return undefined
+  }
   ctx.on('agent/pre-step' as never, (async (
-    payload: { agent: AgentLike, turn: number, signal: AbortSignal },
+    payload: { agent: AgentLike, turn: number, signal: AbortSignal, messages?: unknown },
     next: () => Promise<unknown>,
   ) => {
     const decision = await next()
     try {
       const agent = payload.agent
       const sessionId = agent.session.id
+      const line = userLineOf(payload.messages)
+      if (line !== undefined) userLines.set(`${sessionId}#${payload.turn}`, line)
       const team = await teams.view(sessionId, agent)
       const teamAttached = team.attached
       await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset, team.approvalRequired)
@@ -312,7 +337,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         const message = result.error?.message ?? ''
         const unknown = result.isError && /unknown|no longer available|not available/iu.test(message)
         const chars = result.content?.reduce((n, b) => n + (b.text?.length ?? 0), 0) ?? 0
-        telemetry.record(sessionId, { kind: 'loaded', name, turn, ok: !result.isError, ...(unknown ? { unknown: true } : {}), chars })
+        const userLine = userLines.get(`${sessionId}#${turn}`)
+        const mentioned = promptCacheRef.get(sessionId)?.includes(name) === true
+        telemetry.record(sessionId, { kind: 'loaded', name, turn, ok: !result.isError, ...(unknown ? { unknown: true } : {}), chars, ...(userLine !== undefined ? { userLine } : {}), mentioned })
       }
       void tracker.onToolResult(sessionId, {
         t: new Date().toISOString(),
@@ -391,7 +418,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const systemPrompt = ctx.get('systemPrompt') as { context(entry: { name: string, order: number, text: (c: { scope?: unknown, agent?: unknown }) => string }): () => void } | undefined
   if (systemPrompt !== undefined) {
     // Prompt assembly is synchronous; render from a cache the pre-step keeps warm.
-    const promptCache = new Map<string, string>()
+    const promptCache = promptCacheRef
     const refreshPrompt = async (agent: AgentLike): Promise<void> => {
       const sessionId = agent.session.id
       try {
@@ -533,6 +560,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
   })
   rpc.handle('experiments/list', async args => await (optStr(args, 'sessionId') !== undefined ? experiments.forSession(str(args, 'sessionId')) : experiments.list()))
+  rpc.handle('experiments/aggregate', async () => aggregateExperiments(await experiments.list(), await telemetry.recentSessions(1000)))
   rpc.handle('experiments/compare', async (args) => {
     const ids = Array.isArray(args.sessionIds) ? (args.sessionIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
     const cards = []
@@ -555,6 +583,38 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- lint: provider-neutrality and routing quality of the library
+  rpc.handle('lint', async () => {
+    const [lock, rollup] = await Promise.all([service.library.lock(), telemetry.rollup()])
+    return await lintLibrary(lock, service.paths(), rollup)
+  })
+  // ---- impact: outcomes with vs without a skill / a preset
+  rpc.handle('impact/report', async (args) => {
+    const sessions = await telemetry.recentSessions(typeof args.limit === 'number' ? args.limit : 500)
+    return { skills: skillImpact(sessions), presets: presetImpact(sessions), sessions: sessions.length }
+  })
+  rpc.handle('impact/session', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const [current, sessions] = await Promise.all([telemetry.summary(sessionId), telemetry.recentSessions(500)])
+    return sessionVsPeers(current, sessions, typeof args.n === 'number' ? args.n : 20)
+  })
+  // ---- doctor: is the running plugin the source, and are its seams present?
+  rpc.handle('doctor', async () => {
+    const results = await probe({
+      paths: service.paths(),
+      host: {
+        startedAt,
+        ...([...strictSupport.values()].some(Boolean) ? { restrictSeam: true } : strictSupport.size > 0 ? { restrictSeam: false } : {}),
+        agentTeams: ctx.get('agentTeams') !== undefined,
+      },
+      runEvals: async () => {
+        const shipped = await runEvals(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'evals', 'fixtures'))
+        return { total: shipped.length, failed: shipped.filter(r => !r.pass).length }
+      },
+    })
+    const findings = diagnose(results)
+    return { findings, worst: worstSeverity(findings), probedAt: new Date().toISOString() }
   })
   // ---- bundles: export / import presets across workbenches
   rpc.handle('bundle/export', async (args) => {
@@ -642,8 +702,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       const { writeJson } = await import('./store.ts')
       await writeJson(service.paths().lock, { ...lock, skills: lock.skills.map(s => s === entry ? { ...s, promotedFrom: str(args, 'insightId') } : s) })
     }
-    return { ok: true, ...out, ref: `local/${out.name}` }
+    const text = await service.library.readSkillFile('local', out.name)
+    const suggestedPresets = suggestPlacement(text ?? out.name, await service.presets())
+    return { ok: true, ...out, ref: `local/${out.name}`, suggestedPresets }
   })
+  rpc.handle('placement/orphans', async () => {
+    const [lock, presets] = await Promise.all([service.library.lock(), service.presets()])
+    return orphanSkills(lock, presets, new Map(lock.skills.map(s => [`${s.source}/${s.dir}`, s.description])))
+  })
+  rpc.handle('placement/suggest', async args => suggestPlacement(str(args, 'text'), await service.presets()))
   // ---- SDLC team templates → dsh-agent-teams (feature-detected via its HTTP RPC)
   const agentTeamsRpc = async (method: string, body: unknown): Promise<unknown> => {
     const webServer = ctx.get('webServer') as { port?: number, address?: () => { port?: number } } | undefined
@@ -790,6 +857,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       worst: score?.worst ?? 'n/a',
       facts: score?.facts,
       summary,
+      /** Why-trace per load: what changed in the practices until the next load. */
+      loadTrace: summary.loads.map((l, i) => ({
+        ...l,
+        deltas: practiceDeltaAround(summary.practiceTimeline, l.t, summary.loads[i + 1]?.t),
+      })),
     }
   })
   rpc.install()

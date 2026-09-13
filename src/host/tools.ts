@@ -8,6 +8,7 @@ import type { PracticeTracker } from './practices/index.ts'
 import type { SkillPresetsService } from './service.ts'
 import type { Telemetry } from './telemetry.ts'
 import { PRACTICE_INFO, STAGE_ORDER } from './curated.ts'
+import { STAGE_KEYWORDS } from './placement.ts'
 
 /**
  * Local tool builder, mirroring the registry's shape: per-property `required`
@@ -146,16 +147,7 @@ export function buildTools(deps: ToolDeps): unknown[] {
       const scored = status.presets.map((preset) => {
         const words = `${preset.title} ${preset.summary} ${preset.stage}`.toLowerCase().split(/[^a-z0-9]+/u).filter(w => w.length > 3)
         const hits = words.filter(w => task.includes(w)).length
-        const keywords: Record<string, string[]> = {
-          plan: ['idea', 'intent', 'requirement', 'why', 'problem', 'scope'],
-          design: ['spec', 'plan', 'architecture', 'interface', 'api', 'design', 'break down'],
-          build: ['implement', 'build', 'code', 'feature', 'fix', 'write', 'worktree'],
-          test: ['review', 'test', 'pr', 'pull request', 'security', 'quality'],
-          deploy: ['deploy', 'ship', 'release', 'ci', 'pipeline', 'migration', 'launch'],
-          maintain: ['bug', 'incident', 'debug', 'slow', 'crash', 'alert', 'postmortem', 'performance'],
-          cross: ['delegate', 'team', 'parallel', 'subagent'],
-        }
-        const stageHits = (keywords[preset.stage] ?? []).filter(k => task.includes(k)).length * 2
+        const stageHits = STAGE_KEYWORDS[preset.stage].filter(k => task.includes(k)).length * 2
         return { preset, score: hits + stageHits }
       }).sort((a, b) => b.score - a.score)
       const best = scored[0]

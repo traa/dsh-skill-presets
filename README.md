@@ -121,6 +121,50 @@ fixture** in the sidebar records the current session. Change a detector, a
 stage rule, or a summary fold and the fixtures fail first — the playbook's
 "re-run the evals whenever a skill or hook changes", made concrete.
 
+## Doctor
+
+`dsh-skill-presets doctor [--profile web]` — and a banner on the Skills page
+when anything fails — checks what three restarts taught us to check by hand:
+`lib/` older than `src/` or missing modules, `node_modules` a symlink,
+the profile cannot resolve or does not bundle the package, **the server
+started before the last build** (host-recorded start time; `ps` fallback;
+not judged when probing a checkout the profile does not serve), the
+`skills.restrict` and `agentTeams` seams, the legacy `skill-filesystem` row
+still enabled, store JSON, eval fixtures. Exit 1 on any `fail`; warnings are
+degradations, not breakage.
+
+## Impact
+
+Insights → **Impact**: for each skill, sessions that *loaded* it vs sessions
+offered it that did not — all-practices-green rate, PR-opened rate, drift
+files, denials, rating — as deltas; per preset vs all others; and in the
+sidebar, **this session vs your last 20 under the same preset**. Rows with
+fewer than 5 sessions on a side are greyed, never hidden. Forked experiments
+aggregate into preset-pair win totals on the same outcomes.
+
+## Why each load
+
+Every `loaded` event records the first line of the user message that opened
+that turn (≤ 120 chars — nothing else from the prompt) and whether the
+guardrails block named the skill that step. The sidebar expands each load
+into *you said → nudged or self-routed → which practices changed before the
+next load*. This is the offered → loaded → outcome chain, per load.
+
+## Lint
+
+`dsh-skill-presets lint` (also after every install/update, and as Library
+badges): vendor terms with line numbers (**error**), a description with no
+trigger, no `when-to-use`, long descriptions, bodies over 300 lines, and
+skills offered in ≥ 30 sessions never loaded. The shipped local skills must
+lint clean in `npm test`. First run on the real library found 12 vendor
+terms the original normalize rules missed; two rules were added.
+
+## Placement
+
+Promote now says which preset the new skill fits; the drawer offers one-click
+**add to ‹preset›** for any local skill in no preset; the Stages tab lists
+**installed but in no preset** skills — the ones the model never sees.
+
 ## Teams
 
 **Attachment through a service.** When dsh-agent-teams publishes
@@ -325,6 +369,7 @@ dsh-skill-presets status | install [source…] | update [source…] | check-upda
                   | check <practice> [--cwd d] [--json] [--hook <dialect>]
                   | eval [dir] [--update] [--only name]
                   | export <file> [preset…] | import <file> [--replace|--rename] [--dry-run]
+                  | doctor [--profile name] [--json] | lint [ref] [--json]
 ```
 
 ## Acceptance checklist
@@ -348,6 +393,8 @@ Phase 3 — shipped: worktree lifecycle, strict catalog (in-tree seam in
 traa/deepseek-harness#1), hooks export, replay evals.
 Phase 4 — shipped: `ctx.agentTeams` consumer, SDLC team templates, insight →
 skill, pruning hints, export/import.
+Phase 5 — shipped: doctor, impact view, experiments aggregation, lint,
+placement, why-trace.
 
 ## Development
 

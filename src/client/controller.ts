@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type InsightCandidate, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -14,6 +14,13 @@ export interface SettingsSnapshot {
   checks?: CheckReport[]
   insights?: InsightCandidate[]
   pruning?: PruningReport
+  doctor?: DoctorReport
+  impact?: ImpactReport
+  experiments?: ExperimentsAggregate
+  lint?: LibraryLint
+  orphans?: OrphanSkill[]
+  /** After a promotion: where the new skill could go. */
+  lastPromotion?: { ref: string, name: string, suggestedPresets: Placement[] }
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -39,8 +46,8 @@ export class SettingsController extends Store<SettingsSnapshot> {
   async refresh(): Promise<void> {
     this.set({ loading: true, error: undefined })
     try {
-      const status = await rpc<Status>('status')
-      this.set({ status, loading: false })
+      const [status, doctor, orphans] = await Promise.all([rpc<Status>('status'), rpc<DoctorReport>('doctor').catch(() => undefined), rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined)])
+      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }
@@ -49,17 +56,24 @@ export class SettingsController extends Store<SettingsSnapshot> {
   setTab(tab: SettingsSnapshot['tab']): void {
     this.set({ tab, notice: undefined, error: undefined })
     if (tab === 'insights' && this.get().rollup === undefined) void this.loadInsights()
+    if (tab === 'library' && this.get().lint === undefined) void this.loadLint()
+  }
+
+  async loadLint(): Promise<void> {
+    try { this.set({ lint: await rpc<LibraryLint>('lint', {}) }) } catch { /* advisory */ }
   }
 
   async loadInsights(rebuild = false): Promise<void> {
     try {
-      const [rollup, recent, insights, pruning] = await Promise.all([
+      const [rollup, recent, insights, pruning, impact, experiments] = await Promise.all([
         rpc<Rollup>('usage/rollup', { rebuild }),
         rpc<SessionSummary[]>('usage/recent', { limit: 40 }),
         rpc<InsightCandidate[]>('knowledge/candidates', {}).catch(() => [] as InsightCandidate[]),
         rpc<PruningReport>('pruning/report', {}).catch(() => undefined),
+        rpc<ImpactReport>('impact/report', {}).catch(() => undefined),
+        rpc<ExperimentsAggregate>('experiments/aggregate', {}).catch(() => undefined),
       ])
-      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}) })
+      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}), ...(impact !== undefined ? { impact } : {}), ...(experiments !== undefined ? { experiments } : {}) })
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
@@ -266,10 +280,11 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
   async promoteInsight(id: string, name?: string): Promise<void> {
     await this.action('promote', async () => {
-      const out = await rpc<{ ok: boolean, ref: string, name: string }>('knowledge/promote', { insightId: id, ...(name !== undefined ? { name } : {}) })
+      const out = await rpc<{ ok: boolean, ref: string, name: string, suggestedPresets: Placement[] }>('knowledge/promote', { insightId: id, ...(name !== undefined ? { name } : {}) })
       await this.loadInsights()
+      this.set({ lastPromotion: { ref: out.ref, name: out.name, suggestedPresets: out.suggestedPresets } })
       await this.openSkill(out.ref)
-      return `Promoted to local skill "${out.name}". Edit the body into a checklist, then add it to a preset.`
+      return `Promoted to local skill "${out.name}". Edit the body into a checklist${out.suggestedPresets.length > 0 ? `; it looks like a ${out.suggestedPresets.map(p => p.title).join(' or ')} skill — add it from the drawer` : ''}.`
     })
   }
 
@@ -292,6 +307,7 @@ export interface ScorecardSnapshot {
   card?: Scorecard
   templates?: TeamTemplate[]
   agentTeamsPresent?: boolean
+  peers?: PeerComparison
   status?: Status
   loading: boolean
   error?: string
@@ -317,11 +333,12 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
 
   async refresh(refreshFacts = false): Promise<void> {
     try {
-      const [card, status] = await Promise.all([
+      const [card, status, peers] = await Promise.all([
         rpc<Scorecard>('scorecard', { sessionId: this.sessionId, refresh: refreshFacts }),
         rpc<Status>('status'),
+        rpc<PeerComparison>('impact/session', { sessionId: this.sessionId }).catch(() => undefined),
       ])
-      this.set({ card, status, loading: false, error: undefined })
+      this.set({ card, status, loading: false, error: undefined, ...(peers !== undefined ? { peers } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }

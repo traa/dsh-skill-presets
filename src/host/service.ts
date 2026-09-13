@@ -12,6 +12,7 @@ import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC,
 import { Library, type CheckReport, type SyncReport } from './library.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import { cleanupWorktrees, scanWorktrees, type CleanupResult, type WorktreeInfo } from './practices/worktrees.ts'
+import { lintLibrary } from './lint.ts'
 import { BUILTIN_NORMALIZE_RULES, validateRules } from './normalize.ts'
 import {
   clearParsedCache, resolveSet, splitRef, validateOverlaysFile, validatePreset, validatePresetsFile,
@@ -483,6 +484,12 @@ export class SkillPresetsService {
             job.reports.push({ source: source.id, commit: '', added: [], updated: [], unchanged: [], orphaned: [], failed: [], note: (error as Error).message })
           }
         }
+        // Lint what just landed so a vendor term re-introduced upstream is visible now.
+        try {
+          const lint = await lintLibrary(await this.library.lock(), this.paths())
+          if (lint.counts.error > 0) job.progress.push(`lint: ${lint.counts.error} error(s) — ${Object.entries(lint.byRef).filter(([, f]) => f.some(x => x.severity === 'error')).map(([r]) => r).slice(0, 5).join(', ')}`)
+          job.lint = lint.counts
+        } catch { /* lint is advisory */ }
       } finally {
         job.done = true
         job.finishedAt = this.now().toISOString()
@@ -546,6 +553,7 @@ export interface JobState {
   done: boolean
   progress: string[]
   reports: SyncReport[]
+  lint?: { error: number, warn: number, info: number }
 }
 
 /** Validate the sources file. */

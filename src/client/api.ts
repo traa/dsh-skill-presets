@@ -126,7 +126,8 @@ export interface SessionSummary {
   startedAt?: string
   lastAt?: string
   switches: { from: string | null, to: string | null, t: string }[]
-  loads: { name: string, turn: number, t: string, ok: boolean }[]
+  loads: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean }[]
+  practiceTimeline: { t: string, id: string, status: string }[]
 }
 export interface Scorecard {
   sessionId: string
@@ -149,6 +150,7 @@ export interface Scorecard {
   worst: PracticeResult['status']
   facts?: GitFacts
   summary: SessionSummary
+  loadTrace?: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean, deltas: { id: string, from?: string, to: string }[] }[]
 }
 export interface Rollup {
   version: 1
@@ -164,6 +166,18 @@ export interface Rollup {
 }
 export interface InsightCandidate { id: string, domain: string, title: string, body: string, kind: string, confidence: number, hits?: number, scope: 'global' | 'project', project?: string, promotedTo?: string, skillName: string }
 export interface TeamTemplate { id: string, name: string, stage: string, objective: string, members: { id: string, name: string, responsibility: string }[], conductorInstructions: string }
+export interface Outcomes { sessions: number, greenRate?: number, prRate?: number, meanDriftFiles?: number, meanDenied?: number, meanRating?: number, rated: number, meanLoaded?: number }
+export interface ImpactRow { key: string, with: Outcomes, without: Outcomes, delta: { greenRate?: number, prRate?: number, meanRating?: number, meanDriftFiles?: number, meanDenied?: number }, enough: boolean }
+export interface ImpactReport { skills: ImpactRow[], presets: ImpactRow[], sessions: number }
+export interface PeerComparison { current: Outcomes, peers: Outcomes, peerCount: number, preset: string | null }
+export interface ExperimentsAggregate {
+  results: { experiment: Experiment, parent: Outcomes, child: Outcomes, winner: 'parent' | 'child' | null, why: string }[]
+  pairs: { a: string, b: string, experiments: number, aWins: number, bWins: number, ties: number }[]
+}
+export interface LibraryLint { byRef: Record<string, { rule: string, severity: 'error' | 'warn' | 'info', message: string, line?: number }[]>, counts: { error: number, warn: number, info: number } }
+export interface Placement { preset: string, title: string, stage: string, score: number, matched: string[] }
+export interface OrphanSkill { ref: string, name: string, placements: Placement[] }
+export interface DoctorReport { findings: { id: string, severity: 'ok' | 'warn' | 'fail', message: string, fix?: string }[], worst: 'ok' | 'warn' | 'fail', probedAt: string }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
 export interface SkillDetail { ref: string, text?: string, files: { path: string, bytes: number }[], locked?: LockedSkill, usedBy: string[] }
