@@ -179,6 +179,9 @@ export type UsageEvent =
   | { t: string, kind: 'overlay', id: string, active: boolean }
   | { t: string, kind: 'practice', id: PracticeId, status: PracticeStatus, evidence: string[] }
   | { t: string, kind: 'denied', tool: string, reason: string }
+  | { t: string, kind: 'suggested', from: Stage | null, to: Stage, confidence: number }
+  | { t: string, kind: 'suggestion-accepted', from: Stage | null, to: Stage, afterMs: number }
+  | { t: string, kind: 'suggestion-dismissed', from: Stage | null, to: Stage, afterMs: number }
   | { t: string, kind: 'rated', preset: string | null, rating: -1 | 0 | 1, note?: string }
   | { t: string, kind: 'provider', provider: string, model: string }
   | { t: string, kind: 'session', cwd?: string, agentPreset?: string }

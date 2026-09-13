@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC, STAGE_ORDER, defaultPractices } from './curated.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
+import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import { BUILTIN_NORMALIZE_RULES, validateRules } from './normalize.ts'
 import {
   clearParsedCache, resolveSet, splitRef, validateOverlaysFile, validatePreset, validatePresetsFile,
@@ -116,6 +117,29 @@ export class SkillPresetsService {
 
   async active(): Promise<ActiveDoc> {
     return (await readJson(this.paths().active, defaultActive, validateActive)).value
+  }
+
+  async suggestions(): Promise<SuggestionsDoc> {
+    return (await readJson(this.paths().suggestions, emptySuggestions, validateSuggestions)).value
+  }
+
+  async dismissSuggestion(from: Stage | null, to: Stage): Promise<SuggestionsDoc> {
+    const next = recordDismissal(await this.suggestions(), from, to, this.now())
+    await writeJson(this.paths().suggestions, next)
+    return next
+  }
+
+  async acceptSuggestion(from: Stage | null, to: Stage): Promise<SuggestionsDoc> {
+    const next = recordAcceptance(await this.suggestions(), from, to)
+    await writeJson(this.paths().suggestions, next)
+    return next
+  }
+
+  /** stage → preset ids, for suggestion targeting. */
+  async presetsByStage(): Promise<Map<Stage, string[]>> {
+    const map = new Map<Stage, string[]>()
+    for (const p of await this.presets()) map.set(p.stage, [...(map.get(p.stage) ?? []), p.id])
+    return map
   }
 
   async rules(): Promise<readonly NormalizeRule[]> {

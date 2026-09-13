@@ -16,6 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { PracticeTracker } from './practices/index.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
+import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -342,6 +343,30 @@ export function apply(ctx: Context, config: Config = {}): void {
     }), 'skill-presets: prompt')
   }
 
+  // ------------------------------------------------------------ suggestion --
+  // First time a given transition was suggested per session, for time-to-accept.
+  const suggestedAt = new Map<string, { key: string, at: number }>()
+  const suggestionFor = async (sessionId: string): Promise<{ guess: ReturnType<typeof detectStage>, suggestion?: Suggestion }> => {
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const score = tracker.results(sessionId)
+    const guess = detectStage(score?.facts, state?.calls.slice(-12) ?? [])
+    const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
+    const activeStage = await service.activeStage(identity)
+    const suggestion = suggest(guess, activeStage, await service.presetsByStage(), await service.suggestions())
+    if (suggestion !== undefined) {
+      const key = `${suggestion.from ?? 'none'}→${suggestion.to}`
+      if (suggestedAt.get(sessionId)?.key !== key) {
+        suggestedAt.set(sessionId, { key, at: Date.now() })
+        telemetry.record(sessionId, { kind: 'suggested', from: suggestion.from, to: suggestion.to, confidence: suggestion.confidence })
+      }
+    }
+    return { guess, ...(suggestion !== undefined ? { suggestion } : {}) }
+  }
+  const elapsed = (sessionId: string): number => {
+    const at = suggestedAt.get(sessionId)?.at
+    return at === undefined ? 0 : Date.now() - at
+  }
+
   // ------------------------------------------------------------------ RPC --
   const rpc = new Rpc(ctx)
   rpc.handle('status', async () => await service.status())
@@ -375,6 +400,28 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     return { ...change, status: await service.status() }
   })
+  rpc.handle('suggestion/accept', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const { suggestion } = await suggestionFor(sessionId)
+    if (suggestion === undefined) return { ok: false, message: 'nothing to accept' }
+    await service.acceptSuggestion(suggestion.from, suggestion.to)
+    telemetry.record(sessionId, { kind: 'suggestion-accepted', from: suggestion.from, to: suggestion.to, afterMs: elapsed(sessionId) })
+    const presetId = optStr(args, 'presetId') ?? suggestion.presetId
+    if (presetId === undefined) return { ok: false, message: `several presets own the ${suggestion.to} stage; pick one` }
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const change = await service.activate(presetId, 'ui', { sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })
+    suggestedAt.delete(sessionId)
+    return { ok: true, ...change }
+  })
+  rpc.handle('suggestion/dismiss', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const { suggestion } = await suggestionFor(sessionId)
+    if (suggestion === undefined) return { ok: false }
+    const doc = await service.dismissSuggestion(suggestion.from, suggestion.to)
+    telemetry.record(sessionId, { kind: 'suggestion-dismissed', from: suggestion.from, to: suggestion.to, afterMs: elapsed(sessionId) })
+    suggestedAt.delete(sessionId)
+    return { ok: true, muted: (doc.dismissed[`${suggestion.from ?? 'none'}→${suggestion.to}`]?.count ?? 0) >= 3 }
+  })
   rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })
   rpc.handle('practices/save', async args => await service.savePractices(args.practices as PracticesDoc))
@@ -399,9 +446,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
     const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
     const resolved = await service.activeFor(identity)
+    const { guess, suggestion } = await suggestionFor(sessionId)
     return {
       sessionId,
       live: score !== undefined,
+      stageGuess: guess,
+      ...(suggestion !== undefined ? { suggestion } : {}),
       active,
       activePreset: set.preset,
       /** Which rung answered: session / agent-preset / default. */
