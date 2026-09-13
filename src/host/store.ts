@@ -68,6 +68,7 @@ export class StorePaths {
   get active(): string { return join(this.skills, 'active.json') }
   get suggestions(): string { return join(this.skills, 'suggestions.json') }
   get experiments(): string { return join(this.skills, 'experiments.json') }
+  get worktrees(): string { return join(this.skills, 'worktrees.json') }
   get usage(): string { return join(this.skills, 'usage') }
   get rollup(): string { return join(this.skills, 'usage-rollup.json') }
   get migrated(): string { return join(this.skills, 'MIGRATED.md') }
@@ -233,6 +234,7 @@ export function validatePractices(raw: unknown, fallback: () => PracticesDoc): P
   return {
     version: 1,
     strictSkills: doc.strictSkills === true,
+    autoCleanWorktrees: doc.autoCleanWorktrees !== false,
     instructionFiles: Array.isArray(doc.instructionFiles) && doc.instructionFiles.every(f => typeof f === 'string')
       ? doc.instructionFiles
       : base.instructionFiles,

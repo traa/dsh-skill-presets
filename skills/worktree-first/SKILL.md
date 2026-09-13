@@ -32,6 +32,12 @@ git fetch origin --quiet
 git worktree add ../$(basename "$PWD")-$slug -b $type/$slug origin/<default-branch>
 ```
 
+Install dependencies **inside** the worktree (`npm ci`, or the project's
+install command). **Never symlink `node_modules`** from the main checkout: the
+link is a file, `.gitignore`'s `node_modules/` does not match it, `git add -A`
+commits it, and on the main checkout it points at itself — every build then
+exits 0 having done nothing.
+
 Then **tell the user the absolute path** of the new worktree and that further
 work happens there. If the harness cannot change its working directory for
 this session, say so and ask the user to open a session in that path; do
@@ -47,6 +53,8 @@ If a suitable feature branch already exists, `git worktree add ../<name>
 - Keep the worktree clean at the end of the session: commit or stash, and say
   which.
 - The `pr-always` skill covers how work ends: pushed branch, open PR.
+- After the PR merges, the worktree goes: `worktree-cleanup` (or the plugin
+  removes merged, clean worktrees automatically when the session ends).
 
 ## When the user says the rule does not apply
 

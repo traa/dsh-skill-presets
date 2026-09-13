@@ -60,6 +60,27 @@ async function main(): Promise<number> {
       console.log(JSON.stringify(summary, null, 2))
       return 0
     }
+    case 'worktrees': {
+      const cwd = rest.find(a => !a.startsWith('--')) ?? process.cwd()
+      const clean = rest.includes('--clean')
+      const dryRun = rest.includes('--dry-run')
+      if (clean || dryRun) {
+        const r = await service.cleanupWorktrees(cwd, { dryRun: dryRun && !clean ? true : dryRun })
+        for (const x of r.removed) console.log(`${r.dryRun ? 'would remove' : 'removed'}  ${x.path}${x.branch !== undefined ? ` [${x.branch}]` : ''} — ${x.reason}`)
+        for (const x of r.attention) console.log(`attention  ${x.path} — ${x.reason}`)
+        for (const x of r.kept) console.log(`kept       ${x.path} — ${x.reason}`)
+        for (const x of r.errors) console.error(`error      ${x.path} — ${x.error}`)
+        return r.errors.length > 0 ? 1 : 0
+      }
+      const scan = await service.worktrees(cwd)
+      const { classify } = await import('../host/practices/worktrees.ts')
+      console.log(`default branch: ${scan.defaultBranch}`)
+      for (const w of scan.worktrees) {
+        const v = classify(w, scan.defaultBranch)
+        console.log(`${v.kind.padEnd(10)} ${w.path}${w.branch !== undefined ? ` [${w.branch}]` : ''}${w.dirty === true ? ' dirty' : ''}${w.nodeModulesSymlink !== undefined ? ' node_modules→symlink' : ''} — ${v.reason}`)
+      }
+      return 0
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -76,6 +97,7 @@ async function main(): Promise<number> {
         '  activate <id|none>     set the active preset',
         '  summary <usage.jsonl>  fold one session log',
         '  rollup                 rebuild usage-rollup.json',
+        '  worktrees [cwd] [--dry-run|--clean]   list worktrees; remove merged+clean ones (and their branch)',
       ].join('\n'))
       return command === undefined ? 0 : 2
   }

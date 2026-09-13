@@ -6,6 +6,7 @@
   "required": [
     "version",
     "strictSkills",
+    "autoCleanWorktrees",
     "instructionFiles",
     "protectedBranches",
     "practices"
@@ -15,6 +16,9 @@
       "const": 1
     },
     "strictSkills": {
+      "type": "boolean"
+    },
+    "autoCleanWorktrees": {
       "type": "boolean"
     },
     "instructionFiles": {
@@ -47,7 +51,8 @@
               "conductor",
               "artifact-chain",
               "plan-before-code",
-              "plan-drift"
+              "plan-drift",
+              "worktree-hygiene"
             ]
           },
           "mode": {

@@ -87,6 +87,11 @@ export function apply(ctx: Context, config: Config = {}): void {
   // ------------------------------------------------------------ practices --
   const tracker = new PracticeTracker({
     practices: async () => await service.practices(),
+    createdWorktrees: async () => await service.createdWorktrees(),
+    onWorktreeCreated: (sessionId, path) => {
+      void service.rememberWorktree(path, sessionId)
+      telemetry.record(sessionId, { kind: 'worktree', action: 'created', path })
+    },
     activeStage: async (sessionId, agentPreset) => await service.activeStage({ id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) }),
     onResult: (sessionId, result) => {
       telemetry.record(sessionId, { kind: 'practice', id: result.id, status: result.status, evidence: [...result.evidence] })
@@ -160,10 +165,35 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
   }) as never)
 
+  // Auto-clean: merged + clean worktrees of the repo a session worked in are
+  // removed when the session ends, and once an hour for every live repo.
+  const autoClean = async (cwd: string, sessionId?: string): Promise<void> => {
+    try {
+      if (!(await service.practices()).autoCleanWorktrees) return
+      const result = await service.cleanupWorktrees(cwd)
+      for (const r of result.removed) {
+        log(`removed merged worktree ${r.path}${r.branch !== undefined ? ` (branch ${r.branch})` : ''}: ${r.reason}`)
+        if (sessionId !== undefined) telemetry.record(sessionId, { kind: 'worktree', action: 'removed', path: r.path, ...(r.branch !== undefined ? { branch: r.branch } : {}), reason: r.reason })
+      }
+      for (const e of result.errors) warn(`worktree cleanup ${e.path}: ${e.error}`)
+    } catch (error) {
+      warn(`worktree cleanup failed: ${(error as Error).message}`)
+    }
+  }
+  const hourly = setInterval(() => {
+    const roots = new Set<string>()
+    for (const id of tracker.live()) { const top = tracker.results(id)?.facts?.topLevel; if (top !== undefined) roots.add(top) }
+    for (const root of roots) void autoClean(root)
+  }, 3_600_000)
+  hourly.unref?.()
+  ctx.effect(() => () => clearInterval(hourly), 'skill-presets: hourly worktree sweep')
+
   ctx.on('agent/disposed' as never, ((payload: { agent: AgentLike }) => {
     const sessionId = payload.agent.session.id
+    const top = tracker.results(sessionId)?.facts?.topLevel
     void tracker.onDisposed(sessionId).then(async () => {
       await service.sessionDisposed(sessionId)
+      if (top !== undefined) await autoClean(top, sessionId)
       offeredState.delete(sessionId)
       overlayState.delete(sessionId)
       lastPreset.delete(sessionId)
@@ -480,6 +510,29 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     return { cards }
   })
+  // ---- worktrees
+  rpc.handle('worktrees/list', async (args) => {
+    const sessionId = optStr(args, 'sessionId')
+    const cwd = optStr(args, 'cwd') ?? (sessionId !== undefined ? tracker.results(sessionId)?.facts?.topLevel : undefined)
+    if (cwd === undefined) return { defaultBranch: 'main', worktrees: [], note: 'no repository for this session yet' }
+    const scan = await service.worktrees(cwd)
+    const { classify } = await import('./practices/worktrees.ts')
+    return { ...scan, worktrees: scan.worktrees.map(w => ({ ...w, verdict: classify(w, scan.defaultBranch) })) }
+  })
+  rpc.handle('worktrees/cleanup', async (args) => {
+    const sessionId = optStr(args, 'sessionId')
+    const cwd = optStr(args, 'cwd') ?? (sessionId !== undefined ? tracker.results(sessionId)?.facts?.topLevel : undefined)
+    if (cwd === undefined) return { ok: false, message: 'no repository for this session yet' }
+    const result = await service.cleanupWorktrees(cwd, {
+      ...(args.dryRun === true ? { dryRun: true } : {}),
+      ...(Array.isArray(args.only) ? { only: (args.only as unknown[]).filter((x): x is string => typeof x === 'string') } : {}),
+    })
+    if (sessionId !== undefined) {
+      for (const r of result.removed) telemetry.record(sessionId, { kind: 'worktree', action: 'removed', path: r.path, ...(r.branch !== undefined ? { branch: r.branch } : {}), reason: r.reason })
+      tracker.invalidateWorktrees(sessionId)
+    }
+    return { ok: true, result }
+  })
   rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })
   rpc.handle('practices/save', async args => await service.savePractices(args.practices as PracticesDoc))
@@ -506,10 +559,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     const resolved = await service.activeFor(identity)
     const { guess, suggestion } = await suggestionFor(sessionId)
     const related = await experiments.forSession(sessionId)
+    const wt = tracker.worktreesOf(sessionId)
+    const { classify } = await import('./practices/worktrees.ts')
     return {
       sessionId,
       live: score !== undefined,
       experiments: related,
+      ...(wt !== undefined ? { worktrees: { defaultBranch: wt.defaultBranch, list: wt.list.map(w => ({ ...w, verdict: classify(w, wt.defaultBranch) })) } } : {}),
       stageGuess: guess,
       ...(suggestion !== undefined ? { suggestion } : {}),
       active,

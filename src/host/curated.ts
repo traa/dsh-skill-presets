@@ -104,6 +104,7 @@ export const CURATED_PRESETS: readonly Preset[] = [
       ref(SRC.matt, 'implement'),
       ref(SRC.local, 'worktree-first'),
       ref(SRC.local, 'pr-always'),
+      ref(SRC.local, 'worktree-cleanup'),
     ]),
   preset('test-review', 'Test & Review', 'test',
     'Review the diff against plan.md and spec.md, write findings into the PR, and reserve human review for the risky parts.',
@@ -117,6 +118,7 @@ export const CURATED_PRESETS: readonly Preset[] = [
       ref(SRC.matt, 'code-review'),
       ref(SRC.local, 'pr-review-against-plan'),
       ref(SRC.local, 'pr-always'),
+      ref(SRC.local, 'worktree-cleanup'),
     ]),
   preset('deploy', 'Deploy', 'deploy',
     'Ship through the pipeline with evidence: environment checks, migrations, flags, canary, telemetry, rollback.',
@@ -160,7 +162,7 @@ export const CURATED_OVERLAYS: readonly Overlay[] = [
     id: 'git-repo',
     title: 'Inside a git repository',
     when: 'git-work-tree',
-    skills: [ref(SRC.local, 'worktree-first'), ref(SRC.local, 'pr-always')],
+    skills: [ref(SRC.local, 'worktree-first'), ref(SRC.local, 'pr-always'), ref(SRC.local, 'worktree-cleanup')],
     enabled: true,
   },
 ]
@@ -169,6 +171,7 @@ export function defaultPractices(): PracticesDoc {
   return {
     version: 1,
     strictSkills: false,
+    autoCleanWorktrees: true,
     // Provider-neutral: any of these counts as "the project's instructions file".
     instructionFiles: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.agents/AGENTS.md', 'CONTRIBUTING.md'],
     protectedBranches: ['main', 'master', 'develop', 'trunk'],
@@ -179,6 +182,7 @@ export function defaultPractices(): PracticesDoc {
       { id: 'artifact-chain', mode: 'advisory', params: { root: 'docs/sdlc' } },
       { id: 'plan-before-code', mode: 'advisory', params: {} },
       { id: 'plan-drift', mode: 'advisory', params: {} },
+      { id: 'worktree-hygiene', mode: 'advisory', params: { staleDays: 14 } },
     ],
   }
 }
@@ -209,6 +213,11 @@ export const PRACTICE_INFO: Record<PracticesDoc['practices'][number]['id'], { ti
     title: 'Plan before code',
     summary: 'In the Build stage, no file is edited before a plan.md exists.',
     skill: 'sdlc-stage-handoff',
+  },
+  'worktree-hygiene': {
+    title: 'Clean up worktrees',
+    summary: 'Merged worktrees are removed with their branch; no worktree carries a node_modules symlink; none is left stale.',
+    skill: 'worktree-cleanup',
   },
   'plan-drift': {
     title: 'Keep plan.md in step with the diff',

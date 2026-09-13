@@ -12,6 +12,7 @@ import { evaluate, isMutatingCall, worst, type ObservedCall, type SessionView } 
 import { readGitFacts, type GitFacts, type Runner } from './git.ts'
 import { coveredByPlan, isPlanArtifact, planPaths } from './plan.ts'
 import { currentWorkRoot } from './workroot.ts'
+import { classify, scanWorktrees, worktreeAddPath, type WorktreeInfo } from './worktrees.ts'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { PracticeId, PracticeResult, PracticesDoc, Stage } from '../types.ts'
@@ -37,12 +38,17 @@ export interface SessionState {
   plan?: { path: string, patterns: string[], readAt: string }
   drift: { path: string, t: string }[]
   planUpdated: boolean
+  worktrees?: { defaultBranch: string, list: WorktreeInfo[], scannedAt: number }
   /** Paths already announced as drift (one context line each). */
   announced: Set<string>
 }
 
 export interface TrackerDeps {
   practices: () => Promise<PracticesDoc>
+  /** Worktrees the plugin saw created, keyed by absolute path. */
+  createdWorktrees?: () => Promise<Record<string, { sessionId: string, at: string }>>
+  /** A `git worktree add` was observed. */
+  onWorktreeCreated?: (sessionId: string, path: string) => void
   activeStage: (sessionId: string, agentPreset?: string) => Promise<Stage | undefined>
   /** Emit a practice status change. */
   onResult: (sessionId: string, result: PracticeResult) => void
@@ -95,6 +101,10 @@ export class PracticeTracker {
     if (isMutatingCall(call) || (call.target !== undefined && /\b(?:git|gh|glab)\b/u.test(call.target))) state.factsDirty = true
     const root = currentWorkRoot(state.calls, state.cwd)
     if (root !== state.workRoot) { state.workRoot = root; state.factsDirty = true }
+    if (['bash', 'Bash', 'shell'].includes(call.name) && call.target !== undefined && !call.isError) {
+      const created = worktreeAddPath(call.target, state.workRoot ?? state.cwd ?? process.cwd())
+      if (created !== undefined) { this.deps.onWorktreeCreated?.(sessionId, created); state.worktrees = undefined }
+    }
     let drift: string | undefined
     if (['write', 'edit', 'Write', 'Edit', 'multi_edit'].includes(call.name) && call.target !== undefined && !call.isError) {
       if (isPlanArtifact(call.target)) {
@@ -108,6 +118,35 @@ export class PracticeTracker {
     }
     await this.evaluate(state)
     return drift !== undefined ? { drift } : {}
+  }
+
+  /** Scan the work root's worktrees (at most once per 60 s per session). */
+  private async scanWorktrees(state: SessionState): Promise<void> {
+    if (state.facts?.inRepo !== true || state.facts.topLevel === undefined) { state.worktrees = undefined; return }
+    if (state.worktrees !== undefined && Date.now() - state.worktrees.scannedAt < 60_000) return
+    try {
+      const created = await this.deps.createdWorktrees?.()
+      const scan = await scanWorktrees(state.facts.topLevel, {
+        ...(this.deps.run !== undefined ? { run: this.deps.run } : {}),
+        ...(created !== undefined ? { created } : {}),
+        skipPr: state.facts.ghAvailable === false,
+      })
+      state.worktrees = { defaultBranch: scan.defaultBranch, list: scan.worktrees, scannedAt: Date.now() }
+    } catch (error) {
+      this.deps.log?.(`worktree scan for ${state.sessionId}: ${(error as Error).message}`)
+    }
+  }
+
+  /** The scan, for the sidebar. */
+  worktreesOf(sessionId: string): { defaultBranch: string, list: WorktreeInfo[] } | undefined {
+    const wt = this.sessions.get(sessionId)?.worktrees
+    return wt === undefined ? undefined : { defaultBranch: wt.defaultBranch, list: wt.list }
+  }
+
+  /** Force a rescan (after a cleanup). */
+  invalidateWorktrees(sessionId: string): void {
+    const state = this.sessions.get(sessionId)
+    if (state !== undefined) { state.worktrees = undefined; state.factsDirty = true }
   }
 
   /** Read plan.md patterns when the facts say one exists and we have none cached. */
@@ -171,7 +210,7 @@ export class PracticeTracker {
         artifactRoot: root,
         instructionFiles: doc.instructionFiles,
         skipPr: state.facts?.ghAvailable === false,
-      }).then(async (facts) => { state.facts = facts; await this.loadPlan(state) }).catch((error) => {
+      }).then(async (facts) => { state.facts = facts; await this.loadPlan(state); await this.scanWorktrees(state) }).catch((error) => {
         this.deps.log?.(`git facts for ${state.sessionId}: ${(error as Error).message}`)
       })
       state.factsPending = pending
@@ -187,6 +226,7 @@ export class PracticeTracker {
       ended: state.ended,
       drift: state.drift,
       planUpdated: state.planUpdated,
+      ...(state.worktrees !== undefined ? { worktrees: summarizeWorktrees(state.worktrees.list, state.worktrees.defaultBranch, Number(doc.practices.find(p => p.id === 'worktree-hygiene')?.params.staleDays ?? 14)) } : {}),
     }
     const stage = await this.deps.activeStage(state.sessionId, state.agentPreset)
     const results = evaluate({ ...view, ...(stage !== undefined ? { activeStage: stage } : {}) }, enabled)
@@ -200,8 +240,30 @@ export class PracticeTracker {
     }
   }
 
+  /** Every session whose work root lives in this repository top level. */
+  sessionsInRepo(topLevel: string): string[] {
+    return [...this.sessions.values()].filter(s => s.facts?.topLevel === topLevel).map(s => s.sessionId)
+  }
+
   /** Every live session id. */
   live(): string[] {
     return [...this.sessions.keys()]
   }
+}
+
+/** Fold a scan into the numbers the detector reads. Pure. */
+export function summarizeWorktrees(list: readonly WorktreeInfo[], defaultBranch: string, staleDays: number): NonNullable<SessionView['worktrees']> {
+  let removable = 0
+  let stale = 0
+  let symlinked = 0
+  const attention: string[] = []
+  for (const wt of list) {
+    if (wt.primary) continue
+    const verdict = classify(wt, defaultBranch)
+    if (verdict.kind === 'removable') removable += 1
+    if (verdict.kind === 'attention') attention.push(`${wt.path.split('/').pop() ?? wt.path}: ${verdict.reason}`)
+    if (wt.nodeModulesSymlink !== undefined) symlinked += 1
+    if ((wt.ageDays ?? 0) >= staleDays && verdict.kind !== 'removable') stale += 1
+  }
+  return { removable, attention, stale, symlinked, total: list.length }
 }

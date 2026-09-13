@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -330,6 +330,20 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
       const out = await rpc<{ ok: boolean, message?: string, experiment?: { child: string } }>('experiments/fork', { sessionId: this.sessionId, preset })
       await this.refresh()
       this.set({ busy: undefined, ...(out.ok ? { notice: `Forked as ${out.experiment?.child.slice(0, 8)} under ${preset ?? 'no preset'}. Open it from the session list to run the same task.` } : { error: out.message }) })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async cleanupWorktrees(only?: string[], dryRun = false): Promise<void> {
+    this.set({ busy: 'worktrees', error: undefined })
+    try {
+      const out = await rpc<{ ok: boolean, message?: string, result?: CleanupResult }>('worktrees/cleanup', { sessionId: this.sessionId, ...(only !== undefined ? { only } : {}), dryRun })
+      await this.refresh(true)
+      const r = out.result
+      this.set({ busy: undefined, ...(out.ok && r !== undefined
+        ? { notice: `${r.dryRun ? 'Would remove' : 'Removed'} ${r.removed.length} worktree${r.removed.length === 1 ? '' : 's'}${r.attention.length > 0 ? `; ${r.attention.length} need attention` : ''}${r.errors.length > 0 ? `; ${r.errors.length} error(s)` : ''}.` }
+        : { error: out.message ?? 'cleanup failed' }) })
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
     }

@@ -39,6 +39,8 @@ export interface SessionView {
   /** Edited paths not covered by plan.md, in order; plan.md itself edited later clears them. */
   readonly drift?: readonly { path: string, t: string }[]
   readonly planUpdated?: boolean
+  /** Worktree scan summary for the work root's repo. */
+  readonly worktrees?: { removable: number, attention: string[], stale: number, symlinked: number, total: number }
 }
 
 const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
@@ -207,6 +209,20 @@ export function detectPlanDrift(view: SessionView): PracticeResult {
   return result('plan-drift', 'amber', [`${drift.length} file${drift.length === 1 ? '' : 's'} not in plan.md: ${drift.slice(0, 3).map(d => d.path).join(', ')}`, 'update plan.md in the same branch, or say why'], drift[0].t)
 }
 
+export function detectWorktreeHygiene(view: SessionView): PracticeResult {
+  const wt = view.worktrees
+  if (wt === undefined || !(view.facts?.inRepo === true)) return result('worktree-hygiene', 'n/a', ['no worktree scan'])
+  if (wt.total <= 1) return result('worktree-hygiene', 'green', ['no linked worktrees'])
+  const evidence: string[] = []
+  if (wt.removable > 0) evidence.push(`${wt.removable} merged worktree${wt.removable === 1 ? '' : 's'} still present`)
+  if (wt.symlinked > 0) evidence.push(`${wt.symlinked} worktree${wt.symlinked === 1 ? '' : 's'} with a node_modules symlink`)
+  if (wt.stale > 0) evidence.push(`${wt.stale} stale worktree${wt.stale === 1 ? '' : 's'}`)
+  evidence.push(...wt.attention.slice(0, 2))
+  if (wt.symlinked > 0) return result('worktree-hygiene', 'red', evidence)
+  if (evidence.length > 0) return result('worktree-hygiene', 'amber', evidence)
+  return result('worktree-hygiene', 'green', [`${wt.total - 1} linked worktree${wt.total === 2 ? '' : 's'}, all with live work`])
+}
+
 /** Every detector, in display order. */
 export const DETECTORS: Record<PracticeId, (view: SessionView) => PracticeResult> = {
   'worktree': detectWorktree,
@@ -215,6 +231,7 @@ export const DETECTORS: Record<PracticeId, (view: SessionView) => PracticeResult
   'artifact-chain': detectArtifactChain,
   'plan-before-code': detectPlanBeforeCode,
   'plan-drift': detectPlanDrift,
+  'worktree-hygiene': detectWorktreeHygiene,
 }
 
 /** Run every enabled detector. */
