@@ -24,11 +24,13 @@ import { loadTemplates, toBlueprintInput } from './templates.ts'
 import { KnowledgeBridge } from './knowledge.ts'
 import { pruningReport } from './pruning.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from './bundle.ts'
+import { diagnose, probe, worstSeverity } from './doctor.ts'
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -91,6 +93,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     return resolveWorkbenchFallback()
   }
 
+  /** When THIS host process loaded the plugin — the reference for "server older than build". */
+  const startedAt = Date.now()
   const service = new SkillPresetsService({ root, log: warn })
   ctx.provide('skillPresets', service)
   const telemetry = new Telemetry(service.paths(), warn)
@@ -555,6 +559,23 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- doctor: is the running plugin the source, and are its seams present?
+  rpc.handle('doctor', async () => {
+    const results = await probe({
+      paths: service.paths(),
+      host: {
+        startedAt,
+        ...([...strictSupport.values()].some(Boolean) ? { restrictSeam: true } : strictSupport.size > 0 ? { restrictSeam: false } : {}),
+        agentTeams: ctx.get('agentTeams') !== undefined,
+      },
+      runEvals: async () => {
+        const shipped = await runEvals(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'evals', 'fixtures'))
+        return { total: shipped.length, failed: shipped.filter(r => !r.pass).length }
+      },
+    })
+    const findings = diagnose(results)
+    return { findings, worst: worstSeverity(findings), probedAt: new Date().toISOString() }
   })
   // ---- bundles: export / import presets across workbenches
   rpc.handle('bundle/export', async (args) => {

@@ -164,6 +164,7 @@ export interface Rollup {
 }
 export interface InsightCandidate { id: string, domain: string, title: string, body: string, kind: string, confidence: number, hits?: number, scope: 'global' | 'project', project?: string, promotedTo?: string, skillName: string }
 export interface TeamTemplate { id: string, name: string, stage: string, objective: string, members: { id: string, name: string, responsibility: string }[], conductorInstructions: string }
+export interface DoctorReport { findings: { id: string, severity: 'ok' | 'warn' | 'fail', message: string, fix?: string }[], worst: 'ok' | 'warn' | 'fail', probedAt: string }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
 export interface SkillDetail { ref: string, text?: string, files: { path: string, bytes: number }[], locked?: LockedSkill, usedBy: string[] }

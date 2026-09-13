@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type InsightCandidate, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type InsightCandidate, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -14,6 +14,7 @@ export interface SettingsSnapshot {
   checks?: CheckReport[]
   insights?: InsightCandidate[]
   pruning?: PruningReport
+  doctor?: DoctorReport
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -39,8 +40,8 @@ export class SettingsController extends Store<SettingsSnapshot> {
   async refresh(): Promise<void> {
     this.set({ loading: true, error: undefined })
     try {
-      const status = await rpc<Status>('status')
-      this.set({ status, loading: false })
+      const [status, doctor] = await Promise.all([rpc<Status>('status'), rpc<DoctorReport>('doctor').catch(() => undefined)])
+      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }
