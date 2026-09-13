@@ -168,6 +168,10 @@ export interface Outcomes { sessions: number, greenRate?: number, prRate?: numbe
 export interface ImpactRow { key: string, with: Outcomes, without: Outcomes, delta: { greenRate?: number, prRate?: number, meanRating?: number, meanDriftFiles?: number, meanDenied?: number }, enough: boolean }
 export interface ImpactReport { skills: ImpactRow[], presets: ImpactRow[], sessions: number }
 export interface PeerComparison { current: Outcomes, peers: Outcomes, peerCount: number, preset: string | null }
+export interface ExperimentsAggregate {
+  results: { experiment: Experiment, parent: Outcomes, child: Outcomes, winner: 'parent' | 'child' | null, why: string }[]
+  pairs: { a: string, b: string, experiments: number, aWins: number, bWins: number, ties: number }[]
+}
 export interface DoctorReport { findings: { id: string, severity: 'ok' | 'warn' | 'fail', message: string, fix?: string }[], worst: 'ok' | 'warn' | 'fail', probedAt: string }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }

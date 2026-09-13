@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ImpactReport, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -16,6 +16,7 @@ export interface SettingsSnapshot {
   pruning?: PruningReport
   doctor?: DoctorReport
   impact?: ImpactReport
+  experiments?: ExperimentsAggregate
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -55,14 +56,15 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
   async loadInsights(rebuild = false): Promise<void> {
     try {
-      const [rollup, recent, insights, pruning, impact] = await Promise.all([
+      const [rollup, recent, insights, pruning, impact, experiments] = await Promise.all([
         rpc<Rollup>('usage/rollup', { rebuild }),
         rpc<SessionSummary[]>('usage/recent', { limit: 40 }),
         rpc<InsightCandidate[]>('knowledge/candidates', {}).catch(() => [] as InsightCandidate[]),
         rpc<PruningReport>('pruning/report', {}).catch(() => undefined),
         rpc<ImpactReport>('impact/report', {}).catch(() => undefined),
+        rpc<ExperimentsAggregate>('experiments/aggregate', {}).catch(() => undefined),
       ])
-      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}), ...(impact !== undefined ? { impact } : {}) })
+      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}), ...(impact !== undefined ? { impact } : {}), ...(experiments !== undefined ? { experiments } : {}) })
     } catch (error) {
       this.set({ error: (error as Error).message })
     }

@@ -17,7 +17,7 @@ import { PracticeTracker } from './practices/index.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
-import { Experiments, type ForkLike } from './experiments.ts'
+import { Experiments, aggregateExperiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
 import { TeamReader, type AgentTeamsLike } from './teams.ts'
 import { loadTemplates, toBlueprintInput } from './templates.ts'
@@ -538,6 +538,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
   })
   rpc.handle('experiments/list', async args => await (optStr(args, 'sessionId') !== undefined ? experiments.forSession(str(args, 'sessionId')) : experiments.list()))
+  rpc.handle('experiments/aggregate', async () => aggregateExperiments(await experiments.list(), await telemetry.recentSessions(1000)))
   rpc.handle('experiments/compare', async (args) => {
     const ids = Array.isArray(args.sessionIds) ? (args.sessionIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
     const cards = []
