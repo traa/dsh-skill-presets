@@ -47,7 +47,13 @@ export interface LockedSkill {
 export interface Lock { version: 1, sources: Record<string, { commit: string, fetchedAt: string }>, skills: LockedSkill[] }
 export interface PracticeConfig { id: string, mode: 'off' | 'advisory' | 'hard', params: Record<string, unknown> }
 export interface PracticesDoc {
-  version: 1, strictSkills: boolean, autoCleanWorktrees: boolean, instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
+  version: 1, strictSkills: boolean, autoCleanWorktrees: boolean, pruning: { minSessions: number, maxLoadRate: number, minUnknown: number },
+  instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
+}
+export interface PruningReport {
+  stale: { preset: string, ref: string, name: string, offered: number, loaded: number, rate: number }[]
+  missing: { name: string, count: number, inLibrary?: string, upstream?: { source: string, dir: string }[] }[]
+  thresholds: { minSessions: number, maxLoadRate: number, minUnknown: number }
 }
 export interface WorktreeRow {
   path: string, head: string, branch?: string, primary: boolean, locked?: string | true, prunable?: string, detached: boolean,

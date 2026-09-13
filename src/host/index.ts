@@ -22,6 +22,8 @@ import { StrictCatalog } from './strict.ts'
 import { TeamReader, type AgentTeamsLike } from './teams.ts'
 import { loadTemplates, toBlueprintInput } from './templates.ts'
 import { KnowledgeBridge } from './knowledge.ts'
+import { pruningReport } from './pruning.ts'
+import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -552,6 +554,46 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- pruning: stale skills per preset, missing skills the model asked for
+  rpc.handle('pruning/report', async (args) => {
+    const [presets, sessions, rollup, lock, doc] = await Promise.all([
+      service.presets(), telemetry.recentSessions(1000), telemetry.rollup(), service.library.lock(), service.practices(),
+    ])
+    const installed = new Map(lock.skills.filter(s => s.orphaned === undefined).map(s => [s.name, `${s.source}/${s.dir}`]))
+    const inPresets = new Set<string>()
+    for (const p of presets) for (const e of p.skills) inPresets.add(e.as ?? lock.skills.find(s => `${s.source}/${s.dir}` === e.ref)?.name ?? e.ref.split('/').pop()!)
+    // Optional upstream lookup for missing names (network; only when asked).
+    let discovered: { source: string, skills: ReturnType<typeof discoverSkills> }[] | undefined
+    if (args.searchUpstream === true) {
+      discovered = []
+      const gh = new GithubClient()
+      for (const source of (await service.sources()).filter(s => s.kind === 'github' && s.enabled && s.repo !== undefined)) {
+        try {
+          const tree = await gh.tree(source.repo!, source.ref)
+          discovered.push({ source: source.id, skills: discoverSkills(tree.entries, source.paths ?? ['skills']) })
+        } catch { /* offline: no upstream hints */ }
+      }
+    }
+    return pruningReport({ presets, sessions, rollup, installed, inPresets, ...(discovered !== undefined ? { discovered } : {}), thresholds: doc.pruning })
+  })
+  rpc.handle('pruning/remove', async (args) => {
+    const presetId = str(args, 'preset')
+    const ref = str(args, 'ref')
+    const preset = (await service.presets()).find(p => p.id === presetId)
+    if (preset === undefined) throw new Error(`preset "${presetId}" does not exist`)
+    await service.savePreset({ ...preset, skills: preset.skills.filter(s => s.ref !== ref) })
+    return { ok: true }
+  })
+  rpc.handle('pruning/add', async (args) => {
+    // Add an installed skill (by ref) to a preset — the "add x?" one-click.
+    const presetId = str(args, 'preset')
+    const ref = str(args, 'ref')
+    const preset = (await service.presets()).find(p => p.id === presetId)
+    if (preset === undefined) throw new Error(`preset "${presetId}" does not exist`)
+    if (preset.skills.some(s => s.ref === ref)) return { ok: true, already: true }
+    await service.savePreset({ ...preset, skills: [...preset.skills, { ref }] })
+    return { ok: true }
   })
   // ---- knowledge → skill (reads dsh-knowledge's stores read-only)
   const knowledge = new KnowledgeBridge(() => service.paths())

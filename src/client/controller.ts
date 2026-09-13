@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type InsightCandidate, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type InsightCandidate, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -13,6 +13,7 @@ export interface SettingsSnapshot {
   recent?: SessionSummary[]
   checks?: CheckReport[]
   insights?: InsightCandidate[]
+  pruning?: PruningReport
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -52,12 +53,13 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
   async loadInsights(rebuild = false): Promise<void> {
     try {
-      const [rollup, recent, insights] = await Promise.all([
+      const [rollup, recent, insights, pruning] = await Promise.all([
         rpc<Rollup>('usage/rollup', { rebuild }),
         rpc<SessionSummary[]>('usage/recent', { limit: 40 }),
         rpc<InsightCandidate[]>('knowledge/candidates', {}).catch(() => [] as InsightCandidate[]),
+        rpc<PruningReport>('pruning/report', {}).catch(() => undefined),
       ])
-      this.set({ rollup, recent, insights })
+      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}) })
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
@@ -208,6 +210,30 @@ export class SettingsController extends Store<SettingsSnapshot> {
       const copy = await rpc<Preset>('presets/duplicate', { id, newId: `${id}-copy-${Date.now().toString(36).slice(-4)}` })
       this.startEdit(copy)
       return `Duplicated as "${copy.id}".`
+    })
+  }
+
+  async pruneFromPreset(preset: string, ref: string): Promise<void> {
+    await this.action('prune', async () => {
+      await rpc('pruning/remove', { preset, ref })
+      await this.loadInsights()
+      return `Removed ${ref.split('/').pop()} from "${preset}". It stays in the library.`
+    })
+  }
+
+  async addToPreset(preset: string, ref: string): Promise<void> {
+    await this.action('prune', async () => {
+      await rpc('pruning/add', { preset, ref })
+      await this.loadInsights()
+      return `Added ${ref.split('/').pop()} to "${preset}".`
+    })
+  }
+
+  async searchMissingUpstream(): Promise<void> {
+    await this.action('search', async () => {
+      const pruning = await rpc<PruningReport>('pruning/report', { searchUpstream: true })
+      this.set({ pruning })
+      return `Searched ${pruning.missing.filter(m => m.upstream !== undefined).length} name(s) upstream.`
     })
   }
 

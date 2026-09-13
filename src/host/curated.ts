@@ -173,6 +173,7 @@ export function defaultPractices(): PracticesDoc {
     version: 1,
     strictSkills: false,
     autoCleanWorktrees: true,
+    pruning: { minSessions: 20, maxLoadRate: 0.1, minUnknown: 3 },
     // Provider-neutral: any of these counts as "the project's instructions file".
     instructionFiles: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.agents/AGENTS.md', 'CONTRIBUTING.md'],
     protectedBranches: ['main', 'master', 'develop', 'trunk'],

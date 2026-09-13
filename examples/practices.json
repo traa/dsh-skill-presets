@@ -2,6 +2,11 @@
   "version": 1,
   "strictSkills": false,
   "autoCleanWorktrees": true,
+  "pruning": {
+    "minSessions": 20,
+    "maxLoadRate": 0.1,
+    "minUnknown": 3
+  },
   "instructionFiles": [
     "AGENTS.md",
     "CLAUDE.md",
