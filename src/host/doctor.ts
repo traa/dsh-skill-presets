@@ -86,7 +86,7 @@ export function diagnose(r: ProbeResults): Finding[] {
     push('version', 'fail', `the host runs ${r.hostVersion} but lib/ is ${r.libVersion}`, 'restart the profile')
   }
 
-  if (r.restrictSeam === false) push('restrict-seam', 'warn', 'the harness lacks ctx.skills.restrict(); strict mode is guard-only (catalog still lists other skills)', 'merge traa/deepseek-harness#1 into your harness checkout')
+  if (r.restrictSeam === false) push('restrict-seam', 'warn', 'this harness has no ctx.skills.restrict(); strict mode denies out-of-set loads but the catalog still lists skills from ~/.dsh/skills and project .dsh/skills', 'for an exact catalog use composition: copy your agent preset under <dshHome>/.agent-presets/, delete its skill-filesystem row, map it under Settings → Skills → Defaults per agent preset; the harness itself stays untouched')
   else if (r.restrictSeam === true) push('restrict-seam', 'ok', 'ctx.skills.restrict() present')
   if (r.agentTeams === false) push('agent-teams', 'warn', 'ctx.agentTeams is absent; team attachment is inferred from tool visibility', 'update dsh-agent-teams to a build with the service')
   else if (r.agentTeams === true) push('agent-teams', 'ok', 'ctx.agentTeams present')
