@@ -209,6 +209,13 @@ export class SettingsController extends Store<SettingsSnapshot> {
     })
   }
 
+  async generateHooks(): Promise<void> {
+    await this.action('hooks', async () => {
+      const out = await rpc<{ ok: boolean, files: string[] }>('hooks/generate', {})
+      return `Wrote ${out.files.join(' and ')}. Mount dsh-hooks-claude-code or dsh-hooks-codex with configPath pointing at one of them.`
+    })
+  }
+
   async savePractices(doc: PracticesDoc): Promise<void> {
     await this.action('practices', async () => {
       await rpc('practices/save', { practices: doc })

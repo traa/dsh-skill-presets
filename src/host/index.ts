@@ -19,6 +19,9 @@ import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
+import { renderHookFile } from './hooks.ts'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -531,6 +534,18 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- hooks export (optional; both bridges)
+  rpc.handle('hooks/generate', async () => {
+    const dir = join(service.paths().root, 'hooks')
+    await mkdir(dir, { recursive: true })
+    const files: string[] = []
+    for (const dialect of ['claude-code', 'codex'] as const) {
+      const file = join(dir, `skill-presets.${dialect}.json`)
+      await writeFile(file, renderHookFile(dialect), 'utf8')
+      files.push(file)
+    }
+    return { ok: true, files }
   })
   // ---- worktrees
   rpc.handle('worktrees/list', async (args) => {
