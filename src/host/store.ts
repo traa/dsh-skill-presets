@@ -67,6 +67,7 @@ export class StorePaths {
   get normalizeRules(): string { return join(this.skills, 'normalize-rules.json') }
   get active(): string { return join(this.skills, 'active.json') }
   get suggestions(): string { return join(this.skills, 'suggestions.json') }
+  get experiments(): string { return join(this.skills, 'experiments.json') }
   get usage(): string { return join(this.skills, 'usage') }
   get rollup(): string { return join(this.skills, 'usage-rollup.json') }
   get migrated(): string { return join(this.skills, 'MIGRATED.md') }

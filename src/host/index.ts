@@ -17,6 +17,7 @@ import { PracticeTracker } from './practices/index.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
+import { Experiments, type ForkLike } from './experiments.ts'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -433,6 +434,52 @@ export function apply(ctx: Context, config: Config = {}): void {
     suggestedAt.delete(sessionId)
     return { ok: true, muted: (doc.dismissed[`${suggestion.from ?? 'none'}→${suggestion.to}`]?.count ?? 0) >= 3 }
   })
+  // ---- experiments: fork this session under another preset
+  const experiments = new Experiments(() => service.paths())
+  rpc.handle('experiments/fork', async (args) => {
+    const parent = str(args, 'sessionId')
+    const childPreset = typeof args.preset === 'string' && args.preset.length > 0 ? args.preset : null
+    const controller = ctx.get('sessionController') as ForkLike | undefined
+    if (controller === undefined || typeof controller.fork !== 'function') {
+      return { ok: false, message: 'session forking is not available in this composition; fork from the session menu, then pick the preset in the new session\'s chip' }
+    }
+    const state = tracker.has(parent) ? tracker.session(parent) : undefined
+    const parentPreset = (await service.activeFor({ id: parent, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })).preset
+    try {
+      const experiment = await experiments.fork(
+        controller, parent, parentPreset, childPreset,
+        async (child) => { await service.activate(childPreset, 'experiment', { sessionId: child, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }) },
+        { ...(typeof args.atSeq === 'number' ? { atSeq: args.atSeq } : {}), ...(optStr(args, 'note') !== undefined ? { note: optStr(args, 'note') } : {}) },
+      )
+      return { ok: true, experiment }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'fork failed' }
+    }
+  })
+  rpc.handle('experiments/list', async args => await (optStr(args, 'sessionId') !== undefined ? experiments.forSession(str(args, 'sessionId')) : experiments.list()))
+  rpc.handle('experiments/compare', async (args) => {
+    const ids = Array.isArray(args.sessionIds) ? (args.sessionIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
+    const cards = []
+    for (const sessionId of ids) {
+      const score = tracker.results(sessionId)
+      const summary = await telemetry.summary(sessionId)
+      cards.push({
+        sessionId,
+        live: score !== undefined,
+        preset: summary.preset,
+        practices: score?.results ?? summary.practices,
+        loaded: Object.keys(summary.loaded).length,
+        offered: summary.offered.length,
+        loads: summary.loads.length,
+        turns: Math.max(0, ...summary.loads.map(l => l.turn)),
+        rating: summary.rating,
+        denied: summary.denied,
+        drift: summary.drift.length,
+        model: summary.model,
+      })
+    }
+    return { cards }
+  })
   rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })
   rpc.handle('practices/save', async args => await service.savePractices(args.practices as PracticesDoc))
@@ -458,9 +505,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
     const resolved = await service.activeFor(identity)
     const { guess, suggestion } = await suggestionFor(sessionId)
+    const related = await experiments.forSession(sessionId)
     return {
       sessionId,
       live: score !== undefined,
+      experiments: related,
       stageGuess: guess,
       ...(suggestion !== undefined ? { suggestion } : {}),
       active,
