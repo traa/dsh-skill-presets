@@ -213,6 +213,33 @@ export class SettingsController extends Store<SettingsSnapshot> {
     })
   }
 
+  async exportBundle(): Promise<void> {
+    await this.action('export', async () => {
+      const bundle = await rpc<{ presets: { id: string }[] }>('bundle/export', {})
+      const text = JSON.stringify(bundle, null, 2)
+      if (typeof document !== 'undefined' && typeof URL !== 'undefined' && typeof Blob !== 'undefined') {
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `skill-presets-${new Date().toISOString().slice(0, 10)}.json`
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+      return `Exported ${bundle.presets.length} preset(s).`
+    })
+  }
+
+  async importBundle(text: string, onCollision: 'skip' | 'replace' | 'rename' = 'skip'): Promise<void> {
+    await this.action('import', async () => {
+      let bundle: unknown
+      try { bundle = JSON.parse(text) } catch { throw new Error('that file is not JSON') }
+      const out = await rpc<{ ok: boolean, plan: { presets: { id: string, action: string }[], toInstall: unknown[], problems: string[], collisions: string[] }, result?: { written: string[], installed: string[], skipped: string[] } }>('bundle/apply', { bundle, onCollision })
+      if (!out.ok) throw new Error(`import refused: ${out.plan.problems.join('; ')}`)
+      const r = out.result!
+      return `Imported: ${r.written.join(', ') || 'nothing new'}${r.installed.length > 0 ? `; installed ${r.installed.length} skill(s)` : ''}${r.skipped.length > 0 ? `; kept ours: ${r.skipped.join(', ')}` : ''}.`
+    })
+  }
+
   async pruneFromPreset(preset: string, ref: string): Promise<void> {
     await this.action('prune', async () => {
       await rpc('pruning/remove', { preset, ref })

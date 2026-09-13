@@ -23,6 +23,7 @@ import { TeamReader, type AgentTeamsLike } from './teams.ts'
 import { loadTemplates, toBlueprintInput } from './templates.ts'
 import { KnowledgeBridge } from './knowledge.ts'
 import { pruningReport } from './pruning.ts'
+import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from './bundle.ts'
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
@@ -554,6 +555,35 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- bundles: export / import presets across workbenches
+  rpc.handle('bundle/export', async (args) => {
+    const ids = Array.isArray(args.ids) ? (args.ids as unknown[]).filter((x): x is string => typeof x === 'string') : (await service.presets()).map(p => p.id)
+    const [presets, overlays, sources, lock] = await Promise.all([service.presets(), service.overlays(), service.sources(), service.library.lock()])
+    return await exportBundle({ presetIds: ids, presets, overlays, sources, lock, readLocal: dir => readLocalSkill(service.paths().library, dir) })
+  })
+  rpc.handle('bundle/plan', async (args) => {
+    const bundle = validateBundle(args.bundle)
+    const [presets, sources, lock] = await Promise.all([service.presets(), service.sources(), service.library.lock()])
+    const onCollision = args.onCollision === 'replace' || args.onCollision === 'rename' ? args.onCollision : 'skip'
+    return planImport(bundle, { presets, sources, lock, onCollision })
+  })
+  rpc.handle('bundle/apply', async (args) => {
+    const bundle = validateBundle(args.bundle)
+    const [presets, sources, lock] = await Promise.all([service.presets(), service.sources(), service.library.lock()])
+    const onCollision = args.onCollision === 'replace' || args.onCollision === 'rename' ? args.onCollision : 'skip'
+    const plan = planImport(bundle, { presets, sources, lock, onCollision })
+    if (plan.problems.length > 0) return { ok: false, plan }
+    const result = await applyImport(bundle, plan, {
+      savePreset: p => service.savePreset(p),
+      saveSources: s => service.saveSources(s),
+      libraryRoot: service.paths().library,
+      sync: (source, dirs) => service.library.sync(source, { dirs }),
+      sources,
+    })
+    const local = (await service.sources()).find(s => s.id === 'local')
+    if (local !== undefined && result.written.some(w => w.startsWith('local/'))) await service.library.sync(local)
+    return { ok: true, plan, result }
   })
   // ---- pruning: stale skills per preset, missing skills the model asked for
   rpc.handle('pruning/report', async (args) => {

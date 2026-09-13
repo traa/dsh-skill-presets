@@ -180,8 +180,23 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         active !== null ? h('button', { className: 'skp-btn small', onClick: () => { void controller.activate(null) } }, 'Clear default') : null,
         h('span', { className: 'skp-sub' }, `· ${Object.keys(status.active.sessions).length} session${Object.keys(status.active.sessions).length === 1 ? '' : 's'} with their own choice`),
         h('span', { style: { flex: 1 } }),
+        h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.exportBundle() }, title: 'Download every preset with overlays, pinned versions, and local skill bodies as one JSON file' }, 'Export all'),
+        h('label', { className: 'skp-btn small', title: 'Import a bundle; same-id presets are kept as ours unless you choose otherwise' }, 'Import…',
+          h('input', { type: 'file', accept: 'application/json,.json', style: { display: 'none' }, onChange: (e: { target: { files?: { 0?: { text(): Promise<string> } } } }) => {
+            const file = e.target.files?.[0]
+            if (file !== undefined) void file.text().then(text => controller.importBundle(text, 'rename'))
+          } })),
         h('button', { className: 'skp-btn small', onClick: () => controller.newPreset() }, '+ New preset'),
       ),
+      h('div', {
+        className: 'skp-sub', style: { border: '1px dashed var(--dsw-alias-border-l2)', borderRadius: 8, padding: '8px 10px' },
+        onDragOver: (e: { preventDefault(): void }) => e.preventDefault(),
+        onDrop: (e: { preventDefault(): void, dataTransfer?: { files?: { 0?: { text(): Promise<string> } } } }) => {
+          e.preventDefault()
+          const file = e.dataTransfer?.files?.[0]
+          if (file !== undefined) void file.text().then(text => controller.importBundle(text, 'rename'))
+        },
+      }, 'Drop a preset bundle here to import it (same-id presets are imported with an -imported suffix).'),
       h('div', { className: 'skp-card' },
         h('strong', null, 'Defaults per harness agent preset'),
         h('div', { className: 'skp-sub' }, 'A new session under this agent preset starts from the chosen skill preset; a session\'s own choice (header chip) still wins. Leave blank to inherit the workspace default.'),
