@@ -356,6 +356,16 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
     }
   }
 
+  async saveFixture(): Promise<void> {
+    this.set({ busy: 'fixture', error: undefined })
+    try {
+      const out = await rpc<{ ok: boolean, dir?: string, message?: string }>('evals/save', { sessionId: this.sessionId })
+      this.set({ busy: undefined, ...(out.ok ? { notice: `Saved as an eval fixture at ${out.dir}. \`dsh-skill-presets eval\` replays it; edit expected.json to pin the intended outcome.` } : { error: out.message }) })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
   async compare(sessionIds: string[]): Promise<void> {
     try {
       const { cards } = await rpc<{ cards: CompareCard[] }>('experiments/compare', { sessionIds })

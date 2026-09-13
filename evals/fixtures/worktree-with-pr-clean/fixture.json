@@ -1,0 +1,157 @@
+{
+  "name": "worktree-with-pr-clean",
+  "description": "Build preset in a linked worktree on a feature branch, plan.md committed, gh pr create observed. Expect everything green; stage detected as test (PR open).",
+  "practices": {
+    "version": 1,
+    "strictSkills": false,
+    "autoCleanWorktrees": true,
+    "instructionFiles": [
+      "AGENTS.md",
+      "CLAUDE.md",
+      "GEMINI.md",
+      ".agents/AGENTS.md",
+      "CONTRIBUTING.md"
+    ],
+    "protectedBranches": [
+      "main",
+      "master",
+      "develop",
+      "trunk"
+    ],
+    "practices": [
+      {
+        "id": "worktree",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "pull-request",
+        "mode": "advisory",
+        "params": {
+          "checkEveryTurns": 10
+        }
+      },
+      {
+        "id": "conductor",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "artifact-chain",
+        "mode": "advisory",
+        "params": {
+          "root": "docs/sdlc"
+        }
+      },
+      {
+        "id": "plan-before-code",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "plan-drift",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "worktree-hygiene",
+        "mode": "advisory",
+        "params": {
+          "staleDays": 14
+        }
+      }
+    ]
+  },
+  "activeStage": "build",
+  "teamAttached": false,
+  "cwd": "/repo",
+  "facts": {
+    "inRepo": true,
+    "gitAvailable": true,
+    "ghAvailable": true,
+    "hasUpstream": true,
+    "ahead": 0,
+    "dirty": false,
+    "topLevel": "/repo",
+    "artifacts": [
+      "docs/sdlc/x/intent.md",
+      "docs/sdlc/x/plan.md"
+    ],
+    "instructionFiles": [
+      "AGENTS.md"
+    ],
+    "readAt": "2026-01-01T00:00:00.000Z",
+    "isWorktree": true,
+    "branch": "feat/x",
+    "pr": {
+      "url": "https://forge.example/pr/1",
+      "state": "OPEN"
+    }
+  },
+  "calls": [
+    {
+      "t": "2026-01-01T00:00:01.000Z",
+      "turn": 1,
+      "name": "bash",
+      "target": "cd /repo && git status",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:01.000Z",
+      "turn": 1,
+      "name": "edit",
+      "target": "/repo/src/a.ts",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:02.000Z",
+      "turn": 2,
+      "name": "bash",
+      "target": "npm test",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:03.000Z",
+      "turn": 3,
+      "name": "bash",
+      "target": "git push -u origin HEAD && gh pr create --fill",
+      "isError": false,
+      "resultHead": "https://forge.example/pr/1"
+    }
+  ],
+  "userTurns": [
+    1,
+    2,
+    3
+  ],
+  "events": [
+    {
+      "t": "t",
+      "kind": "offered",
+      "preset": "build",
+      "overlays": [
+        "git-repo"
+      ],
+      "skills": [
+        "worktree-first",
+        "pr-always"
+      ]
+    },
+    {
+      "t": "t",
+      "kind": "loaded",
+      "name": "worktree-first",
+      "turn": 1,
+      "ok": true,
+      "chars": 100
+    },
+    {
+      "t": "t",
+      "kind": "loaded",
+      "name": "pr-always",
+      "turn": 3,
+      "ok": true,
+      "chars": 100
+    }
+  ]
+}

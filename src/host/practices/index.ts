@@ -54,6 +54,8 @@ export interface TrackerDeps {
   onResult: (sessionId: string, result: PracticeResult) => void
   run?: Runner
   log?: (message: string) => void
+  /** Replays: serve these facts instead of reading git (the fixture's snapshot). */
+  factsOverride?: (cwd: string) => GitFacts
 }
 
 export class PracticeTracker {
@@ -205,12 +207,15 @@ export class PracticeTracker {
       state.factsDirty = false
       state.workRoot = readFrom
       const root = String(doc.practices.find(p => p.id === 'artifact-chain')?.params.root ?? 'docs/sdlc')
-      const pending = readGitFacts(readFrom, {
-        ...(this.deps.run !== undefined ? { run: this.deps.run } : {}),
-        artifactRoot: root,
-        instructionFiles: doc.instructionFiles,
-        skipPr: state.facts?.ghAvailable === false,
-      }).then(async (facts) => { state.facts = facts; await this.loadPlan(state); await this.scanWorktrees(state) }).catch((error) => {
+      const read = this.deps.factsOverride !== undefined
+        ? Promise.resolve(this.deps.factsOverride(readFrom))
+        : readGitFacts(readFrom, {
+            ...(this.deps.run !== undefined ? { run: this.deps.run } : {}),
+            artifactRoot: root,
+            instructionFiles: doc.instructionFiles,
+            skipPr: state.facts?.ghAvailable === false,
+          })
+      const pending = read.then(async (facts) => { state.facts = facts; await this.loadPlan(state); await this.scanWorktrees(state) }).catch((error) => {
         this.deps.log?.(`git facts for ${state.sessionId}: ${(error as Error).message}`)
       })
       state.factsPending = pending

@@ -16,6 +16,9 @@ import { readGitFacts } from '../host/practices/git.ts'
 import { DETECTORS, isMutatingCommand } from '../host/practices/detectors.ts'
 import { PRACTICE_INFO } from '../host/curated.ts'
 import type { PracticeId } from '../host/types.ts'
+import { runEvals } from '../host/evals.ts'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const [command, ...rest] = process.argv.slice(2)
 const root = process.env.DSH_SKILL_PRESETS_ROOT ?? resolveWorkbenchFallback()
@@ -136,6 +139,26 @@ async function main(): Promise<number> {
       }
       return 0
     }
+    case 'eval': {
+      // eval [dir] [--update] [--only name]   default dir: <plugin>/evals/fixtures, then <workbench>/skills/evals
+      const update = rest.includes('--update')
+      const onlyIdx = rest.indexOf('--only')
+      const only = onlyIdx !== -1 ? rest[onlyIdx + 1] : undefined
+      const explicit = rest.find(a => !a.startsWith('--') && a !== only)
+      const dirs = explicit !== undefined ? [explicit] : [join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'evals', 'fixtures'), join(service.paths().skills, 'evals')]
+      let failed = 0
+      let total = 0
+      for (const dir of dirs) {
+        const results = await runEvals(dir, { update, ...(only !== undefined ? { only } : {}) })
+        for (const r of results) {
+          total += 1
+          if (!r.pass) failed += 1
+          console.log(`${r.pass ? 'ok  ' : 'FAIL'} ${r.name}${r.diffs.length > 0 ? `\n      ${r.diffs.join('\n      ')}` : ''}`)
+        }
+      }
+      console.log(`${total - failed}/${total} fixtures pass`)
+      return failed > 0 ? 1 : 0
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -153,6 +176,7 @@ async function main(): Promise<number> {
         '  summary <usage.jsonl>  fold one session log',
         '  rollup                 rebuild usage-rollup.json',
         '  worktrees [cwd] [--dry-run|--clean]   list worktrees; remove merged+clean ones (and their branch)',
+        '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',
         '  check <practice> [--cwd d] [--json] [--hook <dialect>]   replay one detector; exit 2 when red AND hard',
       ].join('\n'))

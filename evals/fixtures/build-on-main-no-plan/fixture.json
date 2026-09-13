@@ -1,0 +1,150 @@
+{
+  "name": "build-on-main-no-plan",
+  "description": "Build preset, primary checkout on main, no plan.md, edits straight away; PR never opened. Expect worktree red, plan-before-code red, artifact-chain red, pull-request red at end.",
+  "practices": {
+    "version": 1,
+    "strictSkills": false,
+    "autoCleanWorktrees": true,
+    "instructionFiles": [
+      "AGENTS.md",
+      "CLAUDE.md",
+      "GEMINI.md",
+      ".agents/AGENTS.md",
+      "CONTRIBUTING.md"
+    ],
+    "protectedBranches": [
+      "main",
+      "master",
+      "develop",
+      "trunk"
+    ],
+    "practices": [
+      {
+        "id": "worktree",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "pull-request",
+        "mode": "advisory",
+        "params": {
+          "checkEveryTurns": 10
+        }
+      },
+      {
+        "id": "conductor",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "artifact-chain",
+        "mode": "advisory",
+        "params": {
+          "root": "docs/sdlc"
+        }
+      },
+      {
+        "id": "plan-before-code",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "plan-drift",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "worktree-hygiene",
+        "mode": "advisory",
+        "params": {
+          "staleDays": 14
+        }
+      }
+    ]
+  },
+  "activeStage": "build",
+  "teamAttached": false,
+  "cwd": "/repo",
+  "facts": {
+    "inRepo": true,
+    "gitAvailable": true,
+    "ghAvailable": true,
+    "hasUpstream": true,
+    "ahead": 2,
+    "dirty": false,
+    "topLevel": "/repo",
+    "artifacts": [],
+    "instructionFiles": [
+      "AGENTS.md"
+    ],
+    "readAt": "2026-01-01T00:00:00.000Z",
+    "isWorktree": false,
+    "branch": "main"
+  },
+  "calls": [
+    {
+      "t": "2026-01-01T00:00:01.000Z",
+      "turn": 1,
+      "name": "bash",
+      "target": "git status",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:01.000Z",
+      "turn": 1,
+      "name": "edit",
+      "target": "/repo/src/a.ts",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:02.000Z",
+      "turn": 2,
+      "name": "edit",
+      "target": "/repo/src/b.ts",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:02.000Z",
+      "turn": 2,
+      "name": "bash",
+      "target": "git commit -am x",
+      "isError": false
+    }
+  ],
+  "userTurns": [
+    1,
+    2
+  ],
+  "events": [
+    {
+      "t": "t",
+      "kind": "offered",
+      "preset": "build",
+      "overlays": [
+        "git-repo"
+      ],
+      "skills": [
+        "worktree-first",
+        "pr-always",
+        "executing-plans"
+      ]
+    },
+    {
+      "t": "t",
+      "kind": "loaded",
+      "name": "executing-plans",
+      "turn": 1,
+      "ok": true,
+      "chars": 100
+    },
+    {
+      "t": "t",
+      "kind": "loaded",
+      "name": "ghost-skill",
+      "turn": 2,
+      "ok": false,
+      "unknown": true,
+      "chars": 0
+    }
+  ]
+}

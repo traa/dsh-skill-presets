@@ -20,6 +20,7 @@ import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
 import { renderHookFile } from './hooks.ts'
+import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Rpc, optStr, str } from './rpc.ts'
@@ -535,6 +536,28 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     return { cards }
   })
+  // ---- evals: save this session as a fixture; run the workbench set
+  rpc.handle('evals/save', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const score = tracker.results(sessionId)
+    if (state === undefined || score?.facts === undefined) return { ok: false, message: 'session is not live or has no git facts yet' }
+    const stage = await service.activeStage({ id: sessionId, ...(state.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })
+    const dir = await saveFixture(join(service.paths().skills, 'evals'), optStr(args, 'name') ?? sessionId.slice(0, 8), {
+      practices: await service.practices(),
+      ...(stage !== undefined ? { activeStage: stage } : {}),
+      teamAttached: score.teamAttached,
+      cwd: state.cwd ?? '/repo',
+      facts: score.facts,
+      calls: state.calls,
+      userTurns: state.userTurns,
+      events: await telemetry.events(sessionId),
+    }, optStr(args, 'description'))
+    // Write expected.json from the current folds so the fixture guards against regressions from here on.
+    await runEvals(join(service.paths().skills, 'evals'), { only: dir.split('/').pop() ?? '' })
+    return { ok: true, dir }
+  })
+  rpc.handle('evals/run', async args => await runEvals(join(service.paths().skills, 'evals'), { update: args.update === true }))
   // ---- hooks export (optional; both bridges)
   rpc.handle('hooks/generate', async () => {
     const dir = join(service.paths().root, 'hooks')

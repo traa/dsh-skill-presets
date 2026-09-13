@@ -1,0 +1,18 @@
+{
+  "practices": {
+    "worktree": "red",
+    "pull-request": "red",
+    "conductor": "n/a",
+    "artifact-chain": "red",
+    "plan-before-code": "red",
+    "plan-drift": "n/a",
+    "worktree-hygiene": "green"
+  },
+  "stage": "plan",
+  "loaded": [
+    "executing-plans"
+  ],
+  "unknown": [
+    "ghost-skill"
+  ]
+}
