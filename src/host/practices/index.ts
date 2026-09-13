@@ -10,6 +10,10 @@
 
 import { evaluate, isMutatingCall, worst, type ObservedCall, type SessionView } from './detectors.ts'
 import { readGitFacts, type GitFacts, type Runner } from './git.ts'
+import { coveredByPlan, isPlanArtifact, planPaths } from './plan.ts'
+import { currentWorkRoot } from './workroot.ts'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { PracticeId, PracticeResult, PracticesDoc, Stage } from '../types.ts'
 
 export interface SessionState {
@@ -27,11 +31,19 @@ export interface SessionState {
   results: PracticeResult[]
   lastReported: Map<PracticeId, string>
   turnsSincePrCheck: number
+  /** The directory facts were last read for (derived from calls, else cwd). */
+  workRoot?: string
+  /** Parsed plan.md patterns, keyed by the plan path they came from. */
+  plan?: { path: string, patterns: string[], readAt: string }
+  drift: { path: string, t: string }[]
+  planUpdated: boolean
+  /** Paths already announced as drift (one context line each). */
+  announced: Set<string>
 }
 
 export interface TrackerDeps {
   practices: () => Promise<PracticesDoc>
-  activeStage: () => Promise<Stage | undefined>
+  activeStage: (sessionId: string, agentPreset?: string) => Promise<Stage | undefined>
   /** Emit a practice status change. */
   onResult: (sessionId: string, result: PracticeResult) => void
   run?: Runner
@@ -49,7 +61,7 @@ export class PracticeTracker {
     if (state === undefined) {
       state = {
         sessionId, calls: [], userTurns: [], currentTurn: 0, factsDirty: true, teamAttached: false, ended: false,
-        results: [], lastReported: new Map(), turnsSincePrCheck: 0,
+        results: [], lastReported: new Map(), turnsSincePrCheck: 0, drift: [], planUpdated: false, announced: new Set(),
       }
       this.sessions.set(sessionId, state)
     }
@@ -77,11 +89,40 @@ export class PracticeTracker {
   }
 
   /** A tool finished. */
-  async onToolResult(sessionId: string, call: ObservedCall): Promise<void> {
+  async onToolResult(sessionId: string, call: ObservedCall): Promise<{ drift?: string }> {
     const state = this.session(sessionId)
     state.calls.push(call)
     if (isMutatingCall(call) || (call.target !== undefined && /\b(?:git|gh|glab)\b/u.test(call.target))) state.factsDirty = true
+    const root = currentWorkRoot(state.calls, state.cwd)
+    if (root !== state.workRoot) { state.workRoot = root; state.factsDirty = true }
+    let drift: string | undefined
+    if (['write', 'edit', 'Write', 'Edit', 'multi_edit'].includes(call.name) && call.target !== undefined && !call.isError) {
+      if (isPlanArtifact(call.target)) {
+        state.planUpdated = state.drift.length > 0
+        state.plan = undefined // re-read next time
+      } else if (state.plan !== undefined && !coveredByPlan(call.target, state.facts?.topLevel, state.plan.patterns)) {
+        state.drift.push({ path: call.target, t: call.t })
+        state.planUpdated = false
+        if (!state.announced.has(call.target)) { state.announced.add(call.target); drift = call.target }
+      }
+    }
     await this.evaluate(state)
+    return drift !== undefined ? { drift } : {}
+  }
+
+  /** Read plan.md patterns when the facts say one exists and we have none cached. */
+  private async loadPlan(state: SessionState): Promise<void> {
+    const facts = state.facts
+    if (facts?.topLevel === undefined) return
+    const planRel = facts.artifacts.find(a => a.endsWith('plan.md'))
+    if (planRel === undefined) { state.plan = undefined; return }
+    const path = join(facts.topLevel, planRel)
+    if (state.plan?.path === path && state.plan.readAt === facts.readAt) return
+    try {
+      state.plan = { path, patterns: planPaths(await readFile(path, 'utf8')), readAt: facts.readAt }
+    } catch {
+      state.plan = undefined
+    }
   }
 
   /** The session is over; run the final checks and forget it. */
@@ -96,11 +137,12 @@ export class PracticeTracker {
   }
 
   /** Current results for the scorecard. */
-  results(sessionId: string): { results: PracticeResult[], facts?: GitFacts, worst: PracticeResult['status'], teamAttached: boolean, calls: number } | undefined {
+  results(sessionId: string): { results: PracticeResult[], facts?: GitFacts, worst: PracticeResult['status'], teamAttached: boolean, calls: number, workRoot?: string } | undefined {
     const state = this.sessions.get(sessionId)
     if (state === undefined) return undefined
     return {
       results: state.results,
+      ...(state.workRoot !== undefined ? { workRoot: state.workRoot } : {}),
       ...(state.facts !== undefined ? { facts: state.facts } : {}),
       worst: worst(state.results),
       teamAttached: state.teamAttached,
@@ -119,15 +161,17 @@ export class PracticeTracker {
   private async evaluate(state: SessionState, awaitFacts = false): Promise<void> {
     const doc = await this.deps.practices()
     const enabled = doc.practices.filter(p => p.mode !== 'off').map(p => p.id)
-    if (state.factsDirty && state.cwd !== undefined) {
+    const readFrom = state.workRoot ?? currentWorkRoot(state.calls, state.cwd)
+    if (state.factsDirty && readFrom !== undefined) {
       state.factsDirty = false
+      state.workRoot = readFrom
       const root = String(doc.practices.find(p => p.id === 'artifact-chain')?.params.root ?? 'docs/sdlc')
-      const pending = readGitFacts(state.cwd, {
+      const pending = readGitFacts(readFrom, {
         ...(this.deps.run !== undefined ? { run: this.deps.run } : {}),
         artifactRoot: root,
         instructionFiles: doc.instructionFiles,
         skipPr: state.facts?.ghAvailable === false,
-      }).then((facts) => { state.facts = facts }).catch((error) => {
+      }).then(async (facts) => { state.facts = facts; await this.loadPlan(state) }).catch((error) => {
         this.deps.log?.(`git facts for ${state.sessionId}: ${(error as Error).message}`)
       })
       state.factsPending = pending
@@ -141,8 +185,10 @@ export class PracticeTracker {
       userTurns: state.userTurns,
       protectedBranches: doc.protectedBranches,
       ended: state.ended,
+      drift: state.drift,
+      planUpdated: state.planUpdated,
     }
-    const stage = await this.deps.activeStage()
+    const stage = await this.deps.activeStage(state.sessionId, state.agentPreset)
     const results = evaluate({ ...view, ...(stage !== undefined ? { activeStage: stage } : {}) }, enabled)
     state.results = results
     for (const result of results) {

@@ -49,7 +49,22 @@ export interface PracticeConfig { id: string, mode: 'off' | 'advisory' | 'hard',
 export interface PracticesDoc {
   version: 1, strictSkills: boolean, instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
 }
-export interface ActiveDoc { version: 1, preset: string | null, since: string, by: string }
+export interface ActiveDoc {
+  version: 2
+  default: string | null
+  byAgentPreset: Record<string, string | null>
+  sessions: Record<string, { preset: string | null, since: string, by: string, disposedAt?: string }>
+  since: string
+  by: string
+}
+export type ActivateScope = 'session' | 'default' | 'agent-preset'
+export interface StageGuess { stage: string, confidence: number, why: string[] }
+export interface Suggestion { from: string | null, to: string, presetId?: string, confidence: number, why: string[] }
+export interface Experiment { id: string, parent: string, child: string, parentPreset: string | null, childPreset: string | null, at: string, note?: string }
+export interface CompareCard {
+  sessionId: string, live: boolean, preset: string | null, practices: PracticeResult[], loaded: number, offered: number,
+  loads: number, turns: number, rating?: -1 | 0 | 1, denied: number, drift: number, model?: string
+}
 export interface Resolution {
   skills: { ref: string, name: string, description: string, via: 'preset' | { overlay: string } }[]
   unresolved: { ref: string, reason: string }[]
@@ -85,6 +100,8 @@ export interface SessionSummary {
   unknown: string[]
   practices: PracticeResult[]
   denied: number
+  drift: string[]
+  suggestions: { kind: 'suggested' | 'accepted' | 'dismissed', from: string | null, to: string, afterMs?: number }[]
   rating?: -1 | 0 | 1
   provider?: string
   model?: string
@@ -98,6 +115,12 @@ export interface Scorecard {
   live: boolean
   active: ActiveDoc
   activePreset?: Preset
+  /** Which rung answered for this session. */
+  activeSource: 'session' | 'agent-preset' | 'default'
+  agentPreset?: string
+  stageGuess: StageGuess
+  suggestion?: Suggestion
+  experiments: Experiment[]
   overlays: string[]
   offered: { name: string, via: string, description: string }[]
   unresolved: { ref: string, reason: string }[]
@@ -116,6 +139,7 @@ export interface Rollup {
   unknownRequests: Record<string, number>
   coUsage: Record<string, number>
   byModel: Record<string, { sessions: number, loads: number }>
+  suggestions: { suggested: number, accepted: number, dismissed: number, acceptMsSum: number }
 }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }

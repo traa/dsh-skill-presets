@@ -10,15 +10,16 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC, STAGE_ORDER, defaultPractices } from './curated.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
+import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import { BUILTIN_NORMALIZE_RULES, validateRules } from './normalize.ts'
 import {
   clearParsedCache, resolveSet, splitRef, validateOverlaysFile, validatePreset, validatePresetsFile,
   type ResolvedSkill, type Resolution,
 } from './presets.ts'
 import {
-  StorePaths, defaultActive, readJson, validateActive, validatePractices, writeJson,
+  StorePaths, defaultActive, pruneSessions, readJson, resolveActive, validateActive, validatePractices, writeJson,
 } from './store.ts'
-import type { ActiveDoc, Lock, NormalizeRule, Overlay, Preset, PracticesDoc, SkillSource, Stage } from './types.ts'
+import type { ActivateBy, ActivateScope, ActiveDoc, Lock, NormalizeRule, Overlay, Preset, PracticesDoc, SkillSource, Stage } from './types.ts'
 
 /** Where the plugin's own `skills/` folder is, for seeding local skills. */
 export function bundledSkillsDir(): string {
@@ -30,6 +31,7 @@ export interface ServiceStatus {
   root: string
   storeReady: boolean
   active: ActiveDoc
+  /** The workspace-default preset (what a new session starts from). */
   activePreset?: Preset
   presets: Preset[]
   overlays: Overlay[]
@@ -117,18 +119,46 @@ export class SkillPresetsService {
     return (await readJson(this.paths().active, defaultActive, validateActive)).value
   }
 
+  async suggestions(): Promise<SuggestionsDoc> {
+    return (await readJson(this.paths().suggestions, emptySuggestions, validateSuggestions)).value
+  }
+
+  async dismissSuggestion(from: Stage | null, to: Stage): Promise<SuggestionsDoc> {
+    const next = recordDismissal(await this.suggestions(), from, to, this.now())
+    await writeJson(this.paths().suggestions, next)
+    return next
+  }
+
+  async acceptSuggestion(from: Stage | null, to: Stage): Promise<SuggestionsDoc> {
+    const next = recordAcceptance(await this.suggestions(), from, to)
+    await writeJson(this.paths().suggestions, next)
+    return next
+  }
+
+  /** stage → preset ids, for suggestion targeting. */
+  async presetsByStage(): Promise<Map<Stage, string[]>> {
+    const map = new Map<Stage, string[]>()
+    for (const p of await this.presets()) map.set(p.stage, [...(map.get(p.stage) ?? []), p.id])
+    return map
+  }
+
   async rules(): Promise<readonly NormalizeRule[]> {
     return (await readJson(this.paths().normalizeRules, () => [...BUILTIN_NORMALIZE_RULES], validateRules)).value
   }
 
-  async activePreset(): Promise<Preset | undefined> {
-    const active = await this.active()
-    if (active.preset === null) return undefined
-    return (await this.presets()).find(p => p.id === active.preset)
+  /** A session's identity for resolution. Both optional: no session → workspace default. */
+  async activeFor(session?: { id?: string, agentPreset?: string }): Promise<{ preset: string | null, source: 'session' | 'agent-preset' | 'default' }> {
+    return resolveActive(await this.active(), session?.id, session?.agentPreset)
   }
 
-  async activeStage(): Promise<Stage | undefined> {
-    const preset = await this.activePreset()
+  async activePreset(session?: { id?: string, agentPreset?: string }): Promise<Preset | undefined> {
+    const { preset } = await this.activeFor(session)
+    if (preset === null) return undefined
+    return (await this.presets()).find(p => p.id === preset)
+  }
+
+  async activeStage(session?: { id?: string, agentPreset?: string }): Promise<Stage | undefined> {
+    const preset = await this.activePreset(session)
     return preset?.stage === 'cross' ? undefined : preset?.stage
   }
 
@@ -224,8 +254,11 @@ export class SkillPresetsService {
     const [sources, presets, overlays, practices, active, lock] = await Promise.all([
       this.sources(), this.presets(), this.overlays(), this.practices(), this.active(), this.library.lock(),
     ])
-    const activePreset = active.preset === null ? undefined : presets.find(p => p.id === active.preset)
-    if (active.preset !== null && activePreset === undefined) notes.push(`active preset "${active.preset}" no longer exists; treated as none`)
+    const activePreset = active.default === null ? undefined : presets.find(p => p.id === active.default)
+    if (active.default !== null && activePreset === undefined) notes.push(`default preset "${active.default}" no longer exists; treated as none`)
+    for (const [key, id] of Object.entries(active.byAgentPreset)) {
+      if (id !== null && !presets.some(p => p.id === id)) notes.push(`agent preset "${key}" maps to missing preset "${id}"`)
+    }
     const resolution = await resolveSet(paths, lock, activePreset, [])
     const foundationInstalled = lock.skills.some(s => s.source !== SRC.local)
     return {
@@ -250,32 +283,83 @@ export class SkillPresetsService {
    * Resolve the exposed set for one agent: the active preset plus the overlays
    * whose condition holds for it.
    */
-  async setFor(conditions: { teamAttached: boolean, inGitRepo: boolean }): Promise<{ skills: ResolvedSkill[], overlays: string[], resolution: Resolution }> {
+  async setFor(
+    conditions: { teamAttached: boolean, inGitRepo: boolean },
+    session?: { id?: string, agentPreset?: string },
+  ): Promise<{ skills: ResolvedSkill[], overlays: string[], resolution: Resolution, preset: Preset | undefined }> {
     await this.ensure()
-    const [preset, overlays, lock] = await Promise.all([this.activePreset(), this.overlays(), this.library.lock()])
+    const [preset, overlays, lock] = await Promise.all([this.activePreset(session), this.overlays(), this.library.lock()])
     const activeOverlays = overlays.filter(o => o.enabled && (
       o.when === 'always'
       || (o.when === 'tool-visible:team_delegate' && conditions.teamAttached)
       || (o.when === 'git-work-tree' && conditions.inGitRepo)
     ))
     const resolution = await resolveSet(this.paths(), lock, preset, activeOverlays)
-    return { skills: resolution.skills, overlays: activeOverlays.map(o => o.id), resolution }
+    return { skills: resolution.skills, overlays: activeOverlays.map(o => o.id), resolution, preset }
   }
 
   // ------------------------------------------------------------- mutation --
 
-  async activate(presetId: string | null, by: ActiveDoc['by']): Promise<{ from: string | null, to: string | null }> {
+  /**
+   * Activate a preset at one scope.
+   * - `session`: this session only (needs `target.sessionId`); survives until pruned.
+   * - `agent-preset`: every new session created under that harness agent preset.
+   * - `default`: the workspace default.
+   * Returns what the affected session(s) saw before and after.
+   */
+  async activate(
+    presetId: string | null,
+    by: ActivateBy,
+    target: { scope?: ActivateScope, sessionId?: string, agentPreset?: string } = {},
+  ): Promise<{ from: string | null, to: string | null, scope: ActivateScope }> {
     await this.ensure()
-    const current = await this.active()
     if (presetId !== null) {
       const preset = (await this.presets()).find(p => p.id === presetId)
       if (preset === undefined) throw new Error(`preset "${presetId}" does not exist`)
       const problems = validatePreset(preset, await this.library.lock())
       if (problems.length > 0) throw new Error(`preset "${presetId}" is invalid: ${problems.join('; ')}`)
     }
-    await writeJson(this.paths().active, { version: 1, preset: presetId, since: this.now().toISOString(), by } satisfies ActiveDoc)
+    const scope: ActivateScope = target.scope ?? (target.sessionId !== undefined ? 'session' : 'default')
+    const current = await this.active()
+    const now = this.now().toISOString()
+    let next: ActiveDoc
+    let from: string | null
+    if (scope === 'session') {
+      if (target.sessionId === undefined) throw new Error('session scope needs a sessionId')
+      from = resolveActive(current, target.sessionId, target.agentPreset).preset
+      next = { ...current, sessions: { ...current.sessions, [target.sessionId]: { preset: presetId, since: now, by } } }
+    } else if (scope === 'agent-preset') {
+      if (target.agentPreset === undefined) throw new Error('agent-preset scope needs an agentPreset')
+      from = Object.hasOwn(current.byAgentPreset, target.agentPreset) ? current.byAgentPreset[target.agentPreset] : current.default
+      next = { ...current, byAgentPreset: { ...current.byAgentPreset, [target.agentPreset]: presetId }, since: now, by }
+    } else {
+      from = current.default
+      next = { ...current, default: presetId, since: now, by }
+    }
+    await writeJson(this.paths().active, next)
     this.notify()
-    return { from: current.preset, to: presetId }
+    return { from, to: presetId, scope }
+  }
+
+  /** Forget a session's own choice so it falls back to the defaults. */
+  async clearSession(sessionId: string): Promise<void> {
+    const current = await this.active()
+    if (!Object.hasOwn(current.sessions, sessionId)) return
+    const { [sessionId]: _dropped, ...sessions } = current.sessions
+    await writeJson(this.paths().active, { ...current, sessions })
+    this.notify()
+  }
+
+  /** Mark a session disposed (starts its retention clock) and prune old ones. */
+  async sessionDisposed(sessionId: string): Promise<void> {
+    const current = await this.active()
+    const entry = current.sessions[sessionId]
+    const now = this.now()
+    const marked = entry === undefined
+      ? current
+      : { ...current, sessions: { ...current.sessions, [sessionId]: { ...entry, disposedAt: now.toISOString() } } }
+    const pruned = pruneSessions(marked, now)
+    if (pruned !== current) await writeJson(this.paths().active, pruned)
   }
 
   async savePreset(input: Preset): Promise<Preset> {
@@ -292,7 +376,8 @@ export class SkillPresetsService {
     if (problems.length > 0) throw new Error(problems.join('; '))
     const next = existing === undefined ? [...presets, preset] : presets.map(p => p.id === preset.id ? preset : p)
     await writeJson(this.paths().presets, next)
-    if ((await this.active()).preset === preset.id) this.notify()
+    // Any scope may reference it; invalidating is cheap.
+    this.notify()
     return preset
   }
 
@@ -301,7 +386,13 @@ export class SkillPresetsService {
     const presets = await this.presets()
     if (!presets.some(p => p.id === id)) throw new Error(`preset "${id}" does not exist`)
     await writeJson(this.paths().presets, presets.filter(p => p.id !== id))
-    if ((await this.active()).preset === id) await this.activate(null, 'default')
+    const active = await this.active()
+    const sessions: ActiveDoc['sessions'] = {}
+    for (const [k, v] of Object.entries(active.sessions)) sessions[k] = v.preset === id ? { ...v, preset: null } : v
+    const byAgentPreset: ActiveDoc['byAgentPreset'] = {}
+    for (const [k, v] of Object.entries(active.byAgentPreset)) byAgentPreset[k] = v === id ? null : v
+    await writeJson(this.paths().active, { ...active, default: active.default === id ? null : active.default, sessions, byAgentPreset })
+    this.notify()
   }
 
   async duplicatePreset(id: string, newId: string, title?: string): Promise<Preset> {

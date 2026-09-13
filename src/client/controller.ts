@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type CheckReport, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -72,10 +72,19 @@ export class SettingsController extends Store<SettingsSnapshot> {
     }
   }
 
+  /** Settings page: set the WORKSPACE DEFAULT (new sessions start from it). */
   async activate(id: string | null): Promise<void> {
     await this.action('activate', async () => {
-      await rpc('presets/activate', { id })
-      return id === null ? 'No preset active. The model\'s catalog updates on its next step.' : `Preset "${id}" active. The model's catalog updates on its next step.`
+      await rpc('presets/activate', { id, scope: 'default' })
+      return id === null ? 'No default preset. Sessions without their own choice expose overlays only.' : `"${id}" is the workspace default. Sessions with their own choice keep it.`
+    })
+  }
+
+  /** Settings page: default for one harness agent preset (standard, cordis, …). */
+  async setAgentPresetDefault(agentPreset: string, id: string | null): Promise<void> {
+    await this.action('activate', async () => {
+      await rpc('presets/activate', { id, scope: 'agent-preset', agentPreset })
+      return `Sessions under agent preset "${agentPreset}" now start from ${id ?? 'the workspace default'}.`
     })
   }
 
@@ -213,8 +222,10 @@ export interface ScorecardSnapshot {
   status?: Status
   loading: boolean
   error?: string
+  notice?: string
   busy?: string
   popover: boolean
+  compare?: CompareCard[]
   revision: number
 }
 
@@ -268,14 +279,68 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
     this.set({ popover: open ?? !this.get().popover })
   }
 
-  async activate(id: string | null): Promise<void> {
+  /** Switch for THIS session by default; `scope` widens it. */
+  async activate(id: string | null, scope: ActivateScope = 'session'): Promise<void> {
+    this.set({ busy: 'activate', error: undefined })
+    try {
+      await rpc('presets/activate', { id, sessionId: this.sessionId, scope })
+      await this.refresh(true)
+      this.set({ busy: undefined, popover: false, notice: scope === 'session' ? 'This session only. Catalog updates on the model\'s next step.' : scope === 'default' ? 'Workspace default updated.' : 'Agent-preset default updated.' })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  /** Drop this session's own choice; fall back to the defaults. */
+  async useDefault(): Promise<void> {
     this.set({ busy: 'activate' })
     try {
-      await rpc('presets/activate', { id })
+      await rpc('presets/clear-session', { sessionId: this.sessionId })
       await this.refresh(true)
       this.set({ busy: undefined, popover: false })
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async acceptSuggestion(presetId?: string): Promise<void> {
+    this.set({ busy: 'suggest' })
+    try {
+      const out = await rpc<{ ok: boolean, message?: string }>('suggestion/accept', { sessionId: this.sessionId, ...(presetId !== undefined ? { presetId } : {}) })
+      await this.refresh(true)
+      this.set({ busy: undefined, ...(out.ok ? {} : { error: out.message }) })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async dismissSuggestion(): Promise<void> {
+    try {
+      const out = await rpc<{ ok: boolean, muted?: boolean }>('suggestion/dismiss', { sessionId: this.sessionId })
+      await this.refresh()
+      if (out.muted === true) this.set({ notice: 'This suggestion is muted for this workspace.' })
+    } catch (error) {
+      this.set({ error: (error as Error).message })
+    }
+  }
+
+  async fork(preset: string | null): Promise<void> {
+    this.set({ busy: 'fork', error: undefined })
+    try {
+      const out = await rpc<{ ok: boolean, message?: string, experiment?: { child: string } }>('experiments/fork', { sessionId: this.sessionId, preset })
+      await this.refresh()
+      this.set({ busy: undefined, ...(out.ok ? { notice: `Forked as ${out.experiment?.child.slice(0, 8)} under ${preset ?? 'no preset'}. Open it from the session list to run the same task.` } : { error: out.message }) })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async compare(sessionIds: string[]): Promise<void> {
+    try {
+      const { cards } = await rpc<{ cards: CompareCard[] }>('experiments/compare', { sessionIds })
+      this.set({ compare: cards })
+    } catch (error) {
+      this.set({ error: (error as Error).message })
     }
   }
 

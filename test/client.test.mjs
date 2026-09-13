@@ -143,18 +143,22 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   const { ctx, registrations } = fakeCtx()
   const scorecard = {
     sessionId: 's-2', live: true,
-    active: { version: 1, preset: 'build', since: 'x', by: 'ui' },
+    active: { version: 2, default: 'plan', byAgentPreset: {}, sessions: { 's-2': { preset: 'build', since: 'x', by: 'ui' } }, since: 'x', by: 'ui' },
     activePreset: { id: 'build', title: 'Build', stage: 'build', summary: 's', color: '#0f0', skills: [], createdAt: 'a', updatedAt: 'b' },
+    activeSource: 'session',
+    stageGuess: { stage: 'test', confidence: 0.85, why: ['PR open: https://x/pull/1'] },
+    suggestion: { from: 'build', to: 'test', presetId: 'test-review', confidence: 0.85, why: ['PR open'] },
+    experiments: [{ id: 'e1', parent: 's-2', child: 's-3', parentPreset: 'build', childPreset: 'design', at: 't' }],
     overlays: ['git-repo'],
     offered: [{ name: 'worktree-first', via: 'overlay:git-repo', description: 'd' }, { name: 'executing-plans', via: 'preset', description: 'd' }],
     unresolved: [],
     practices: [{ id: 'worktree', status: 'red', evidence: ['2 file mutations on protected branch main in the primary checkout'] }],
     worst: 'red',
     facts: { inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ghAvailable: true, artifacts: ['docs/sdlc/x/plan.md'], instructionFiles: [] },
-    summary: { sessionId: 's-2', preset: 'build', overlays: [], offered: [], loaded: { 'executing-plans': { count: 2, firstTurn: 1, chars: 10, lastAt: 't' } }, unknown: ['ghost'], practices: [], denied: 0, switches: [], loads: [{ name: 'executing-plans', turn: 1, t: 't', ok: true }] },
+    summary: { sessionId: 's-2', preset: 'build', overlays: [], offered: [], loaded: { 'executing-plans': { count: 2, firstTurn: 1, chars: 10, lastAt: 't' } }, unknown: ['ghost'], practices: [], denied: 0, drift: ['src/unplanned.ts'], suggestions: [], switches: [], loads: [{ name: 'executing-plans', turn: 1, t: 't', ok: true }] },
   }
   const status = {
-    root: '/wb', storeReady: true, active: scorecard.active, activePreset: scorecard.activePreset, presets: [scorecard.activePreset], overlays: [], sources: [],
+    root: '/wb', storeReady: true, active: scorecard.active, activePreset: scorecard.activePreset, presets: [scorecard.activePreset, { id: 'test-review', title: 'Test & Review', stage: 'test', summary: 's', skills: [], createdAt: 'a', updatedAt: 'b' }], overlays: [], sources: [],
     lock: { version: 1, sources: {}, skills: [] }, practices: { version: 1, strictSkills: false, instructionFiles: [], protectedBranches: ['main'], practices: [] },
     practiceInfo: { worktree: { title: 'Work in a worktree', summary: '', skill: 'worktree-first' } }, stages: [], resolution: { skills: [], unresolved: [], collisions: [] }, notes: [], foundationInstalled: true,
   }
@@ -175,6 +179,12 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   assert.match(words, /ghost/)
   assert.match(words, /plan\.md/)
   assert.match(words, /1 of 2 loaded/)
+  // Phase 2 surfaces: preset source, detected stage + suggestion, drift, experiments.
+  assert.match(words, /this session/)
+  assert.match(words, /Detected: Test & Review/)
+  assert.match(words, /Switch to Test & Review\?/)
+  assert.match(words, /unplanned\.ts/)
+  assert.match(words, /s-3/)
   // Stop the poll loop the body's watch() started.
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))

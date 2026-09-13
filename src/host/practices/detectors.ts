@@ -36,6 +36,9 @@ export interface SessionView {
   readonly protectedBranches: readonly string[]
   /** Whether the session has ended (final checks apply). */
   readonly ended: boolean
+  /** Edited paths not covered by plan.md, in order; plan.md itself edited later clears them. */
+  readonly drift?: readonly { path: string, t: string }[]
+  readonly planUpdated?: boolean
 }
 
 const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
@@ -194,6 +197,16 @@ export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   return result('plan-before-code', 'red', [`edited ${first.target ?? 'a file'} with no plan.md in the repository`], first.t)
 }
 
+export function detectPlanDrift(view: SessionView): PracticeResult {
+  if (view.activeStage !== 'build') return result('plan-drift', 'n/a', ['applies in the Build stage'])
+  const hasPlan = view.facts?.artifacts.some(a => a.endsWith('plan.md')) === true
+  if (!hasPlan) return result('plan-drift', 'n/a', ['no plan.md to drift from'])
+  const drift = view.drift ?? []
+  if (drift.length === 0) return result('plan-drift', 'green', ['every edit is named in plan.md'])
+  if (view.planUpdated === true) return result('plan-drift', 'green', [`plan.md updated after ${drift.length} unplanned edit${drift.length === 1 ? '' : 's'}`])
+  return result('plan-drift', 'amber', [`${drift.length} file${drift.length === 1 ? '' : 's'} not in plan.md: ${drift.slice(0, 3).map(d => d.path).join(', ')}`, 'update plan.md in the same branch, or say why'], drift[0].t)
+}
+
 /** Every detector, in display order. */
 export const DETECTORS: Record<PracticeId, (view: SessionView) => PracticeResult> = {
   'worktree': detectWorktree,
@@ -201,6 +214,7 @@ export const DETECTORS: Record<PracticeId, (view: SessionView) => PracticeResult
   'conductor': detectConductor,
   'artifact-chain': detectArtifactChain,
   'plan-before-code': detectPlanBeforeCode,
+  'plan-drift': detectPlanDrift,
 }
 
 /** Run every enabled detector. */

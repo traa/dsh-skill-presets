@@ -111,6 +111,7 @@ export type PracticeId =
   | 'conductor'
   | 'artifact-chain'
   | 'plan-before-code'
+  | 'plan-drift'
 
 /** Per-practice configuration. */
 export interface PracticeConfig {
@@ -130,14 +131,24 @@ export interface PracticesDoc {
   readonly practices: readonly PracticeConfig[]
 }
 
-/** Which preset is active. */
+/** How a preset became active for a session. */
+export type ActivateBy = 'ui' | 'tool' | 'default' | 'cli' | 'experiment'
+
+/** Which preset is active — per session, with a workspace default. */
 export interface ActiveDoc {
-  readonly version: 1
-  /** Global active preset id, or null for none. */
-  readonly preset: string | null
+  readonly version: 2
+  /** Workspace default: what a new session starts from. Null for none. */
+  readonly default: string | null
+  /** Default per harness agent preset (`standard`, `cordis`, …); wins over `default`. */
+  readonly byAgentPreset: Record<string, string | null>
+  /** Per-session choice; wins over both. Pruned after `agent/disposed` + retention. */
+  readonly sessions: Record<string, { preset: string | null, since: string, by: ActivateBy, disposedAt?: string }>
   readonly since: string
-  readonly by: 'ui' | 'tool' | 'default' | 'cli'
+  readonly by: ActivateBy
 }
+
+/** Scope of an activation request. */
+export type ActivateScope = 'session' | 'default' | 'agent-preset'
 
 /** A normalization rule applied to upstream skill text on install. */
 export interface NormalizeRule {
@@ -165,10 +176,14 @@ export interface PracticeResult {
 export type UsageEvent =
   | { t: string, kind: 'offered', preset: string | null, overlays: string[], skills: string[] }
   | { t: string, kind: 'loaded', name: string, turn: number, ok: boolean, unknown?: true, chars: number }
-  | { t: string, kind: 'preset-switch', from: string | null, to: string | null, by: ActiveDoc['by'] }
+  | { t: string, kind: 'preset-switch', from: string | null, to: string | null, by: ActivateBy, scope?: ActivateScope }
   | { t: string, kind: 'overlay', id: string, active: boolean }
   | { t: string, kind: 'practice', id: PracticeId, status: PracticeStatus, evidence: string[] }
   | { t: string, kind: 'denied', tool: string, reason: string }
+  | { t: string, kind: 'drift', path: string }
+  | { t: string, kind: 'suggested', from: Stage | null, to: Stage, confidence: number }
+  | { t: string, kind: 'suggestion-accepted', from: Stage | null, to: Stage, afterMs: number }
+  | { t: string, kind: 'suggestion-dismissed', from: Stage | null, to: Stage, afterMs: number }
   | { t: string, kind: 'rated', preset: string | null, rating: -1 | 0 | 1, note?: string }
   | { t: string, kind: 'provider', provider: string, model: string }
   | { t: string, kind: 'session', cwd?: string, agentPreset?: string }
@@ -187,6 +202,8 @@ export interface Rollup {
   readonly coUsage: Record<string, number>
   /** Per provider/model split of skill loads. */
   readonly byModel: Record<string, { sessions: number, loads: number }>
+  /** Stage-switch suggestions: how often accepted, and how fast. */
+  readonly suggestions: { suggested: number, accepted: number, dismissed: number, acceptMsSum: number }
 }
 
 export interface SkillStats {

@@ -67,13 +67,17 @@ export function buildTools(deps: ToolDeps): unknown[] {
     execute: async (_args, exec) => {
       const status = await deps.service.status()
       const sessionId = exec.agent?.session.id
+      const agentPreset = sessionId !== undefined && deps.tracker.has(sessionId) ? deps.tracker.session(sessionId).agentPreset : undefined
+      const identity = sessionId !== undefined ? { id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) } : undefined
       const set = await deps.service.setFor({
         teamAttached: deps.teamAttached(exec.agent),
         inGitRepo: sessionId !== undefined ? deps.tracker.results(sessionId)?.facts?.inRepo === true : false,
-      })
+      }, identity)
       const scorecard = sessionId !== undefined ? deps.tracker.results(sessionId) : undefined
+      const resolved = await deps.service.activeFor(identity)
       const lines = [
-        `Active preset: ${status.activePreset !== undefined ? `${status.activePreset.title} (${status.activePreset.id}, ${status.activePreset.stage} stage)` : 'none'}`,
+        `Active preset for this session: ${set.preset !== undefined ? `${set.preset.title} (${set.preset.id}, ${set.preset.stage} stage)` : 'none'} — set at ${resolved.source} scope`,
+        `Workspace default: ${status.activePreset?.id ?? 'none'}`,
         `Skills exposed (${set.skills.length}): ${set.skills.map(s => s.name).join(', ') || '(none)'}`,
         `Overlays active: ${set.overlays.join(', ') || '(none)'}`,
       ]
@@ -103,7 +107,8 @@ export function buildTools(deps: ToolDeps): unknown[] {
       if (sessionId !== undefined) await deps.tracker.refresh(sessionId)
       const scorecard = sessionId !== undefined ? deps.tracker.results(sessionId) : undefined
       const facts = scorecard?.facts
-      const stage = await deps.service.activeStage()
+      const agentPreset = sessionId !== undefined && deps.tracker.has(sessionId) ? deps.tracker.session(sessionId).agentPreset : undefined
+      const stage = await deps.service.activeStage(sessionId !== undefined ? { id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) } : undefined)
       const lines: string[] = []
       lines.push(`Active stage: ${stage ?? 'none (no stage preset active)'}`)
       if (facts === undefined) lines.push('Git: unknown (no facts yet)')

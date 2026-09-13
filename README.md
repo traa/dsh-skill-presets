@@ -28,6 +28,46 @@ vendor tool name. Upstream skills that do are normalized on install.
 | Tools | model | `skill_preset_status`, `sdlc_status`, `skill_preset_suggest` (deterministic; never switches) |
 | Prompt | model | a ≤ 8-line block: active preset + skill names, artifacts present, practices **at risk** with the skill that fixes each. Empty when all green. |
 
+## Which preset a session gets
+
+Resolution is **session → agent-preset default → workspace default**:
+
+| Rung | Set where | Survives a host restart |
+|---|---|---|
+| this session | header chip (default action), sidebar | no — session ids are minted per process; pruned 7 days after the session ends |
+| agent preset (`standard`, `cordis`, `ptc`, …) | Settings → Skills → Stages → *Defaults per harness agent preset* | yes |
+| workspace default | Settings → Skills → *Make default*, or the chip's `default` button | yes |
+
+Two parallel sessions can run different presets. The chip shows which rung
+answered; the `sdlc_status`/`skill_preset_status` tools say so too.
+
+### Stage suggestions
+
+The scorecard folds git facts and recent commands into a **detected stage**
+(intent.md only → Plan; spec.md → Design; plan.md → Build; PR open → Test;
+PR merged or deploy commands → Deploy; incident record or rollback → Maintain).
+When the detected stage differs from the session's preset with confidence
+≥ 0.7, the chip **pulses** with "Switch to Build?" — one click accepts; *Not
+now* dismisses; three dismissals of the same transition mute it for the
+workspace; accepting clears the mute. It never switches by itself.
+
+### Plan drift
+
+In the Build stage, an edit to a file `plan.md` never names (paths in
+backticks, bare paths, globs like `src/**/*.ts`, bare filenames) turns the
+*Keep plan.md in step with the diff* practice amber and lists the files; editing
+`plan.md` afterwards turns it green again. Advisory by default (a line in the
+guardrails prompt block); hard mode denies the next unplanned edit until the
+plan is updated.
+
+### Experiments (A/B)
+
+Sidebar → *Fork under…* forks the session (through the harness session
+controller, at the last completed turn) and pins the chosen preset on the child
+**before its first step**. Run the same task in both, then *Compare*: skills
+loaded/offered, loads, turns, practice statuses, denials, drift, rating, model.
+When the controller is not composed the button explains the manual path.
+
 ## How the model sees exactly one set
 
 The plugin registers one `SkillProvider` into the host `ctx.skills` registry.
@@ -88,7 +128,10 @@ and refuses to save on a collision unless one gets an `as` alias.
 
 Observed from **tool names, arguments, results, and git** — never from the
 model's prose — so they behave identically under every provider and replay
-from recorded logs.
+from recorded logs. Git facts are read at the model's **work root**: the
+directory of its last absolute write/edit or the target of a leading `cd`,
+falling back to the session cwd — so a session that moved into a worktree is
+judged there, not at the checkout it was opened in.
 
 | Practice | Green | Red | Unknown (amber) |
 |---|---|---|---|
@@ -97,6 +140,7 @@ from recorded logs.
 | Follow the conductor protocol | delegations, no self-edits | conductor wrote/edited files; delegated before a user approval turn; ended with zero delegations | — |
 | Commit the stage artifact | the active stage's artifact exists | Build/Test without `plan.md`, Design without `intent.md` | — |
 | Plan before code | `plan.md` present before the first edit in Build | edited with no `plan.md` | — |
+| Keep plan.md in step with the diff | every Build edit is named in `plan.md`, or `plan.md` was updated after | — (amber while unplanned edits are outstanding) | — |
 
 Modes per practice: **off**, **advisory** (a prompt line when at risk),
 **hard** (the offending tool call is denied with a reason naming the skill to
@@ -193,9 +237,8 @@ dsh-skill-presets status | install [source…] | update [source…] | check [sou
 
 ## Roadmap
 
-Phase 2 — per-session presets (the provider already receives `scope`; this is a
-data change), auto stage detection that *suggests* the next preset, plan-drift
-watch on `tools/post-execute`, A/B fork with a different preset.
+Phase 2 — shipped: per-session presets, stage suggestions, plan drift,
+experiments (see above).
 Phase 3 — in-tree `ctx.skills.restrict()` mirroring `tools.restrict()` for a
 truly strict catalog, hard-gate practices, optional export of the same
 detectors to both shipped hook bridges (`dsh-hooks-claude-code`,

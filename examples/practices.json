@@ -43,6 +43,11 @@
       "id": "plan-before-code",
       "mode": "advisory",
       "params": {}
+    },
+    {
+      "id": "plan-drift",
+      "mode": "advisory",
+      "params": {}
     }
   ]
 }

@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/views
  */
 
-import type { LockedSkill, Preset, PracticeResult, PracticesDoc, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
+import type { CompareCard, LockedSkill, Preset, PracticeResult, PracticesDoc, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
 
 export interface ReactLike {
@@ -127,7 +127,7 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
     h('span', { className: `skp-pill ${r?.status ?? ''}` }, h('i', { className: `skp-dot ${r?.status ?? ''}` }), label)
 
   function StagesTab({ snap, status }: { snap: SettingsSnapshot, status: Status }): unknown {
-    const active = status.active.preset
+    const active = status.active.default
     const rollup = snap.rollup
     const lockedNames = new Set(status.lock.skills.filter(s => s.orphaned === undefined).map(s => `${s.source}/${s.dir}`))
     const stagePresets = status.stages.map(stage => ({ stage, presets: status.presets.filter(p => p.stage === stage) }))
@@ -142,7 +142,7 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           h('span', { className: 'skp-swatch', style: { background: preset.color ?? 'var(--dsw-alias-border-l2)' } }),
           h('span', { className: 'skp-stage-t' }, preset.title),
           h('span', { className: 'skp-sub' }, STAGE_LABEL[preset.stage] ?? preset.stage),
-          on ? h('span', { className: 'skp-pill green' }, 'active') : null,
+          on ? h('span', { className: 'skp-pill green' }, 'default') : null,
         ),
         h('div', { className: 'skp-stage-s' }, preset.summary),
         h('div', { className: 'skp-chips' }, ...preset.skills.map(s => h('span', {
@@ -154,7 +154,7 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         ) : null,
         missing.length > 0 ? h('div', { className: 'skp-msg error' }, `${missing.length} skill${missing.length === 1 ? '' : 's'} not installed`) : null,
         h('div', { className: 'skp-row' },
-          h('button', { className: `skp-btn small${on ? '' : ' primary'}`, disabled: snap.busy !== undefined || on, onClick: () => { void controller.activate(preset.id) } }, on ? 'Active' : 'Activate'),
+          h('button', { className: `skp-btn small${on ? '' : ' primary'}`, disabled: snap.busy !== undefined || on, onClick: () => { void controller.activate(preset.id) } }, on ? 'Default' : 'Make default'),
           h('button', { className: 'skp-btn small', onClick: () => controller.startEdit(preset) }, 'Edit'),
           h('button', { className: 'skp-btn small', onClick: () => { void controller.duplicatePreset(preset.id) } }, 'Duplicate'),
           preset.builtin === true ? null : h('button', { className: 'skp-btn small danger', onClick: () => { void controller.deletePreset(preset.id) } }, 'Delete'),
@@ -171,11 +171,25 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         h('div', { className: 'skp-row' }, h('button', { className: 'skp-btn primary', disabled: snap.busy !== undefined, onClick: () => { void controller.installFoundation() } }, 'Install foundation')),
       ) : null,
       h('div', { className: 'skp-row' },
-        h('span', { className: 'skp-sub' }, 'Active: '),
+        h('span', { className: 'skp-sub' }, 'Workspace default: '),
         h('strong', null, status.activePreset?.title ?? 'none'),
-        active !== null ? h('button', { className: 'skp-btn small', onClick: () => { void controller.activate(null) } }, 'Deactivate') : null,
+        active !== null ? h('button', { className: 'skp-btn small', onClick: () => { void controller.activate(null) } }, 'Clear default') : null,
+        h('span', { className: 'skp-sub' }, `· ${Object.keys(status.active.sessions).length} session${Object.keys(status.active.sessions).length === 1 ? '' : 's'} with their own choice`),
         h('span', { style: { flex: 1 } }),
         h('button', { className: 'skp-btn small', onClick: () => controller.newPreset() }, '+ New preset'),
+      ),
+      h('div', { className: 'skp-card' },
+        h('strong', null, 'Defaults per harness agent preset'),
+        h('div', { className: 'skp-sub' }, 'A new session under this agent preset starts from the chosen skill preset; a session\'s own choice (header chip) still wins. Leave blank to inherit the workspace default.'),
+        ...['standard', 'cordis', 'ptc', ...Object.keys(status.active.byAgentPreset).filter(k => !['standard', 'cordis', 'ptc'].includes(k))].map(ap => h('div', { key: ap, className: 'skp-row' },
+          h('span', { className: 'skp-mono', style: { minWidth: 90 } }, ap),
+          h('select', {
+            className: 'skp-input small', value: status.active.byAgentPreset[ap] ?? '',
+            onChange: (e: { target: { value: string } }) => { void controller.setAgentPresetDefault(ap, e.target.value.length > 0 ? e.target.value : null) },
+          },
+            h('option', { value: '' }, '(workspace default)'),
+            ...status.presets.map(p => h('option', { key: p.id, value: p.id }, p.title))),
+        )),
       ),
       ...stagePresets.filter(g => g.presets.length > 0).map(group => h('div', { key: group.stage, className: 'skp-col' },
         h('div', { className: 'skp-sub', style: { fontWeight: 650 } }, STAGE_LABEL[group.stage] ?? group.stage),
@@ -394,6 +408,16 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
       ),
       h('div', { className: 'skp-loop' },
         h('div', { className: 'skp-card' },
+          h('strong', null, 'Stage suggestions'),
+          h('div', { className: 'skp-sub' }, 'How often the chip suggested a stage switch and how often you took it.'),
+          h('div', { className: 'skp-row' },
+            h('span', { className: 'skp-pill' }, `${rollup.suggestions.suggested} suggested`),
+            h('span', { className: 'skp-pill green' }, `${rollup.suggestions.accepted} accepted`),
+            h('span', { className: 'skp-pill amber' }, `${rollup.suggestions.dismissed} dismissed`),
+            rollup.suggestions.accepted > 0 ? h('span', { className: 'skp-sub' }, `median-ish time to accept ${Math.round(rollup.suggestions.acceptMsSum / rollup.suggestions.accepted / 1000)} s`) : null,
+          ),
+        ),
+        h('div', { className: 'skp-card' },
           h('strong', null, 'Requested but unknown'),
           h('div', { className: 'skp-sub' }, 'Names the model asked the `skill` tool for that were not in its catalog — the strongest signal of a missing skill.'),
           unknown.length === 0 ? h('div', { className: 'skp-sub' }, 'None.') : h('div', { className: 'skp-chips' }, ...unknown.map(([n, c]) => h('span', { key: n, className: 'skp-chip miss' }, `${n} ×${c}`))),
@@ -479,27 +503,46 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
     const status = snap.status
     const title = card?.activePreset?.title ?? (snap.loading ? '…' : 'no preset')
     const worst = card?.worst ?? 'n/a'
+    const suggestion = card?.suggestion
+    const sourceLabel = card?.activeSource === 'session' ? 'this session' : card?.activeSource === 'agent-preset' ? `agent preset ${card.agentPreset ?? ''}` : 'workspace default'
     return h('div', { className: 'skp', style: { position: 'relative', display: 'inline-flex' } },
       h('button', {
-        className: 'skp-hchip', title: 'Skill preset and practice status — click to switch',
+        className: `skp-hchip${suggestion !== undefined ? ' skp-pulse' : ''}`,
+        title: `Skill preset (${sourceLabel}) and practice status — click to switch${suggestion !== undefined ? ` · suggestion: ${STAGE_LABEL[suggestion.to] ?? suggestion.to}` : ''}`,
         onClick: () => controller.togglePopover(),
       },
         h('i', { className: `skp-dot ${worst === 'n/a' ? '' : worst}` }),
         h('span', { className: 'skp-swatch', style: { background: card?.activePreset?.color ?? 'var(--dsw-alias-border-l2)' } }),
         title,
         card !== undefined && card.overlays.length > 0 ? h('span', { className: 'skp-sub' }, `+${card.overlays.length}`) : null,
+        suggestion !== undefined ? h('span', { className: 'skp-sub' }, `→ ${STAGE_LABEL[suggestion.to] ?? suggestion.to}?`) : null,
       ),
       snap.popover && status !== undefined ? h('div', { className: 'skp-pop' },
-        h('div', { className: 'skp-pop-s' }, 'Switching re-publishes the model\'s skill catalog on its next step.'),
-        ...status.presets.map(p => h('div', { key: p.id, className: `skp-pop-item${p.id === status.active.preset ? ' on' : ''}`, onClick: () => { void controller.activate(p.id) } },
+        suggestion !== undefined ? h('div', { className: 'skp-card', style: { padding: '8px 10px' } },
+          h('div', { className: 'skp-pop-t' }, `Artifacts say ${STAGE_LABEL[suggestion.to] ?? suggestion.to} — switch?`),
+          h('div', { className: 'skp-pop-s' }, suggestion.why.join(' · ')),
+          h('div', { className: 'skp-row' },
+            suggestion.presetId !== undefined
+              ? h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined, onClick: () => { void controller.acceptSuggestion() } }, `Switch to ${status.presets.find(p => p.id === suggestion.presetId)?.title ?? suggestion.presetId}`)
+              : h('span', { className: 'skp-pop-s' }, 'Several presets own this stage — pick one below.'),
+            h('button', { className: 'skp-btn small', onClick: () => { void controller.dismissSuggestion() } }, 'Not now'),
+          ),
+        ) : null,
+        h('div', { className: 'skp-pop-s' }, `Switching applies to this session; the catalog updates on the model's next step. Now: ${sourceLabel}.`),
+        ...status.presets.map(p => h('div', { key: p.id, className: `skp-pop-item${p.id === card?.activePreset?.id ? ' on' : ''}`, onClick: () => { void controller.activate(p.id) } },
           h('span', { className: 'skp-swatch', style: { background: p.color ?? 'var(--dsw-alias-border-l2)', marginTop: 3 } }),
-          h('div', { className: 'skp-col', style: { gap: 2 } }, h('div', { className: 'skp-pop-t' }, `${p.title} · ${STAGE_LABEL[p.stage] ?? p.stage}`), h('div', { className: 'skp-pop-s' }, `${p.summary} (${p.skills.length} skills)`)),
+          h('div', { className: 'skp-col', style: { gap: 2, flex: 1 } }, h('div', { className: 'skp-pop-t' }, `${p.title} · ${STAGE_LABEL[p.stage] ?? p.stage}`), h('div', { className: 'skp-pop-s' }, `${p.summary} (${p.skills.length} skills)`)),
+          h('button', { className: 'skp-btn small', title: 'Make this the workspace default too', onClick: (e: { stopPropagation(): void }) => { e.stopPropagation(); void controller.activate(p.id, 'default') } }, 'default'),
         )),
-        h('div', { className: 'skp-pop-item', onClick: () => { void controller.activate(null) } }, h('div', { className: 'skp-pop-s' }, 'No preset (overlays only)')),
+        h('div', { className: 'skp-pop-item', onClick: () => { void controller.activate(null) } }, h('div', { className: 'skp-pop-s' }, 'No preset for this session (overlays only)')),
+        card?.activeSource === 'session' ? h('div', { className: 'skp-pop-item', onClick: () => { void controller.useDefault() } }, h('div', { className: 'skp-pop-s' }, 'Forget this session\'s choice; follow the defaults')) : null,
         card !== undefined ? h('div', { className: 'skp-col', style: { borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 8 } },
+          h('div', { className: 'skp-pop-s' }, `Detected stage: ${STAGE_LABEL[card.stageGuess.stage] ?? card.stageGuess.stage} (${Math.round(card.stageGuess.confidence * 100)}%) — ${card.stageGuess.why[0] ?? ''}`),
           card.overlays.length > 0 ? h('div', { className: 'skp-pop-s' }, `Overlays: ${card.overlays.join(', ')}`) : null,
           ...card.practices.map(p => h('div', { key: p.id, className: 'skp-row' }, h('i', { className: `skp-dot ${p.status}` }), h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.status}${p.evidence[0] !== undefined ? ` — ${p.evidence[0]}` : ''}`))),
         ) : null,
+        snap.notice !== undefined ? h('div', { className: 'skp-msg ok' }, snap.notice) : null,
+        snap.error !== undefined ? h('div', { className: 'skp-msg error' }, snap.error) : null,
       ) : null,
     )
   }
@@ -527,9 +570,18 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
           h('span', { className: 'skp-swatch', style: { background: card.activePreset?.color ?? 'var(--dsw-alias-border-l2)' } }),
           h('strong', null, card.activePreset?.title ?? 'none'),
           card.activePreset !== undefined ? h('span', { className: 'skp-sub' }, STAGE_LABEL[card.activePreset.stage] ?? card.activePreset.stage) : null,
+          h('span', { className: 'skp-pill', title: 'Which rung set it: this session, the agent-preset default, or the workspace default' }, card.activeSource === 'session' ? 'this session' : card.activeSource === 'agent-preset' ? `agent preset` : 'workspace default'),
           card.overlays.length > 0 ? h('span', { className: 'skp-pill' }, `+ ${card.overlays.join(', ')}`) : null,
           !card.live ? h('span', { className: 'skp-pill amber' }, 'session not live') : null,
         ),
+        h('div', { className: 'skp-sub' }, `Detected: ${STAGE_LABEL[card.stageGuess.stage] ?? card.stageGuess.stage} (${Math.round(card.stageGuess.confidence * 100)}%) — ${card.stageGuess.why.join(' · ')}`),
+        card.suggestion !== undefined ? h('div', { className: 'skp-card skp-pulse', style: { padding: '8px 10px' } },
+          h('div', { style: { fontWeight: 650 } }, `Switch to ${STAGE_LABEL[card.suggestion.to] ?? card.suggestion.to}?`),
+          h('div', { className: 'skp-row' },
+            card.suggestion.presetId !== undefined ? h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined, onClick: () => { void controller.acceptSuggestion() } }, 'Switch') : null,
+            h('button', { className: 'skp-btn small', onClick: () => { void controller.dismissSuggestion() } }, 'Not now'),
+          ),
+        ) : null,
       ),
       h('div', { className: 'skp-col' },
         h('h3', null, 'Stage & artifacts'),
@@ -569,6 +621,47 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
           return h('i', { key: i, className: `skp-tick${hits.length > 0 ? ' hit' : ''}`, title: hits.length > 0 ? `turn ${i + 1}: ${hits.map(x => x.name).join(', ')}` : `turn ${i + 1}` })
         })),
       ) : null,
+      card.summary.drift.length > 0 ? h('div', { className: 'skp-col' },
+        h('h3', null, 'Plan drift'),
+        h('div', { className: 'skp-sub' }, 'Edited but not named in plan.md:'),
+        h('div', { className: 'skp-chips' }, ...[...new Set(card.summary.drift)].map(p => h('span', { key: p, className: 'skp-chip miss' }, p.split('/').slice(-2).join('/')))),
+      ) : null,
+      h('div', { className: 'skp-col' },
+        h('h3', null, 'Experiment'),
+        h('div', { className: 'skp-sub' }, 'Fork this session under another preset, run the same task there, then compare.'),
+        h('div', { className: 'skp-row' },
+          h('select', { className: 'skp-input small', id: `skp-fork-${card.sessionId}`, defaultValue: '' },
+            h('option', { value: '' }, 'no preset'),
+            ...status.presets.map(p => h('option', { key: p.id, value: p.id }, p.title))),
+          h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => {
+            const sel = typeof document !== 'undefined' ? document.getElementById(`skp-fork-${card.sessionId}`) as { value?: string } | null : null
+            void controller.fork(sel?.value !== undefined && sel.value.length > 0 ? sel.value : null)
+          } }, 'Fork under…'),
+        ),
+        card.experiments.length > 0 ? h('div', { className: 'skp-col' },
+          ...card.experiments.map(e => h('div', { key: e.id, className: 'skp-row' },
+            h('span', { className: 'skp-mono' }, `${e.parent.slice(0, 8)} (${e.parentPreset ?? 'none'})`), h('span', { className: 'skp-sub' }, '→'),
+            h('span', { className: 'skp-mono' }, `${e.child.slice(0, 8)} (${e.childPreset ?? 'none'})`),
+            h('button', { className: 'skp-btn small', onClick: () => { void controller.compare([e.parent, e.child]) } }, 'Compare'),
+          )),
+        ) : null,
+        snap.compare !== undefined ? h('table', { className: 'skp-table' },
+          h('thead', null, h('tr', null, h('th', null, ''), ...snap.compare.map(c => h('th', { key: c.sessionId, className: 'skp-mono' }, c.sessionId.slice(0, 8))))),
+          h('tbody', null,
+            ...([
+              ['Preset', c => c.preset ?? 'none'],
+              ['Skills loaded / offered', c => `${c.loaded} / ${c.offered}`],
+              ['Skill loads', c => String(c.loads)],
+              ['Turns (last load)', c => String(c.turns)],
+              ['Practices', c => c.practices.map((p: PracticeResult) => `${p.id}:${p.status}`).join(', ') || '—'],
+              ['Denied calls', c => String(c.denied)],
+              ['Plan drift', c => String(c.drift)],
+              ['Rating', c => c.rating === undefined ? '—' : c.rating > 0 ? '👍' : c.rating < 0 ? '👎' : '·'],
+              ['Model', c => c.model ?? '—'],
+            ] as [string, (c: CompareCard) => string][]).map(([label, f]) => h('tr', { key: label }, h('td', { className: 'skp-sub' }, label), ...snap.compare!.map(c => h('td', { key: c.sessionId }, f(c))))),
+          ),
+        ) : null,
+      ),
       h('div', { className: 'skp-col' },
         h('h3', null, 'Rate this preset for this session'),
         h('div', { className: 'skp-rate' },
@@ -576,6 +669,7 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
           h('button', { className: `skp-btn small${card.summary.rating === -1 ? ' primary' : ''}`, onClick: () => { void controller.rate(-1) } }, '👎 got in the way'),
         ),
       ),
+      snap.notice !== undefined ? h('div', { className: 'skp-msg ok' }, snap.notice) : null,
       snap.error !== undefined ? h('div', { className: 'skp-msg error' }, snap.error) : null,
     )
   }
@@ -591,7 +685,7 @@ export function makePluginCard(React: ReactLike, controller: SettingsController,
     const status = snap.status
     return h('div', { className: 'skp skp-col' },
       status === undefined ? h('div', { className: 'skp-sub' }, snap.loading ? 'Reading…' : snap.error ?? 'Unavailable.') : h('div', { className: 'skp-col' },
-        h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Active preset'), h('strong', null, status.activePreset?.title ?? 'none')),
+        h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Workspace default'), h('strong', null, status.activePreset?.title ?? 'none')),
         h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Library'), h('span', null, `${status.lock.skills.length} skills · ${status.presets.length} presets · ${status.overlays.filter(o => o.enabled).length} overlays`)),
         h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Store'), h('span', { className: 'skp-mono' }, `${status.root}/skills`)),
         openSkills !== undefined ? h('div', { className: 'skp-row' }, h('button', { className: 'skp-btn small', onClick: openSkills }, 'Open Skills settings')) : null,

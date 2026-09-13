@@ -16,6 +16,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { PracticeTracker } from './practices/index.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
+import { detectStage, suggest, type Suggestion } from './stage.ts'
+import { Experiments, type ForkLike } from './experiments.ts'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -46,6 +48,12 @@ declare module '@deepseek-ai/cordis' {
 interface AgentLike {
   readonly session: { readonly id: string, readonly header: { readonly cwd?: string, readonly agentPreset?: string } }
   readonly ctx: Context
+}
+
+/** The identity the active-preset resolution keys on. */
+function sessionOf(agent: AgentLike | undefined): { id?: string, agentPreset?: string } | undefined {
+  if (agent?.session?.id === undefined) return undefined
+  return { id: agent.session.id, ...(agent.session.header.agentPreset !== undefined ? { agentPreset: agent.session.header.agentPreset } : {}) }
 }
 
 /** Whether `team_delegate` is visible to an agent — the seam that says "a team is attached". */
@@ -79,7 +87,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // ------------------------------------------------------------ practices --
   const tracker = new PracticeTracker({
     practices: async () => await service.practices(),
-    activeStage: async () => await service.activeStage(),
+    activeStage: async (sessionId, agentPreset) => await service.activeStage({ id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) }),
     onResult: (sessionId, result) => {
       telemetry.record(sessionId, { kind: 'practice', id: result.id, status: result.status, evidence: [...result.evidence] })
     },
@@ -105,7 +113,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           await tracker.refresh(sessionId)
           inGitRepo = tracker.results(sessionId)?.facts?.inRepo === true
         }
-        const set = await service.setFor({ teamAttached, inGitRepo })
+        const set = await service.setFor({ teamAttached, inGitRepo }, sessionOf(agent))
         if (sessionId !== undefined) {
           const key = set.overlays.join(',')
           const previous = overlayState.get(sessionId)
@@ -155,6 +163,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on('agent/disposed' as never, ((payload: { agent: AgentLike }) => {
     const sessionId = payload.agent.session.id
     void tracker.onDisposed(sessionId).then(async () => {
+      await service.sessionDisposed(sessionId)
       offeredState.delete(sessionId)
       overlayState.delete(sessionId)
       lastPreset.delete(sessionId)
@@ -174,18 +183,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       const teamAttached = teamAttachedFor(ctx, agent)
       await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset)
       const facts = tracker.results(sessionId)?.facts
-      const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true })
-      const active = await service.active()
-      const key = `${active.preset ?? ''}|${set.overlays.join(',')}|${set.skills.map(s => s.name).join(',')}`
+      const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true }, sessionOf(agent))
+      const activeId = set.preset?.id ?? null
+      const key = `${activeId ?? ''}|${set.overlays.join(',')}|${set.skills.map(s => s.name).join(',')}`
       if (offeredState.get(sessionId) !== key) {
         offeredState.set(sessionId, key)
-        telemetry.record(sessionId, { kind: 'offered', preset: active.preset, overlays: set.overlays, skills: set.skills.map(s => s.name) })
+        telemetry.record(sessionId, { kind: 'offered', preset: activeId, overlays: set.overlays, skills: set.skills.map(s => s.name) })
       }
       const previous = lastPreset.get(sessionId)
-      if (previous !== undefined && previous !== active.preset) {
-        telemetry.record(sessionId, { kind: 'preset-switch', from: previous, to: active.preset, by: active.by })
+      if (previous !== undefined && previous !== activeId) {
+        const doc = await service.active()
+        const own = doc.sessions[sessionId]
+        telemetry.record(sessionId, { kind: 'preset-switch', from: previous, to: activeId, by: own?.by ?? doc.by, scope: own !== undefined ? 'session' : 'default' })
       }
-      lastPreset.set(sessionId, active.preset)
+      lastPreset.set(sessionId, activeId)
     } catch (error) {
       warn(`pre-step observation failed: ${(error as Error).message}`)
     }
@@ -238,6 +249,10 @@ export function apply(ctx: Context, config: Config = {}): void {
         ...(target !== undefined ? { target } : {}),
         isError: result.isError,
         ...(head !== undefined ? { resultHead: head } : {}),
+      }).then((outcome) => {
+        // One event per drifting path; the guardrails prompt block carries the
+        // advisory to the model on its next step (no injected message needed).
+        if (outcome.drift !== undefined) telemetry.record(sessionId, { kind: 'drift', path: outcome.drift })
       })
     } catch (error) {
       warn(`tools/result observation failed: ${(error as Error).message}`)
@@ -276,17 +291,24 @@ export function apply(ctx: Context, config: Config = {}): void {
       return deny('practice "Follow the conductor protocol" is enforced: a team is attached, so file changes belong to a teammate. Load the `conductor-protocol` skill and use `team_delegate`.')
     }
     if (mutating && hard.has('plan-before-code') && ['write', 'edit', 'Write', 'Edit'].includes(exec.name)) {
-      const stage = await service.activeStage()
+      const stage = await service.activeStage(sessionOf(exec.agent))
       const facts = current?.facts
       if (stage === 'build' && facts?.inRepo === true && !facts.artifacts.some(a => a.endsWith('plan.md'))) {
         return deny('practice "Plan before code" is enforced: no plan.md exists in this repository. Load the `sdlc-stage-handoff` skill and commit a plan first.')
       }
     }
+    if (hard.has('plan-drift') && ['write', 'edit', 'Write', 'Edit'].includes(exec.name)) {
+      const r = current?.results.find(x => x.id === 'plan-drift')
+      const path = typeof args.file_path === 'string' ? args.file_path : typeof args.path === 'string' ? args.path : undefined
+      if (r?.status === 'amber' && path !== undefined && !/(?:^|\/)(?:docs\/sdlc\/.*\.md|plan\.md)$/u.test(path)) {
+        return deny(`practice "Keep plan.md in step with the diff" is enforced: ${r.evidence[0]}. Update plan.md first (skill \`sdlc-stage-handoff\`), then continue.`)
+      }
+    }
     if (exec.name === 'skill' && doc.strictSkills) {
       const name = typeof args.name === 'string' ? args.name : ''
-      const set = await service.setFor({ teamAttached: current?.teamAttached === true, inGitRepo: current?.facts?.inRepo === true })
+      const set = await service.setFor({ teamAttached: current?.teamAttached === true, inGitRepo: current?.facts?.inRepo === true }, sessionOf(exec.agent))
       if (!set.skills.some(s => s.name === name)) {
-        const active = await service.activePreset()
+        const active = set.preset
         return deny(`skill "${name}" is not in the active preset${active !== undefined ? ` "${active.id}"` : ''}. Ask the user to switch presets or add it.`)
       }
     }
@@ -303,8 +325,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       try {
         const teamAttached = teamAttachedFor(ctx, agent)
         const score = tracker.results(sessionId)
-        const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true })
-        const preset = await service.activePreset()
+        const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true }, sessionOf(agent))
+        const preset = set.preset
         promptCache.set(sessionId, renderGuardrails({
           ...(preset !== undefined ? { preset } : {}),
           skills: set.skills,
@@ -333,6 +355,30 @@ export function apply(ctx: Context, config: Config = {}): void {
     }), 'skill-presets: prompt')
   }
 
+  // ------------------------------------------------------------ suggestion --
+  // First time a given transition was suggested per session, for time-to-accept.
+  const suggestedAt = new Map<string, { key: string, at: number }>()
+  const suggestionFor = async (sessionId: string): Promise<{ guess: ReturnType<typeof detectStage>, suggestion?: Suggestion }> => {
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const score = tracker.results(sessionId)
+    const guess = detectStage(score?.facts, state?.calls.slice(-12) ?? [])
+    const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
+    const activeStage = await service.activeStage(identity)
+    const suggestion = suggest(guess, activeStage, await service.presetsByStage(), await service.suggestions())
+    if (suggestion !== undefined) {
+      const key = `${suggestion.from ?? 'none'}→${suggestion.to}`
+      if (suggestedAt.get(sessionId)?.key !== key) {
+        suggestedAt.set(sessionId, { key, at: Date.now() })
+        telemetry.record(sessionId, { kind: 'suggested', from: suggestion.from, to: suggestion.to, confidence: suggestion.confidence })
+      }
+    }
+    return { guess, ...(suggestion !== undefined ? { suggestion } : {}) }
+  }
+  const elapsed = (sessionId: string): number => {
+    const at = suggestedAt.get(sessionId)?.at
+    return at === undefined ? 0 : Date.now() - at
+  }
+
   // ------------------------------------------------------------------ RPC --
   const rpc = new Rpc(ctx)
   rpc.handle('status', async () => await service.status())
@@ -351,10 +397,90 @@ export function apply(ctx: Context, config: Config = {}): void {
   rpc.handle('presets/duplicate', async args => await service.duplicatePreset(str(args, 'id'), str(args, 'newId'), optStr(args, 'title')))
   rpc.handle('presets/activate', async (args) => {
     const id = typeof args.id === 'string' && args.id.length > 0 ? args.id : null
-    const change = await service.activate(id, 'ui')
-    for (const sessionId of tracker.live()) telemetry.record(sessionId, { kind: 'preset-switch', from: change.from, to: change.to, by: 'ui' })
+    const sessionId = optStr(args, 'sessionId')
+    const scope = args.scope === 'session' || args.scope === 'default' || args.scope === 'agent-preset' ? args.scope : undefined
+    const agentPreset = optStr(args, 'agentPreset') ?? (sessionId !== undefined ? tracker.session(sessionId).agentPreset : undefined)
+    const change = await service.activate(id, 'ui', {
+      ...(scope !== undefined ? { scope } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(agentPreset !== undefined ? { agentPreset } : {}),
+    })
+    // The switch is observed at each session's next pre-step; a session that never
+    // steps again gets it recorded here so Insights still sees the intent.
+    if (change.scope === 'session' && sessionId !== undefined) {
+      telemetry.record(sessionId, { kind: 'preset-switch', from: change.from, to: change.to, by: 'ui', scope: 'session' })
+    }
     return { ...change, status: await service.status() }
   })
+  rpc.handle('suggestion/accept', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const { suggestion } = await suggestionFor(sessionId)
+    if (suggestion === undefined) return { ok: false, message: 'nothing to accept' }
+    await service.acceptSuggestion(suggestion.from, suggestion.to)
+    telemetry.record(sessionId, { kind: 'suggestion-accepted', from: suggestion.from, to: suggestion.to, afterMs: elapsed(sessionId) })
+    const presetId = optStr(args, 'presetId') ?? suggestion.presetId
+    if (presetId === undefined) return { ok: false, message: `several presets own the ${suggestion.to} stage; pick one` }
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const change = await service.activate(presetId, 'ui', { sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })
+    suggestedAt.delete(sessionId)
+    return { ok: true, ...change }
+  })
+  rpc.handle('suggestion/dismiss', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const { suggestion } = await suggestionFor(sessionId)
+    if (suggestion === undefined) return { ok: false }
+    const doc = await service.dismissSuggestion(suggestion.from, suggestion.to)
+    telemetry.record(sessionId, { kind: 'suggestion-dismissed', from: suggestion.from, to: suggestion.to, afterMs: elapsed(sessionId) })
+    suggestedAt.delete(sessionId)
+    return { ok: true, muted: (doc.dismissed[`${suggestion.from ?? 'none'}→${suggestion.to}`]?.count ?? 0) >= 3 }
+  })
+  // ---- experiments: fork this session under another preset
+  const experiments = new Experiments(() => service.paths())
+  rpc.handle('experiments/fork', async (args) => {
+    const parent = str(args, 'sessionId')
+    const childPreset = typeof args.preset === 'string' && args.preset.length > 0 ? args.preset : null
+    const controller = ctx.get('sessionController') as ForkLike | undefined
+    if (controller === undefined || typeof controller.fork !== 'function') {
+      return { ok: false, message: 'session forking is not available in this composition; fork from the session menu, then pick the preset in the new session\'s chip' }
+    }
+    const state = tracker.has(parent) ? tracker.session(parent) : undefined
+    const parentPreset = (await service.activeFor({ id: parent, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })).preset
+    try {
+      const experiment = await experiments.fork(
+        controller, parent, parentPreset, childPreset,
+        async (child) => { await service.activate(childPreset, 'experiment', { sessionId: child, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }) },
+        { ...(typeof args.atSeq === 'number' ? { atSeq: args.atSeq } : {}), ...(optStr(args, 'note') !== undefined ? { note: optStr(args, 'note') } : {}) },
+      )
+      return { ok: true, experiment }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'fork failed' }
+    }
+  })
+  rpc.handle('experiments/list', async args => await (optStr(args, 'sessionId') !== undefined ? experiments.forSession(str(args, 'sessionId')) : experiments.list()))
+  rpc.handle('experiments/compare', async (args) => {
+    const ids = Array.isArray(args.sessionIds) ? (args.sessionIds as unknown[]).filter((x): x is string => typeof x === 'string') : []
+    const cards = []
+    for (const sessionId of ids) {
+      const score = tracker.results(sessionId)
+      const summary = await telemetry.summary(sessionId)
+      cards.push({
+        sessionId,
+        live: score !== undefined,
+        preset: summary.preset,
+        practices: score?.results ?? summary.practices,
+        loaded: Object.keys(summary.loaded).length,
+        offered: summary.offered.length,
+        loads: summary.loads.length,
+        turns: Math.max(0, ...summary.loads.map(l => l.turn)),
+        rating: summary.rating,
+        denied: summary.denied,
+        drift: summary.drift.length,
+        model: summary.model,
+      })
+    }
+    return { cards }
+  })
+  rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })
   rpc.handle('practices/save', async args => await service.savePractices(args.practices as PracticesDoc))
   rpc.handle('usage/session', async args => await telemetry.summary(str(args, 'sessionId')))
@@ -363,7 +489,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   rpc.handle('usage/rate', async (args) => {
     const sessionId = str(args, 'sessionId')
     const rating = args.rating === -1 || args.rating === 0 || args.rating === 1 ? args.rating : 0
-    telemetry.record(sessionId, { kind: 'rated', preset: (await service.active()).preset, rating, ...(optStr(args, 'note') !== undefined ? { note: optStr(args, 'note') } : {}) })
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    telemetry.record(sessionId, { kind: 'rated', preset: (await service.activeFor({ id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })).preset, rating, ...(optStr(args, 'note') !== undefined ? { note: optStr(args, 'note') } : {}) })
     await telemetry.flush()
     return { ok: true }
   })
@@ -373,12 +500,23 @@ export function apply(ctx: Context, config: Config = {}): void {
     const score = tracker.results(sessionId)
     const summary = await telemetry.summary(sessionId)
     const active = await service.active()
-    const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true })
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
+    const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
+    const resolved = await service.activeFor(identity)
+    const { guess, suggestion } = await suggestionFor(sessionId)
+    const related = await experiments.forSession(sessionId)
     return {
       sessionId,
       live: score !== undefined,
+      experiments: related,
+      stageGuess: guess,
+      ...(suggestion !== undefined ? { suggestion } : {}),
       active,
-      activePreset: await service.activePreset(),
+      activePreset: set.preset,
+      /** Which rung answered: session / agent-preset / default. */
+      activeSource: resolved.source,
+      agentPreset: state?.agentPreset,
       overlays: set.overlays,
       offered: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}`, description: s.description })),
       unresolved: set.resolution.unresolved,
