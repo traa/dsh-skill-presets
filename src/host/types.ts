@@ -113,6 +113,7 @@ export type PracticeId =
   | 'plan-before-code'
   | 'plan-drift'
   | 'worktree-hygiene'
+  | 'post-merge-sync'
 
 /** Per-practice configuration. */
 export interface PracticeConfig {

@@ -30,6 +30,12 @@ export interface GitFacts {
   readonly pr?: { url: string, state: string }
   readonly ghAvailable: boolean
   /** Which of the configured artifact files exist, relative to top level. */
+  /** Commits on origin/<default> that this branch does not have (a merged PR shows up here). */
+  readonly behind?: number
+  /** The remote default branch the count is against. */
+  readonly defaultBranch?: string
+  /** True when the checkout has a package.json with a build script and lib/ is older than src/. */
+  readonly buildStale?: boolean
   readonly artifacts: readonly string[]
   /** Which instructions files exist. */
   readonly instructionFiles: readonly string[]
@@ -114,6 +120,27 @@ export async function readGitFacts(cwd: string, options: ReadFactsOptions = {}):
     hasUpstream = false
   }
 
+  // How far behind the remote default branch — a merged PR appears here on the
+  // next fetch. Read-only: never fetches, so a session's facts are as fresh as
+  // the last fetch the agent (or the sync command) performed.
+  let behind: number | undefined
+  let defaultBranch: string | undefined
+  const head = await run('git', ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd, timeoutMs)
+  defaultBranch = head.ok ? head.stdout.trim().replace(/^origin\//u, '') : undefined
+  if (defaultBranch === undefined) {
+    for (const candidate of ['main', 'master']) {
+      const exists = await run('git', ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${candidate}`], cwd, timeoutMs)
+      if (exists.ok && exists.stdout.trim().length > 0) { defaultBranch = candidate; break }
+    }
+  }
+  if (defaultBranch !== undefined) {
+    const count = await run('git', ['rev-list', '--count', `HEAD..refs/remotes/origin/${defaultBranch}`], cwd, timeoutMs)
+    if (count.ok) {
+      const parsed = Number.parseInt(count.stdout.trim(), 10)
+      if (!Number.isNaN(parsed)) behind = parsed
+    }
+  }
+
   let pr: GitFacts['pr']
   let ghAvailable = false
   if (options.skipPr !== true) {
@@ -128,6 +155,8 @@ export async function readGitFacts(cwd: string, options: ReadFactsOptions = {}):
       }
     }
   }
+
+  const buildStale = topLevel !== undefined ? await isBuildStale(topLevel) : undefined
 
   const artifacts: string[] = []
   const instructionFiles: string[] = []
@@ -155,6 +184,9 @@ export async function readGitFacts(cwd: string, options: ReadFactsOptions = {}):
     ...(branchName !== undefined && branchName.length > 0 ? { branch: branchName } : {}),
     ...(ahead !== undefined ? { ahead } : {}),
     hasUpstream,
+    ...(behind !== undefined ? { behind } : {}),
+    ...(defaultBranch !== undefined ? { defaultBranch } : {}),
+    ...(buildStale !== undefined ? { buildStale } : {}),
     dirty: status.ok ? status.stdout.trim().length > 0 : undefined,
     ...(topLevel !== undefined ? { topLevel } : {}),
     ...(pr !== undefined ? { pr } : {}),
@@ -177,6 +209,44 @@ async function findInSlugDirs(root: string, file: string): Promise<string | unde
     if (await exists(join(root, entry.name, file))) return `${entry.name}/${file}`
   }
   return undefined
+}
+
+/**
+ * A checkout whose `lib/` is older than its `src/` (or missing) while its
+ * package.json declares a build script — i.e. someone pulled and did not
+ * rebuild. Cheap: compares the newest mtime on each side, no walk of
+ * node_modules.
+ */
+export async function isBuildStale(topLevel: string): Promise<boolean | undefined> {
+  const { readFile } = await import('node:fs/promises')
+  try {
+    const pkg = JSON.parse(await readFile(`${topLevel}/package.json`, 'utf8')) as { scripts?: Record<string, string> }
+    if (typeof pkg.scripts?.build !== 'string') return undefined
+  } catch {
+    return undefined
+  }
+  const newest = async (dir: string, ext: string): Promise<number | undefined> => {
+    const { readdir, stat } = await import('node:fs/promises')
+    let out: number | undefined
+    const walk = async (current: string): Promise<void> => {
+      let entries
+      try { entries = await readdir(current, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        if (e.name === 'node_modules' || e.name.startsWith('.')) continue
+        const full = `${current}/${e.name}`
+        if (e.isDirectory()) await walk(full)
+        else if (e.name.endsWith(ext)) {
+          const m = (await stat(full)).mtimeMs
+          if (out === undefined || m > out) out = m
+        }
+      }
+    }
+    await walk(dir)
+    return out
+  }
+  const [src, lib] = await Promise.all([newest(`${topLevel}/src`, '.ts'), newest(`${topLevel}/lib`, '.js')])
+  if (src === undefined) return undefined
+  return lib === undefined || src > lib + 1000
 }
 
 function normalizeDir(text: string): string {

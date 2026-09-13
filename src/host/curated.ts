@@ -163,7 +163,7 @@ export const CURATED_OVERLAYS: readonly Overlay[] = [
     id: 'git-repo',
     title: 'Inside a git repository',
     when: 'git-work-tree',
-    skills: [ref(SRC.local, 'worktree-first'), ref(SRC.local, 'pr-always'), ref(SRC.local, 'worktree-cleanup')],
+    skills: [ref(SRC.local, 'worktree-first'), ref(SRC.local, 'pr-always'), ref(SRC.local, 'worktree-cleanup'), ref(SRC.local, 'post-merge-sync')],
     enabled: true,
   },
 ]
@@ -215,6 +215,11 @@ export const PRACTICE_INFO: Record<PracticesDoc['practices'][number]['id'], { ti
     title: 'Plan before code',
     summary: 'In the Build stage, no file is edited before a plan.md exists.',
     skill: 'sdlc-stage-handoff',
+  },
+  'post-merge-sync': {
+    title: 'Sync after a merge',
+    summary: 'A merged PR means the local checkout is behind: further edits are written against stale code and the running server keeps serving the old build.',
+    skill: 'post-merge-sync',
   },
   'worktree-hygiene': {
     title: 'Clean up worktrees',

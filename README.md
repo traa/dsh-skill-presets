@@ -142,6 +142,28 @@ fixture** in the sidebar records the current session. Change a detector, a
 stage rule, or a summary fold and the fixtures fail first — the playbook's
 "re-run the evals whenever a skill or hook changes", made concrete.
 
+## When a PR merges, the agent syncs
+
+A merged PR leaves the local checkout behind; editing before syncing writes
+against stale code and leaves the server serving the previous build. That is
+now a **practice**, not a paragraph a human has to remember:
+
+| | |
+|---|---|
+| **Sync after a merge** | red when `origin/<default>` is ahead of the checkout, or when the checkout is level but `lib/` is older than `src/` (pulled, never rebuilt); green when level and built; n/a outside a repo |
+| Skill | `post-merge-sync` — in the `git-repo` overlay, so it is offered in every repository session |
+| Command | `dsh-skill-presets sync [root…]` — fetch, refuse anything that is not a clean fast-forwardable default branch, `git pull --ff-only`, `npm ci`, `npm run build`, sweep merged worktrees, report whether a restart is needed |
+| Enforcement | advisory by default (named in the guardrails block every step); `hard` blocks writes, edits, and shell until it is green |
+
+The agent therefore cannot quietly continue on stale code: the red line is in
+its context on every step, the skill tells it exactly what to run, and hard
+mode denies the next edit with the reason. The one step it cannot do is the
+**server restart** — the skill requires it to say so plainly instead of
+claiming the update is live.
+
+Nothing here runs on a timer and nothing restarts anything by itself: the
+sync is an action the agent takes, when the condition holds.
+
 ## Doctor
 
 `dsh-skill-presets doctor [--profile web]` — and a banner on the Skills page

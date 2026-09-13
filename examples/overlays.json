@@ -23,6 +23,9 @@
       },
       {
         "ref": "local/worktree-cleanup"
+      },
+      {
+        "ref": "local/post-merge-sync"
       }
     ],
     "enabled": true
