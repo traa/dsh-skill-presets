@@ -79,6 +79,7 @@ export const CURATED_PRESETS: readonly Preset[] = [
       ref(SRC.matt, 'grill-me'),
       ref(SRC.matt, 'to-spec'),
       ref(SRC.local, 'sdlc-stage-handoff'),
+      ref(SRC.local, 'writing-skills-from-insights'),
     ]),
   preset('design', 'Design', 'design',
     'Shape the intent into spec.md and an implementation plan.md that names files, order, and the tests that prove it.',

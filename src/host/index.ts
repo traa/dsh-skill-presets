@@ -21,6 +21,7 @@ import { Experiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
 import { TeamReader, type AgentTeamsLike } from './teams.ts'
 import { loadTemplates, toBlueprintInput } from './templates.ts'
+import { KnowledgeBridge } from './knowledge.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -551,6 +552,25 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- knowledge → skill (reads dsh-knowledge's stores read-only)
+  const knowledge = new KnowledgeBridge(() => service.paths())
+  rpc.handle('knowledge/candidates', async args => await knowledge.candidates({
+    ...(typeof args.minConfidence === 'number' ? { minConfidence: args.minConfidence } : {}),
+    ...(typeof args.minHits === 'number' ? { minHits: args.minHits } : {}),
+  }))
+  rpc.handle('knowledge/promote', async (args) => {
+    const out = await knowledge.promote(str(args, 'insightId'), { ...(optStr(args, 'name') !== undefined ? { name: optStr(args, 'name') } : {}), ...(args.force === true ? { force: true } : {}) })
+    const local = (await service.sources()).find(s => s.id === 'local')
+    if (local !== undefined) await service.library.sync(local, { dirs: [out.name] })
+    // Record the reverse link in the lock.
+    const lock = await service.library.lock()
+    const entry = lock.skills.find(s => s.source === 'local' && s.dir === out.name)
+    if (entry !== undefined) {
+      const { writeJson } = await import('./store.ts')
+      await writeJson(service.paths().lock, { ...lock, skills: lock.skills.map(s => s === entry ? { ...s, promotedFrom: str(args, 'insightId') } : s) })
+    }
+    return { ok: true, ...out, ref: `local/${out.name}` }
   })
   // ---- SDLC team templates → dsh-agent-teams (feature-detected via its HTTP RPC)
   const agentTeamsRpc = async (method: string, body: unknown): Promise<unknown> => {

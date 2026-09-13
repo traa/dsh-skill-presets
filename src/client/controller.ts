@@ -5,13 +5,14 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type InsightCandidate, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
   rollup?: Rollup
   recent?: SessionSummary[]
   checks?: CheckReport[]
+  insights?: InsightCandidate[]
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -51,11 +52,12 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
   async loadInsights(rebuild = false): Promise<void> {
     try {
-      const [rollup, recent] = await Promise.all([
+      const [rollup, recent, insights] = await Promise.all([
         rpc<Rollup>('usage/rollup', { rebuild }),
         rpc<SessionSummary[]>('usage/recent', { limit: 40 }),
+        rpc<InsightCandidate[]>('knowledge/candidates', {}).catch(() => [] as InsightCandidate[]),
       ])
-      this.set({ rollup, recent })
+      this.set({ rollup, recent, insights })
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
@@ -206,6 +208,15 @@ export class SettingsController extends Store<SettingsSnapshot> {
       const copy = await rpc<Preset>('presets/duplicate', { id, newId: `${id}-copy-${Date.now().toString(36).slice(-4)}` })
       this.startEdit(copy)
       return `Duplicated as "${copy.id}".`
+    })
+  }
+
+  async promoteInsight(id: string, name?: string): Promise<void> {
+    await this.action('promote', async () => {
+      const out = await rpc<{ ok: boolean, ref: string, name: string }>('knowledge/promote', { insightId: id, ...(name !== undefined ? { name } : {}) })
+      await this.loadInsights()
+      await this.openSkill(out.ref)
+      return `Promoted to local skill "${out.name}". Edit the body into a checklist, then add it to a preset.`
     })
   }
 
