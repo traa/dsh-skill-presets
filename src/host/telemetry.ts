@@ -51,7 +51,9 @@ export interface SessionSummary {
   readonly startedAt?: string
   readonly lastAt?: string
   readonly switches: { from: string | null, to: string | null, t: string }[]
-  readonly loads: { name: string, turn: number, t: string, ok: boolean }[]
+  readonly loads: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean }[]
+  /** Practice status changes in time order, for before/after around a load. */
+  readonly practiceTimeline: { t: string, id: string, status: string }[]
 }
 
 /** Fold one session's events into a summary. Pure. */
@@ -70,6 +72,7 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
   let model: string | undefined
   const switches: SessionSummary['switches'] = []
   const loads: SessionSummary['loads'] = []
+  const practiceTimeline: SessionSummary['practiceTimeline'] = []
   for (const event of events) {
     switch (event.kind) {
       case 'offered':
@@ -78,7 +81,7 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
         for (const name of event.skills) offered.add(name)
         break
       case 'loaded':
-        loads.push({ name: event.name, turn: event.turn, t: event.t, ok: event.ok })
+        loads.push({ name: event.name, turn: event.turn, t: event.t, ok: event.ok, ...(event.userLine !== undefined ? { userLine: event.userLine } : {}), ...(event.mentioned !== undefined ? { mentioned: event.mentioned } : {}) })
         if (event.unknown === true) { unknown.push(event.name); break }
         if (!event.ok) break
         loaded[event.name] ??= { count: 0, firstTurn: event.turn, chars: 0, lastAt: event.t }
@@ -95,6 +98,7 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
         break
       case 'practice':
         practices.set(event.id, { id: event.id, status: event.status, evidence: event.evidence })
+        practiceTimeline.push({ t: event.t, id: event.id, status: event.status })
         break
       case 'denied':
         denied += 1
@@ -139,7 +143,24 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
     ...(events.length > 0 ? { startedAt: events[0].t, lastAt: events[events.length - 1].t } : {}),
     switches,
     loads,
+    practiceTimeline,
   }
+}
+
+/** Practice statuses as of a moment: the last change to each practice at or before `t`. Pure. */
+export function practicesAt(timeline: readonly { t: string, id: string, status: string }[], t: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const e of timeline) if (e.t <= t) out[e.id] = e.status
+  return out
+}
+
+/** For one load: which practices changed between it and the next load (or the end). Pure. */
+export function practiceDeltaAround(timeline: readonly { t: string, id: string, status: string }[], t: string, nextT?: string): { id: string, from?: string, to: string }[] {
+  const before = practicesAt(timeline, t)
+  const end = nextT ?? '9999'
+  const afterState = { ...before }
+  for (const e of timeline) if (e.t > t && e.t <= end) afterState[e.id] = e.status
+  return Object.entries(afterState).filter(([id, to]) => before[id] !== to).map(([id, to]) => ({ id, ...(before[id] !== undefined ? { from: before[id] } : {}), to }))
 }
 
 /** Fold session summaries into a rollup. Pure. */

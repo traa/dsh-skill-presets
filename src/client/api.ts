@@ -126,7 +126,8 @@ export interface SessionSummary {
   startedAt?: string
   lastAt?: string
   switches: { from: string | null, to: string | null, t: string }[]
-  loads: { name: string, turn: number, t: string, ok: boolean }[]
+  loads: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean }[]
+  practiceTimeline: { t: string, id: string, status: string }[]
 }
 export interface Scorecard {
   sessionId: string
@@ -149,6 +150,7 @@ export interface Scorecard {
   worst: PracticeResult['status']
   facts?: GitFacts
   summary: SessionSummary
+  loadTrace?: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean, deltas: { id: string, from?: string, to: string }[] }[]
 }
 export interface Rollup {
   version: 1

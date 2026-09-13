@@ -180,7 +180,13 @@ export interface PracticeResult {
 /** Telemetry event, one JSON line each. */
 export type UsageEvent =
   | { t: string, kind: 'offered', preset: string | null, overlays: string[], skills: string[] }
-  | { t: string, kind: 'loaded', name: string, turn: number, ok: boolean, unknown?: true, chars: number }
+  | {
+    t: string, kind: 'loaded', name: string, turn: number, ok: boolean, unknown?: true, chars: number
+    /** First line of the user message that opened this turn (≤ 120 chars), for the why-trace. */
+    userLine?: string
+    /** Whether the guardrails prompt block named this skill in the step that loaded it. */
+    mentioned?: boolean
+  }
   | { t: string, kind: 'preset-switch', from: string | null, to: string | null, by: ActivateBy, scope?: ActivateScope }
   | { t: string, kind: 'overlay', id: string, active: boolean }
   | { t: string, kind: 'practice', id: PracticeId, status: PracticeStatus, evidence: string[] }

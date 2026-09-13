@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
-import { Telemetry } from './telemetry.ts'
+import { Telemetry, practiceDeltaAround } from './telemetry.ts'
 import { buildTools } from './tools.ts'
 import type { Overlay, PracticesDoc, Preset, SkillSource } from './types.ts'
 
@@ -193,6 +193,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     warn('skill registry unavailable; presets are not exposed to the model')
   }
 
+  /** Rendered guardrails text per session (filled by the prompt block below); read by the why-trace. */
+  const promptCacheRef = new Map<string, string>()
+
   // ------------------------------------------------- per-agent observation --
   // Which agents we have seen, with the set offered at their last step, so
   // `offered` telemetry is written once per change rather than every step.
@@ -244,19 +247,34 @@ export function apply(ctx: Context, config: Config = {}): void {
       offeredState.delete(sessionId)
       overlayState.delete(sessionId)
       lastPreset.delete(sessionId)
+      for (const key of [...userLines.keys()]) if (key.startsWith(`${sessionId}#`)) userLines.delete(key)
       await telemetry.flush()
       await telemetry.rebuildRollup()
     })
   }) as never)
 
+  /** First user line per session+turn, for the why-trace on skill loads. */
+  const userLines = new Map<string, string>()
+  const userLineOf = (messages: unknown): string | undefined => {
+    if (!Array.isArray(messages)) return undefined
+    for (const m of messages as { source?: { kind?: string }, content?: unknown }[]) {
+      if (m?.source?.kind !== 'user') continue
+      const blocks = Array.isArray(m.content) ? m.content as { type?: string, text?: string }[] : []
+      const text = blocks.find(b => b.type === 'text' && typeof b.text === 'string')?.text
+      if (text !== undefined) return text.split('\n').find(l => l.trim().length > 0)?.trim().slice(0, 120)
+    }
+    return undefined
+  }
   ctx.on('agent/pre-step' as never, (async (
-    payload: { agent: AgentLike, turn: number, signal: AbortSignal },
+    payload: { agent: AgentLike, turn: number, signal: AbortSignal, messages?: unknown },
     next: () => Promise<unknown>,
   ) => {
     const decision = await next()
     try {
       const agent = payload.agent
       const sessionId = agent.session.id
+      const line = userLineOf(payload.messages)
+      if (line !== undefined) userLines.set(`${sessionId}#${payload.turn}`, line)
       const team = await teams.view(sessionId, agent)
       const teamAttached = team.attached
       await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset, team.approvalRequired)
@@ -319,7 +337,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         const message = result.error?.message ?? ''
         const unknown = result.isError && /unknown|no longer available|not available/iu.test(message)
         const chars = result.content?.reduce((n, b) => n + (b.text?.length ?? 0), 0) ?? 0
-        telemetry.record(sessionId, { kind: 'loaded', name, turn, ok: !result.isError, ...(unknown ? { unknown: true } : {}), chars })
+        const userLine = userLines.get(`${sessionId}#${turn}`)
+        const mentioned = promptCacheRef.get(sessionId)?.includes(name) === true
+        telemetry.record(sessionId, { kind: 'loaded', name, turn, ok: !result.isError, ...(unknown ? { unknown: true } : {}), chars, ...(userLine !== undefined ? { userLine } : {}), mentioned })
       }
       void tracker.onToolResult(sessionId, {
         t: new Date().toISOString(),
@@ -398,7 +418,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const systemPrompt = ctx.get('systemPrompt') as { context(entry: { name: string, order: number, text: (c: { scope?: unknown, agent?: unknown }) => string }): () => void } | undefined
   if (systemPrompt !== undefined) {
     // Prompt assembly is synchronous; render from a cache the pre-step keeps warm.
-    const promptCache = new Map<string, string>()
+    const promptCache = promptCacheRef
     const refreshPrompt = async (agent: AgentLike): Promise<void> => {
       const sessionId = agent.session.id
       try {
@@ -837,6 +857,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       worst: score?.worst ?? 'n/a',
       facts: score?.facts,
       summary,
+      /** Why-trace per load: what changed in the practices until the next load. */
+      loadTrace: summary.loads.map((l, i) => ({
+        ...l,
+        deltas: practiceDeltaAround(summary.practiceTimeline, l.t, summary.loads[i + 1]?.t),
+      })),
     }
   })
   rpc.install()
