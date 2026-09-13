@@ -53,6 +53,17 @@ load expands to turn, user line, mentioned, practices before → after (from the
 
 ## Task 7 — README, PR, cleanup.
 
+## Departures (recorded during execution)
+- Task 1: two false positives on first run, both fixed and encoded as tests — the
+  legacy-row regex matched only the id line (now parses the row body), and server
+  age was judged from a worktree the profile does not serve (now skipped when
+  `probedRoot ≠ profileResolvedTo`).
+- Task 4: lint on the real library found 12 vendor-term errors; two normalize rules
+  were added (`ask-user-tool`, `cross-model-vendors`). Vendor terms are matched with a
+  left word boundary so "autocopilot" is not a hit.
+- Task 6: the "mentioned" signal reads the rendered guardrails text the host already
+  caches per session; no extra prompt inspection.
+
 ## Riskiest step
 Task 1's "server older than build": `ps` parsing is platform-specific; record
 `serverStartedAt` in the host at apply and expose it via RPC, use `ps` only in the
