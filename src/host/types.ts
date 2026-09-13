@@ -130,14 +130,24 @@ export interface PracticesDoc {
   readonly practices: readonly PracticeConfig[]
 }
 
-/** Which preset is active. */
+/** How a preset became active for a session. */
+export type ActivateBy = 'ui' | 'tool' | 'default' | 'cli' | 'experiment'
+
+/** Which preset is active — per session, with a workspace default. */
 export interface ActiveDoc {
-  readonly version: 1
-  /** Global active preset id, or null for none. */
-  readonly preset: string | null
+  readonly version: 2
+  /** Workspace default: what a new session starts from. Null for none. */
+  readonly default: string | null
+  /** Default per harness agent preset (`standard`, `cordis`, …); wins over `default`. */
+  readonly byAgentPreset: Record<string, string | null>
+  /** Per-session choice; wins over both. Pruned after `agent/disposed` + retention. */
+  readonly sessions: Record<string, { preset: string | null, since: string, by: ActivateBy, disposedAt?: string }>
   readonly since: string
-  readonly by: 'ui' | 'tool' | 'default' | 'cli'
+  readonly by: ActivateBy
 }
+
+/** Scope of an activation request. */
+export type ActivateScope = 'session' | 'default' | 'agent-preset'
 
 /** A normalization rule applied to upstream skill text on install. */
 export interface NormalizeRule {
@@ -165,7 +175,7 @@ export interface PracticeResult {
 export type UsageEvent =
   | { t: string, kind: 'offered', preset: string | null, overlays: string[], skills: string[] }
   | { t: string, kind: 'loaded', name: string, turn: number, ok: boolean, unknown?: true, chars: number }
-  | { t: string, kind: 'preset-switch', from: string | null, to: string | null, by: ActiveDoc['by'] }
+  | { t: string, kind: 'preset-switch', from: string | null, to: string | null, by: ActivateBy, scope?: ActivateScope }
   | { t: string, kind: 'overlay', id: string, active: boolean }
   | { t: string, kind: 'practice', id: PracticeId, status: PracticeStatus, evidence: string[] }
   | { t: string, kind: 'denied', tool: string, reason: string }

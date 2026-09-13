@@ -148,22 +148,70 @@ export function validateLock(raw: unknown): Lock {
   }
 }
 
-/** Default active document: nothing active. */
+/** Default active document: nothing active anywhere. */
 export function defaultActive(): ActiveDoc {
-  return { version: 1, preset: null, since: new Date(0).toISOString(), by: 'default' }
+  return { version: 2, default: null, byAgentPreset: {}, sessions: {}, since: new Date(0).toISOString(), by: 'default' }
 }
 
-/** Validate the active document. */
+const BY_VALUES = new Set(['ui', 'tool', 'default', 'cli', 'experiment'])
+const asBy = (value: unknown): ActiveDoc['by'] => typeof value === 'string' && BY_VALUES.has(value) ? value as ActiveDoc['by'] : 'default'
+const asPreset = (value: unknown): string | null => typeof value === 'string' && value.length > 0 ? value : null
+
+/**
+ * Validate the active document. A Phase-1 v1 document (`{ preset }`) migrates
+ * to v2 by becoming the workspace default — the one global switch it was.
+ */
 export function validateActive(raw: unknown): ActiveDoc {
-  const doc = raw as Partial<ActiveDoc>
+  const doc = raw as Record<string, unknown>
   if (doc === null || typeof doc !== 'object') throw new TypeError('active is not an object')
-  const preset = typeof doc.preset === 'string' && doc.preset.length > 0 ? doc.preset : null
-  return {
-    version: 1,
-    preset,
-    since: typeof doc.since === 'string' ? doc.since : new Date(0).toISOString(),
-    by: doc.by === 'ui' || doc.by === 'tool' || doc.by === 'cli' ? doc.by : 'default',
+  const since = typeof doc.since === 'string' ? doc.since : new Date(0).toISOString()
+  if (doc.version !== 2) {
+    return { version: 2, default: asPreset(doc.preset), byAgentPreset: {}, sessions: {}, since, by: asBy(doc.by) }
   }
+  const byAgentPreset: ActiveDoc['byAgentPreset'] = {}
+  if (typeof doc.byAgentPreset === 'object' && doc.byAgentPreset !== null) {
+    for (const [key, value] of Object.entries(doc.byAgentPreset as Record<string, unknown>)) byAgentPreset[key] = asPreset(value)
+  }
+  const sessions: Record<string, ActiveDoc['sessions'][string]> = {}
+  if (typeof doc.sessions === 'object' && doc.sessions !== null) {
+    for (const [key, value] of Object.entries(doc.sessions as Record<string, unknown>)) {
+      if (typeof value !== 'object' || value === null) continue
+      const entry = value as Record<string, unknown>
+      sessions[key] = {
+        preset: asPreset(entry.preset),
+        since: typeof entry.since === 'string' ? entry.since : since,
+        by: asBy(entry.by),
+        ...(typeof entry.disposedAt === 'string' ? { disposedAt: entry.disposedAt } : {}),
+      }
+    }
+  }
+  return { version: 2, default: asPreset(doc.default), byAgentPreset, sessions, since, by: asBy(doc.by) }
+}
+
+/**
+ * Resolve the preset for one session: session choice → agent-preset default →
+ * workspace default. Pure.
+ */
+export function resolveActive(doc: ActiveDoc, sessionId?: string, agentPreset?: string): { preset: string | null, source: 'session' | 'agent-preset' | 'default' } {
+  if (sessionId !== undefined) {
+    const entry = doc.sessions[sessionId]
+    if (entry !== undefined) return { preset: entry.preset, source: 'session' }
+  }
+  if (agentPreset !== undefined && Object.hasOwn(doc.byAgentPreset, agentPreset)) {
+    return { preset: doc.byAgentPreset[agentPreset], source: 'agent-preset' }
+  }
+  return { preset: doc.default, source: 'default' }
+}
+
+/** Drop session entries disposed longer ago than the retention window. Pure. */
+export function pruneSessions(doc: ActiveDoc, now: Date, retentionDays = 7): ActiveDoc {
+  const cutoff = now.getTime() - retentionDays * 86_400_000
+  const sessions: ActiveDoc['sessions'] = {}
+  for (const [id, entry] of Object.entries(doc.sessions)) {
+    if (entry.disposedAt !== undefined && Date.parse(entry.disposedAt) < cutoff) continue
+    sessions[id] = entry
+  }
+  return { ...doc, sessions }
 }
 
 /** Validate the practices document, filling defaults for missing fields. */

@@ -48,6 +48,12 @@ interface AgentLike {
   readonly ctx: Context
 }
 
+/** The identity the active-preset resolution keys on. */
+function sessionOf(agent: AgentLike | undefined): { id?: string, agentPreset?: string } | undefined {
+  if (agent?.session?.id === undefined) return undefined
+  return { id: agent.session.id, ...(agent.session.header.agentPreset !== undefined ? { agentPreset: agent.session.header.agentPreset } : {}) }
+}
+
 /** Whether `team_delegate` is visible to an agent — the seam that says "a team is attached". */
 function teamAttachedFor(ctx: Context, agent: unknown): boolean {
   if (typeof agent !== 'object' || agent === null) return false
@@ -79,7 +85,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   // ------------------------------------------------------------ practices --
   const tracker = new PracticeTracker({
     practices: async () => await service.practices(),
-    activeStage: async () => await service.activeStage(),
+    activeStage: async (sessionId, agentPreset) => await service.activeStage({ id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) }),
     onResult: (sessionId, result) => {
       telemetry.record(sessionId, { kind: 'practice', id: result.id, status: result.status, evidence: [...result.evidence] })
     },
@@ -105,7 +111,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           await tracker.refresh(sessionId)
           inGitRepo = tracker.results(sessionId)?.facts?.inRepo === true
         }
-        const set = await service.setFor({ teamAttached, inGitRepo })
+        const set = await service.setFor({ teamAttached, inGitRepo }, sessionOf(agent))
         if (sessionId !== undefined) {
           const key = set.overlays.join(',')
           const previous = overlayState.get(sessionId)
@@ -155,6 +161,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on('agent/disposed' as never, ((payload: { agent: AgentLike }) => {
     const sessionId = payload.agent.session.id
     void tracker.onDisposed(sessionId).then(async () => {
+      await service.sessionDisposed(sessionId)
       offeredState.delete(sessionId)
       overlayState.delete(sessionId)
       lastPreset.delete(sessionId)
@@ -174,18 +181,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       const teamAttached = teamAttachedFor(ctx, agent)
       await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset)
       const facts = tracker.results(sessionId)?.facts
-      const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true })
-      const active = await service.active()
-      const key = `${active.preset ?? ''}|${set.overlays.join(',')}|${set.skills.map(s => s.name).join(',')}`
+      const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true }, sessionOf(agent))
+      const activeId = set.preset?.id ?? null
+      const key = `${activeId ?? ''}|${set.overlays.join(',')}|${set.skills.map(s => s.name).join(',')}`
       if (offeredState.get(sessionId) !== key) {
         offeredState.set(sessionId, key)
-        telemetry.record(sessionId, { kind: 'offered', preset: active.preset, overlays: set.overlays, skills: set.skills.map(s => s.name) })
+        telemetry.record(sessionId, { kind: 'offered', preset: activeId, overlays: set.overlays, skills: set.skills.map(s => s.name) })
       }
       const previous = lastPreset.get(sessionId)
-      if (previous !== undefined && previous !== active.preset) {
-        telemetry.record(sessionId, { kind: 'preset-switch', from: previous, to: active.preset, by: active.by })
+      if (previous !== undefined && previous !== activeId) {
+        const doc = await service.active()
+        const own = doc.sessions[sessionId]
+        telemetry.record(sessionId, { kind: 'preset-switch', from: previous, to: activeId, by: own?.by ?? doc.by, scope: own !== undefined ? 'session' : 'default' })
       }
-      lastPreset.set(sessionId, active.preset)
+      lastPreset.set(sessionId, activeId)
     } catch (error) {
       warn(`pre-step observation failed: ${(error as Error).message}`)
     }
@@ -276,7 +285,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       return deny('practice "Follow the conductor protocol" is enforced: a team is attached, so file changes belong to a teammate. Load the `conductor-protocol` skill and use `team_delegate`.')
     }
     if (mutating && hard.has('plan-before-code') && ['write', 'edit', 'Write', 'Edit'].includes(exec.name)) {
-      const stage = await service.activeStage()
+      const stage = await service.activeStage(sessionOf(exec.agent))
       const facts = current?.facts
       if (stage === 'build' && facts?.inRepo === true && !facts.artifacts.some(a => a.endsWith('plan.md'))) {
         return deny('practice "Plan before code" is enforced: no plan.md exists in this repository. Load the `sdlc-stage-handoff` skill and commit a plan first.')
@@ -284,9 +293,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     if (exec.name === 'skill' && doc.strictSkills) {
       const name = typeof args.name === 'string' ? args.name : ''
-      const set = await service.setFor({ teamAttached: current?.teamAttached === true, inGitRepo: current?.facts?.inRepo === true })
+      const set = await service.setFor({ teamAttached: current?.teamAttached === true, inGitRepo: current?.facts?.inRepo === true }, sessionOf(exec.agent))
       if (!set.skills.some(s => s.name === name)) {
-        const active = await service.activePreset()
+        const active = set.preset
         return deny(`skill "${name}" is not in the active preset${active !== undefined ? ` "${active.id}"` : ''}. Ask the user to switch presets or add it.`)
       }
     }
@@ -303,8 +312,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       try {
         const teamAttached = teamAttachedFor(ctx, agent)
         const score = tracker.results(sessionId)
-        const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true })
-        const preset = await service.activePreset()
+        const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true }, sessionOf(agent))
+        const preset = set.preset
         promptCache.set(sessionId, renderGuardrails({
           ...(preset !== undefined ? { preset } : {}),
           skills: set.skills,
@@ -351,10 +360,22 @@ export function apply(ctx: Context, config: Config = {}): void {
   rpc.handle('presets/duplicate', async args => await service.duplicatePreset(str(args, 'id'), str(args, 'newId'), optStr(args, 'title')))
   rpc.handle('presets/activate', async (args) => {
     const id = typeof args.id === 'string' && args.id.length > 0 ? args.id : null
-    const change = await service.activate(id, 'ui')
-    for (const sessionId of tracker.live()) telemetry.record(sessionId, { kind: 'preset-switch', from: change.from, to: change.to, by: 'ui' })
+    const sessionId = optStr(args, 'sessionId')
+    const scope = args.scope === 'session' || args.scope === 'default' || args.scope === 'agent-preset' ? args.scope : undefined
+    const agentPreset = optStr(args, 'agentPreset') ?? (sessionId !== undefined ? tracker.session(sessionId).agentPreset : undefined)
+    const change = await service.activate(id, 'ui', {
+      ...(scope !== undefined ? { scope } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(agentPreset !== undefined ? { agentPreset } : {}),
+    })
+    // The switch is observed at each session's next pre-step; a session that never
+    // steps again gets it recorded here so Insights still sees the intent.
+    if (change.scope === 'session' && sessionId !== undefined) {
+      telemetry.record(sessionId, { kind: 'preset-switch', from: change.from, to: change.to, by: 'ui', scope: 'session' })
+    }
     return { ...change, status: await service.status() }
   })
+  rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })
   rpc.handle('practices/save', async args => await service.savePractices(args.practices as PracticesDoc))
   rpc.handle('usage/session', async args => await telemetry.summary(str(args, 'sessionId')))
@@ -363,7 +384,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   rpc.handle('usage/rate', async (args) => {
     const sessionId = str(args, 'sessionId')
     const rating = args.rating === -1 || args.rating === 0 || args.rating === 1 ? args.rating : 0
-    telemetry.record(sessionId, { kind: 'rated', preset: (await service.active()).preset, rating, ...(optStr(args, 'note') !== undefined ? { note: optStr(args, 'note') } : {}) })
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    telemetry.record(sessionId, { kind: 'rated', preset: (await service.activeFor({ id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })).preset, rating, ...(optStr(args, 'note') !== undefined ? { note: optStr(args, 'note') } : {}) })
     await telemetry.flush()
     return { ok: true }
   })
@@ -373,12 +395,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     const score = tracker.results(sessionId)
     const summary = await telemetry.summary(sessionId)
     const active = await service.active()
-    const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true })
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
+    const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
+    const resolved = await service.activeFor(identity)
     return {
       sessionId,
       live: score !== undefined,
       active,
-      activePreset: await service.activePreset(),
+      activePreset: set.preset,
+      /** Which rung answered: session / agent-preset / default. */
+      activeSource: resolved.source,
+      agentPreset: state?.agentPreset,
       overlays: set.overlays,
       offered: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}`, description: s.description })),
       unresolved: set.resolution.unresolved,

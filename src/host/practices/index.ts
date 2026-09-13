@@ -31,7 +31,7 @@ export interface SessionState {
 
 export interface TrackerDeps {
   practices: () => Promise<PracticesDoc>
-  activeStage: () => Promise<Stage | undefined>
+  activeStage: (sessionId: string, agentPreset?: string) => Promise<Stage | undefined>
   /** Emit a practice status change. */
   onResult: (sessionId: string, result: PracticeResult) => void
   run?: Runner
@@ -142,7 +142,7 @@ export class PracticeTracker {
       protectedBranches: doc.protectedBranches,
       ended: state.ended,
     }
-    const stage = await this.deps.activeStage()
+    const stage = await this.deps.activeStage(state.sessionId, state.agentPreset)
     const results = evaluate({ ...view, ...(stage !== undefined ? { activeStage: stage } : {}) }, enabled)
     state.results = results
     for (const result of results) {
