@@ -93,18 +93,18 @@ test('adoptFoundation merges missing skills, keeps user edits, and is idempotent
   assert.deepEqual(pUp.skills, [{ ref: 'up/a' }, { ref: 'up/b' }, { ref: 'up/c' }])
   assert.equal(pUp.updatedAt, '2026-09-14T00:00:00.000Z')
   
-  // p-cust gets missing skills before user extras, keeps title edit
+  // p-cust keeps the user's order verbatim and appends curated additions, keeps title edit
   const pCust = res1.presets.find(p => p.id === 'p-cust')
-  assert.deepEqual(pCust.skills, [{ ref: 'up/a' }, { ref: 'up/b' }, { ref: 'user/x' }])
+  assert.deepEqual(pCust.skills, [{ ref: 'up/a' }, { ref: 'user/x' }, { ref: 'up/b' }])
   assert.equal(pCust.title, 'Edited')
   
   // p-loc is untouched
   const pLoc = res1.presets.find(p => p.id === 'p-loc')
   assert.deepEqual(pLoc.skills, [{ ref: 'loc/a' }])
 
-  // o-up gets missing skills, keeps enabled: false and when: never
+  // o-up keeps the user's order verbatim and appends curated additions, keeps enabled: false and when: never
   const oUp = res1.overlays.find(o => o.id === 'o-up')
-  assert.deepEqual(oUp.skills, [{ ref: 'up/a' }, { ref: 'up/b' }, { ref: 'user/y' }])
+  assert.deepEqual(oUp.skills, [{ ref: 'up/a' }, { ref: 'user/y' }, { ref: 'up/b' }])
   assert.equal(oUp.enabled, false)
   assert.equal(oUp.when, 'never')
   
@@ -143,6 +143,74 @@ test('regression: stale curated store marks git-repo updatable and adoptFoundati
   const res = adoptFoundation(report, CURATED_PRESETS, CURATED_PRESETS, CURATED_OVERLAYS, storedOverlays)
   const updatedGitRepo = res.overlays.find(o => o.id === 'git-repo')
   assert.deepEqual(updatedGitRepo.skills, CURATED_OVERLAYS.find(o => o.id === 'git-repo').skills)
+})
+
+test('an aliased stored skill is the same skill as the un-aliased shipped one: merged once, alias intact', () => {
+  const shippedP = [preset('p', [ref('a/x'), ref('a/new')])]
+  const storedP = [preset('p', [ref('a/x', 'my-alias')])]
+
+  const report = foundationReport(shippedP, storedP, [], [])
+  const diff = report.diffs.find(d => d.id === 'p')
+  // `a/x` is present — aliasing it is not removing it.
+  assert.deepEqual(diff.missingSkills, ['a/new'])
+  assert.deepEqual(diff.extraSkills, [])
+
+  const res = adoptFoundation(report, shippedP, storedP, [], [], undefined, () => 'T')
+  const skills = res.presets.find(p => p.id === 'p').skills
+  // Exactly one entry for a/x, and it is the user's aliased object.
+  assert.deepEqual(skills, [{ ref: 'a/x', as: 'my-alias' }, { ref: 'a/new' }])
+  assert.equal(skills.filter(s => s.ref === 'a/x').length, 1)
+})
+
+test('adoption preserves the user skill order verbatim and appends curated additions at the end', () => {
+  const shippedP = [preset('p', [ref('a/x'), ref('a/y'), ref('a/z')])]
+  const storedP = [preset('p', [ref('a/z'), ref('user/own'), ref('a/x')])]
+  const shippedO = [overlay('o', [ref('a/x'), ref('a/y')])]
+  const storedO = [overlay('o', [ref('user/own'), ref('a/x')])]
+
+  const report = foundationReport(shippedP, storedP, shippedO, storedO)
+  const res = adoptFoundation(report, shippedP, storedP, shippedO, storedO, undefined, () => 'T')
+
+  assert.deepEqual(res.presets.find(p => p.id === 'p').skills,
+    [{ ref: 'a/z' }, { ref: 'user/own' }, { ref: 'a/x' }, { ref: 'a/y' }])
+  assert.deepEqual(res.overlays.find(o => o.id === 'o').skills,
+    [{ ref: 'user/own' }, { ref: 'a/x' }, { ref: 'a/y' }])
+})
+
+test('per-skill fields the user set on a stored ref survive adoption; the shipped object never replaces it', () => {
+  const shippedP = [preset('p', [{ ref: 'a/x' }, { ref: 'a/y' }])]
+  const storedP = [preset('p', [{ ref: 'a/x', whenToUse: 'only on fridays', as: 'x2' }])]
+
+  const report = foundationReport(shippedP, storedP, [], [])
+  const res = adoptFoundation(report, shippedP, storedP, [], [], undefined, () => 'T')
+
+  assert.deepEqual(res.presets.find(p => p.id === 'p').skills,
+    [{ ref: 'a/x', whenToUse: 'only on fridays', as: 'x2' }, { ref: 'a/y' }])
+})
+
+test('a preset adopted as new is stamped createdAt and updatedAt from the injected clock', () => {
+  const shippedP = [preset('p-new', [ref('a/x')], { createdAt: '1970-01-01T00:00:00.000Z', updatedAt: '1970-01-01T00:00:00.000Z' })]
+
+  const report = foundationReport(shippedP, [], [], [])
+  const res = adoptFoundation(report, shippedP, [], [], [], undefined, () => '2026-09-14T00:00:00.000Z')
+
+  const pNew = res.presets.find(p => p.id === 'p-new')
+  assert.equal(pNew.createdAt, '2026-09-14T00:00:00.000Z')
+  assert.equal(pNew.updatedAt, '2026-09-14T00:00:00.000Z')
+})
+
+test('changing only the color makes a preset customized, not updatable', () => {
+  const shippedP = [preset('p', [ref('a/x'), ref('a/new')], { color: 'red' })]
+  const storedP = [preset('p', [ref('a/x')], { color: 'blue' })]
+
+  const report = foundationReport(shippedP, storedP, [], [])
+
+  assert.deepEqual(report.diffs.find(d => d.id === 'p'), {
+    kind: 'preset', id: 'p', title: 'p', status: 'customized',
+    missingSkills: ['a/new'], extraSkills: [], changedFields: ['color']
+  })
+  assert.equal(report.updatable, 0)
+  assert.equal(report.customized, 1)
 })
 
 test('short collapses whitespace, trims, and truncates', async () => {

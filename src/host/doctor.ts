@@ -100,22 +100,20 @@ export function diagnose(r: ProbeResults): Finding[] {
 
   if (r.foundation !== undefined) {
     const { updatable, customized, added } = r.foundation
-    const pending = updatable + added
+    // `customized` counts entries that ALSO lack curated skills, so it is a
+    // peer of `updatable`/`added`, not a fallback: reporting it only when the
+    // other two were zero hid every customized entry behind a single updatable
+    // one.
+    const pending = updatable + added + customized
     if (pending > 0) {
       const parts: string[] = []
       if (updatable > 0) parts.push(`${updatable} updatable`)
       if (added > 0) parts.push(`${added} new`)
+      if (customized > 0) parts.push(`${customized} customized`)
       push(
         'foundation',
         'warn',
         `${pending} curated preset/overlay update(s) not adopted (${parts.join(', ')}) — skills the foundation added are not being offered`,
-        'run `dsh-skill-presets foundation --adopt` or press Adopt on the Stages tab',
-      )
-    } else if (customized > 0) {
-      push(
-        'foundation',
-        'warn',
-        `${customized} customized preset/overlay(s) are missing curated skills — adopting merges, it never replaces your edits`,
         'run `dsh-skill-presets foundation --adopt` or press Adopt on the Stages tab',
       )
     } else push('foundation', 'ok', 'curated presets and overlays are current')

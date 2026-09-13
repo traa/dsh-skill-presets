@@ -250,7 +250,12 @@ async function main(): Promise<number> {
       if (rest.includes('--json')) { console.log(JSON.stringify(report, null, 2)); return 0 }
       // Only what adopting would actually change: a customized entry that
       // lacks no curated skill is the user's business, not a pending update.
-      const pending = report.diffs.filter(d => d.status === 'new' || d.missingSkills.length > 0)
+      // The id filter applies to the listing too, not just `--adopt`; without
+      // it `foundation <id>` printed every diff and contradicted what
+      // `foundation --adopt <id>` would do.
+      const pending = report.diffs
+        .filter(d => ids.length === 0 || ids.includes(d.id))
+        .filter(d => d.status === 'new' || d.missingSkills.length > 0)
       for (const d of pending) {
         const refs = d.missingSkills.length > 0 ? ` — adds ${d.missingSkills.join(', ')}` : ''
         const fields = d.changedFields.length > 0 ? ` (differs: ${d.changedFields.join(', ')})` : ''

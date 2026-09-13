@@ -35,12 +35,35 @@ export interface FoundationReport {
   readonly added: number
 }
 
+/**
+ * Display label for a skill reference. The alias is shown because that is what
+ * the user sees at resolution time, but it is NOT part of the identity — see
+ * {@link diffSkills}.
+ */
 const refOf = (s: PresetSkillRef): string => s.as === undefined ? s.ref : `${s.ref} as ${s.as}`
 
+/**
+ * Identity is the canonical `ref` ALONE, never `ref as alias`.
+ *
+ * Folding the alias into the identity made an aliased curated skill look both
+ * missing (the shipped bare ref) and extra (the stored aliased ref), so a merge
+ * injected the same underlying skill twice and collided on name. `as` and
+ * `whenToUse` are user-facing tweaks to an entry the foundation already ships,
+ * not a different skill.
+ *
+ * Consequence for `extra`: an alias on a curated skill is no longer reported,
+ * so it cannot by itself flip an entry to `customized`. `extra` keeps its one
+ * intended meaning — the user added a skill of their own — while per-entry
+ * edits like an alias are simply preserved by the merge instead of being
+ * signalled.
+ */
 function diffSkills(shipped: readonly PresetSkillRef[], stored: readonly PresetSkillRef[]): { missing: string[], extra: string[] } {
-  const a = new Set(shipped.map(refOf))
-  const b = new Set(stored.map(refOf))
-  return { missing: [...a].filter(x => !b.has(x)), extra: [...b].filter(x => !a.has(x)) }
+  const a = new Set(shipped.map(s => s.ref))
+  const b = new Set(stored.map(s => s.ref))
+  return {
+    missing: shipped.filter(s => !b.has(s.ref)).map(refOf),
+    extra: stored.filter(s => !a.has(s.ref)).map(refOf),
+  }
 }
 
 /**
@@ -66,7 +89,10 @@ export function foundationReport(
       continue
     }
     const { missing, extra } = diffSkills(shipped.skills, stored.skills)
-    const changedFields = (['title', 'summary', 'stage'] as const).filter(f => shipped[f] !== stored[f])
+    // `color` counts: a recoloured preset is an edit like any other, and
+    // omitting it classified that user as `updatable` and offered a silent
+    // overwrite path.
+    const changedFields = (['title', 'summary', 'stage', 'color'] as const).filter(f => shipped[f] !== stored[f])
     const edited = extra.length > 0 || changedFields.length > 0
     const status: FoundationStatus = missing.length === 0 && !edited ? 'current' : edited ? 'customized' : 'updatable'
     diffs.push({ kind: 'preset', id: shipped.id, title: stored.title, status, missingSkills: missing, extraSkills: extra, changedFields: [...changedFields] })
@@ -103,9 +129,13 @@ export function foundationReport(
 }
 
 /**
- * Apply the report. **Merges**: adds the shipped skills the stored entry
- * lacks, in the shipped order, and keeps every user addition and field edit.
- * A `local` entry is never touched. Pure: returns the new arrays.
+ * Apply the report. **Merges**: the stored array is preserved VERBATIM — same
+ * order, same per-skill fields (`as`, `whenToUse`) — and the shipped skills
+ * whose `ref` the store lacks are APPENDED after it. The user's order outranks
+ * the curator's: rebuilding from the shipped array first reordered presets the
+ * user had arranged by hand and overwrote their per-skill edits, which is a
+ * worse failure than a new skill landing at the end. A `local` entry is never
+ * touched. Pure: returns the new arrays.
  */
 export function adoptFoundation(
   report: FoundationReport,
@@ -125,19 +155,20 @@ export function adoptFoundation(
     const shipped = shippedPresets.find(p => p.id === diff.id)
     if (shipped === undefined) continue
     if (diff.status === 'new') {
-      presets.push({ ...shipped })
+      // The curated constant carries a fixed seed epoch; adoption is when this
+      // store actually gained the preset, so both stamps are the adoption time.
+      // Read the clock once so the two stamps cannot straddle a millisecond.
+      const at = now()
+      presets.push({ ...shipped, createdAt: at, updatedAt: at })
       applied.push({ kind: 'preset', id: diff.id, added: diff.missingSkills })
       continue
     }
     const index = presets.findIndex(p => p.id === diff.id)
     const stored = presets[index]
-    // Shipped order first (so a new practice skill lands where the curator put
-    // it), then the user's own additions, in their order.
-    const storedRefs = new Set(stored.skills.map(refOf))
-    const merged = [
-      ...shipped.skills.filter(s => storedRefs.has(refOf(s)) || diff.missingSkills.includes(refOf(s))),
-      ...stored.skills.filter(s => !shipped.skills.some(x => refOf(x) === refOf(s))),
-    ]
+    // The stored array verbatim, then only what is genuinely new by `ref`: an
+    // entry present on both sides keeps the USER'S object, alias and all.
+    const storedRefs = new Set(stored.skills.map(s => s.ref))
+    const merged = [...stored.skills, ...shipped.skills.filter(s => !storedRefs.has(s.ref))]
     presets[index] = { ...stored, skills: merged, updatedAt: now() }
     applied.push({ kind: 'preset', id: diff.id, added: diff.missingSkills })
   }
@@ -152,11 +183,10 @@ export function adoptFoundation(
     }
     const index = overlays.findIndex(o => o.id === diff.id)
     const stored = overlays[index]
-    const storedRefs = new Set(stored.skills.map(refOf))
-    const merged = [
-      ...shipped.skills.filter(s => storedRefs.has(refOf(s)) || diff.missingSkills.includes(refOf(s))),
-      ...stored.skills.filter(s => !shipped.skills.some(x => refOf(x) === refOf(s))),
-    ]
+    // Same rule as presets: stored order and stored objects win; append only
+    // refs the store does not already carry under any alias.
+    const storedRefs = new Set(stored.skills.map(s => s.ref))
+    const merged = [...stored.skills, ...shipped.skills.filter(s => !storedRefs.has(s.ref))]
     // `enabled` is the user's switch: never reset by an update.
     overlays[index] = { ...stored, skills: merged }
     applied.push({ kind: 'overlay', id: diff.id, added: diff.missingSkills })

@@ -221,7 +221,9 @@ export function detectPlanDrift(view: SessionView): PracticeResult {
   const drift = view.drift ?? []
   if (drift.length === 0) return result('plan-drift', 'green', ['every edit is named in plan.md'])
   if (view.planUpdated === true) return result('plan-drift', 'green', [`plan.md updated after ${drift.length} unplanned edit${drift.length === 1 ? '' : 's'}`])
-  return result('plan-drift', 'amber', [`${drift.length} file${drift.length === 1 ? '' : 's'} not in plan.md: ${drift.slice(0, 3).map(d => d.path).join(', ')}`, 'update plan.md in the same branch, or say why'], drift[0].t)
+  // Raw evidence is persisted to telemetry and the scorecard, not only
+  // rendered into the prompt, so the cap has to happen here as well.
+  return result('plan-drift', 'amber', [`${drift.length} file${drift.length === 1 ? '' : 's'} not in plan.md: ${short(drift.slice(0, 3).map(d => d.path).join(', '))}`, 'update plan.md in the same branch, or say why'], drift[0].t)
 }
 
 export function detectWorktreeHygiene(view: SessionView): PracticeResult {
