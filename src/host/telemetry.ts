@@ -28,6 +28,7 @@ export function emptyRollup(): Rollup {
     unknownRequests: {},
     coUsage: {},
     byModel: {},
+    suggestions: { suggested: 0, accepted: 0, dismissed: 0, acceptMsSum: 0 },
   }
 }
 
@@ -42,6 +43,8 @@ export interface SessionSummary {
   readonly unknown: string[]
   readonly practices: PracticeResult[]
   readonly denied: number
+  readonly drift: string[]
+  readonly suggestions: { kind: 'suggested' | 'accepted' | 'dismissed', from: string | null, to: string, afterMs?: number }[]
   readonly rating?: -1 | 0 | 1
   readonly provider?: string
   readonly model?: string
@@ -60,6 +63,8 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
   const unknown: string[] = []
   const practices = new Map<string, PracticeResult>()
   let denied = 0
+  const drift: string[] = []
+  const suggestions: SessionSummary['suggestions'] = []
   let rating: SessionSummary['rating']
   let provider: string | undefined
   let model: string | undefined
@@ -94,6 +99,18 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
       case 'denied':
         denied += 1
         break
+      case 'drift':
+        drift.push(event.path)
+        break
+      case 'suggested':
+        suggestions.push({ kind: 'suggested', from: event.from, to: event.to })
+        break
+      case 'suggestion-accepted':
+        suggestions.push({ kind: 'accepted', from: event.from, to: event.to, afterMs: event.afterMs })
+        break
+      case 'suggestion-dismissed':
+        suggestions.push({ kind: 'dismissed', from: event.from, to: event.to, afterMs: event.afterMs })
+        break
       case 'rated':
         rating = event.rating
         break
@@ -114,6 +131,8 @@ export function summarize(sessionId: string, events: readonly UsageEvent[]): Ses
     unknown,
     practices: [...practices.values()],
     denied,
+    drift,
+    suggestions,
     ...(rating !== undefined ? { rating } : {}),
     ...(provider !== undefined ? { provider } : {}),
     ...(model !== undefined ? { model } : {}),
@@ -164,6 +183,11 @@ export function rollupOf(summaries: readonly SessionSummary[], now: Date = new D
     out.byModel[modelKey] ??= { sessions: 0, loads: 0 }
     out.byModel[modelKey].sessions += 1
     out.byModel[modelKey].loads += Object.values(s.loaded).reduce((n, v) => n + v.count, 0)
+    for (const sug of s.suggestions) {
+      if (sug.kind === 'suggested') out.suggestions.suggested += 1
+      else if (sug.kind === 'accepted') { out.suggestions.accepted += 1; out.suggestions.acceptMsSum += sug.afterMs ?? 0 }
+      else out.suggestions.dismissed += 1
+    }
   }
   return out
 }

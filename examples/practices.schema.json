@@ -46,7 +46,8 @@
               "pull-request",
               "conductor",
               "artifact-chain",
-              "plan-before-code"
+              "plan-before-code",
+              "plan-drift"
             ]
           },
           "mode": {

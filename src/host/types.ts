@@ -111,6 +111,7 @@ export type PracticeId =
   | 'conductor'
   | 'artifact-chain'
   | 'plan-before-code'
+  | 'plan-drift'
 
 /** Per-practice configuration. */
 export interface PracticeConfig {
@@ -179,6 +180,7 @@ export type UsageEvent =
   | { t: string, kind: 'overlay', id: string, active: boolean }
   | { t: string, kind: 'practice', id: PracticeId, status: PracticeStatus, evidence: string[] }
   | { t: string, kind: 'denied', tool: string, reason: string }
+  | { t: string, kind: 'drift', path: string }
   | { t: string, kind: 'suggested', from: Stage | null, to: Stage, confidence: number }
   | { t: string, kind: 'suggestion-accepted', from: Stage | null, to: Stage, afterMs: number }
   | { t: string, kind: 'suggestion-dismissed', from: Stage | null, to: Stage, afterMs: number }
@@ -200,6 +202,8 @@ export interface Rollup {
   readonly coUsage: Record<string, number>
   /** Per provider/model split of skill loads. */
   readonly byModel: Record<string, { sessions: number, loads: number }>
+  /** Stage-switch suggestions: how often accepted, and how fast. */
+  readonly suggestions: { suggested: number, accepted: number, dismissed: number, acceptMsSum: number }
 }
 
 export interface SkillStats {

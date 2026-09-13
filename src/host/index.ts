@@ -248,6 +248,10 @@ export function apply(ctx: Context, config: Config = {}): void {
         ...(target !== undefined ? { target } : {}),
         isError: result.isError,
         ...(head !== undefined ? { resultHead: head } : {}),
+      }).then((outcome) => {
+        // One event per drifting path; the guardrails prompt block carries the
+        // advisory to the model on its next step (no injected message needed).
+        if (outcome.drift !== undefined) telemetry.record(sessionId, { kind: 'drift', path: outcome.drift })
       })
     } catch (error) {
       warn(`tools/result observation failed: ${(error as Error).message}`)
@@ -290,6 +294,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       const facts = current?.facts
       if (stage === 'build' && facts?.inRepo === true && !facts.artifacts.some(a => a.endsWith('plan.md'))) {
         return deny('practice "Plan before code" is enforced: no plan.md exists in this repository. Load the `sdlc-stage-handoff` skill and commit a plan first.')
+      }
+    }
+    if (hard.has('plan-drift') && ['write', 'edit', 'Write', 'Edit'].includes(exec.name)) {
+      const r = current?.results.find(x => x.id === 'plan-drift')
+      const path = typeof args.file_path === 'string' ? args.file_path : typeof args.path === 'string' ? args.path : undefined
+      if (r?.status === 'amber' && path !== undefined && !/(?:^|\/)(?:docs\/sdlc\/.*\.md|plan\.md)$/u.test(path)) {
+        return deny(`practice "Keep plan.md in step with the diff" is enforced: ${r.evidence[0]}. Update plan.md first (skill \`sdlc-stage-handoff\`), then continue.`)
       }
     }
     if (exec.name === 'skill' && doc.strictSkills) {

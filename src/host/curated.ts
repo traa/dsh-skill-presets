@@ -178,6 +178,7 @@ export function defaultPractices(): PracticesDoc {
       { id: 'conductor', mode: 'advisory', params: {} },
       { id: 'artifact-chain', mode: 'advisory', params: { root: 'docs/sdlc' } },
       { id: 'plan-before-code', mode: 'advisory', params: {} },
+      { id: 'plan-drift', mode: 'advisory', params: {} },
     ],
   }
 }
@@ -207,6 +208,11 @@ export const PRACTICE_INFO: Record<PracticesDoc['practices'][number]['id'], { ti
   'plan-before-code': {
     title: 'Plan before code',
     summary: 'In the Build stage, no file is edited before a plan.md exists.',
+    skill: 'sdlc-stage-handoff',
+  },
+  'plan-drift': {
+    title: 'Keep plan.md in step with the diff',
+    summary: 'In the Build stage, a file plan.md never names is edited only if plan.md is updated in the same branch.',
     skill: 'sdlc-stage-handoff',
   },
 }
