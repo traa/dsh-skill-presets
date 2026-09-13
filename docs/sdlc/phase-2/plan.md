@@ -24,8 +24,13 @@ Tests: `test/stage.test.mjs` — each transition; muted after 3 dismissals.
 ## Task 3 — Plan-drift watch
 Files: `src/host/practices/plan.ts` (parse backticked/relative paths from plan.md,
 glob-tolerant), `src/host/practices/detectors.ts` (`plan-drift` practice),
-`src/host/index.ts` (`tools/post-execute` context-only listener: one injected line
-per session when an edited path is not in the plan; never blocks; hard mode denies).
+`src/host/index.ts`. DEPARTURE FROM THE ORIGINAL PLAN: the advisory rides the
+existing guardrails prompt block (`skill-presets:guardrails`) rather than an injected
+`tools/post-execute` context message — the block already reaches the model every
+step and needs no message construction out-of-tree. One `drift` telemetry event per
+path; hard mode denies via `tools/pre-execute`. ALSO ADDED: `practices/workroot.ts`
+— facts are read at the model's work root (last absolute edit dir / leading `cd`),
+fixing the false "on master in the primary checkout" seen while dogfooding.
 Tests: `test/plan-drift.test.mjs` — parse; first-offence-only injection; hard deny.
 
 ## Task 4 — A/B fork with a different preset
@@ -34,6 +39,7 @@ Files: `src/host/experiments.ts` (records `{ parent, child, preset, at }` in
 → `ctx.get('sessions')`/session-controller `fork`, then `sessions[child] = preset`
 BEFORE its first step; `experiments/list`), client: sidebar **Compare** section.
 Tests: `test/experiments.test.mjs` — record linking with a fake fork.
+Verified: the fork seam is `ctx.get('sessionController').fork({ sessionId, atSeq? })`.
 
 ## Task 5 — Docs, examples, tests, PR
 README Phase 2 section; `gen:examples`; `npm test` green; open PR against main.
