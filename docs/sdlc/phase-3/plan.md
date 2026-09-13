@@ -51,6 +51,19 @@ fixture". Ship 3 fixtures recorded from this and earlier sessions.
 README Phase 3; plan.md departures; `npm test`; PR; remove THIS worktree via
 the new cleanup after merge.
 
+## Departures (recorded during execution)
+- Task 2: `restrict()` does NOT call `invalidateCache()` itself — `ScopedLayers.effect`
+  already invalidates and notifies on register and dispose; doing both emitted two
+  `skills/change` per call. The upstream repo rejects external PRs; the in-tree
+  change is at traa/deepseek-harness#1 (fork) and the plugin feature-detects it.
+- Task 3: the bridges bundle their parsers into `lib/index.js` without exporting
+  them, so the test asserts the parser CONTRACT (hooks map, command type, regex
+  matcher, no matcher on Stop) rather than importing the parsers. The library
+  update check was renamed `check-updates`; `check` now means "replay a practice".
+- Task 4: replays serve the fixture's facts verbatim (`factsOverride`) because
+  artifacts live on a filesystem the replay does not have; git/gh shell calls the
+  worktree scanner makes answer from the same snapshot.
+
 ## Riskiest step
 Task 2's in-tree change: `collectFresh` caches by scope chain + revision;
 restrictions must bump the revision so a restrict/unrestrict invalidates.
