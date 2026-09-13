@@ -90,14 +90,35 @@ rules.
 
 ## Strict catalog
 
-With **Strict skill catalog** on, each session's inherited catalog is narrowed
-to its resolved set through the harness's `ctx.skills.restrict()` (a
-per-scope allow-list mirroring `ctx.tools.restrict()`; added in-tree by
-[traa/deepseek-harness#1](https://github.com/traa/deepseek-harness/pull/1)),
-re-applied only when the set changes, released on disposal. The chip shows
-🔒. When the running harness lacks the seam, the `skill` pre-execute guard
-still denies out-of-set loads (🔐) and the Practices tab says so — nothing
-depends on the seam landing.
+**Strict skill catalog** (Practices tab) makes the model's catalog *exactly*
+the resolved set. It is done with **composition only — the harness is never
+modified**:
+
+1. Skills the model may see come from two places: this plugin's provider
+   (the active preset + overlays) and the agent preset's own
+   `skill-filesystem` row (`~/.dsh/skills`, `<project>/.dsh/skills`,
+   `.agents/skills`). Move anything you still want from those directories
+   into the library (`library/local/`) and add it to a preset.
+2. Copy the agent preset you use into the user root and drop its filesystem
+   discovery:
+   ```sh
+   cp -r <harness>/packages/preset/agent-presets/presets/standard ~/.dsh/.agent-presets/standard-strict
+   # in ~/.dsh/.agent-presets/standard-strict/agent.cordis.yml delete the two lines:
+   #   - id: skill-filesystem
+   #     name: '@deepseek-ai/dsh-skill-filesystem'
+   # and give preset.yml a distinct name.
+   ```
+   The shipped `standard` stays as it is; the copy is yours and survives a
+   harness pull.
+3. Settings → Skills → *Defaults per harness agent preset* → map
+   `standard-strict` to the skill preset you want new sessions to start from.
+
+Now every skill the model can load comes from this plugin, and the `skill`
+pre-execute guard denies anything outside the set with a reason naming the
+preset (🔐 on the chip). The plugin also feature-detects a
+`ctx.skills.restrict()` seam and will use it if a future harness release
+ships one (🔒), but nothing depends on that: the doctor reports the seam as a
+`warn` with the composition recipe above as the fix.
 
 ## Hooks export (optional)
 
@@ -389,8 +410,8 @@ dsh-skill-presets status | install [source…] | update [source…] | check-upda
 
 Phase 2 — shipped: per-session presets, stage suggestions, plan drift,
 experiments (see above).
-Phase 3 — shipped: worktree lifecycle, strict catalog (in-tree seam in
-traa/deepseek-harness#1), hooks export, replay evals.
+Phase 3 — shipped: worktree lifecycle, strict catalog (composition recipe;
+no harness change), hooks export, replay evals.
 Phase 4 — shipped: `ctx.agentTeams` consumer, SDLC team templates, insight →
 skill, pruning hints, export/import.
 Phase 5 — shipped: doctor, impact view, experiments aggregation, lint,

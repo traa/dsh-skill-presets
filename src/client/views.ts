@@ -411,7 +411,7 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         h('div', { className: 'skp-sub' },
           'When on, the model\'s skill catalog for each session is narrowed to the resolved set (preset + overlays) through the harness\'s `ctx.skills.restrict()`, and a `skill` call for anything else is denied with a reason. ',
           status.restrictSeam === true ? h('span', { className: 'skp-pill green' }, 'restrict seam present — catalog is hidden, not just denied')
-            : status.restrictSeam === false ? h('span', { className: 'skp-pill amber' }, 'restrict seam absent in this harness — guard only (denial), catalog still lists other skills')
+            : status.restrictSeam === false ? h('span', { className: 'skp-pill amber', title: 'For an exact catalog with no harness change: copy your agent preset under ~/.dsh/.agent-presets/, delete its skill-filesystem row, map it under Defaults per agent preset (see README → Strict catalog)' }, 'guard only in this harness — see README → Strict catalog for the composition recipe')
               : h('span', { className: 'skp-pill' }, 'seam support unknown until a session runs'),
         ),
       ),
