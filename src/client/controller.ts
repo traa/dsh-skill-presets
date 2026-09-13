@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type InsightCandidate, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ImpactReport, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -15,6 +15,7 @@ export interface SettingsSnapshot {
   insights?: InsightCandidate[]
   pruning?: PruningReport
   doctor?: DoctorReport
+  impact?: ImpactReport
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -54,13 +55,14 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
   async loadInsights(rebuild = false): Promise<void> {
     try {
-      const [rollup, recent, insights, pruning] = await Promise.all([
+      const [rollup, recent, insights, pruning, impact] = await Promise.all([
         rpc<Rollup>('usage/rollup', { rebuild }),
         rpc<SessionSummary[]>('usage/recent', { limit: 40 }),
         rpc<InsightCandidate[]>('knowledge/candidates', {}).catch(() => [] as InsightCandidate[]),
         rpc<PruningReport>('pruning/report', {}).catch(() => undefined),
+        rpc<ImpactReport>('impact/report', {}).catch(() => undefined),
       ])
-      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}) })
+      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}), ...(impact !== undefined ? { impact } : {}) })
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
@@ -293,6 +295,7 @@ export interface ScorecardSnapshot {
   card?: Scorecard
   templates?: TeamTemplate[]
   agentTeamsPresent?: boolean
+  peers?: PeerComparison
   status?: Status
   loading: boolean
   error?: string
@@ -318,11 +321,12 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
 
   async refresh(refreshFacts = false): Promise<void> {
     try {
-      const [card, status] = await Promise.all([
+      const [card, status, peers] = await Promise.all([
         rpc<Scorecard>('scorecard', { sessionId: this.sessionId, refresh: refreshFacts }),
         rpc<Status>('status'),
+        rpc<PeerComparison>('impact/session', { sessionId: this.sessionId }).catch(() => undefined),
       ])
-      this.set({ card, status, loading: false, error: undefined })
+      this.set({ card, status, loading: false, error: undefined, ...(peers !== undefined ? { peers } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }

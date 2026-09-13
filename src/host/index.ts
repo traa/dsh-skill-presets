@@ -25,6 +25,7 @@ import { KnowledgeBridge } from './knowledge.ts'
 import { pruningReport } from './pruning.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from './bundle.ts'
 import { diagnose, probe, worstSeverity } from './doctor.ts'
+import { presetImpact, sessionVsPeers, skillImpact } from './impact.ts'
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
@@ -559,6 +560,16 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- impact: outcomes with vs without a skill / a preset
+  rpc.handle('impact/report', async (args) => {
+    const sessions = await telemetry.recentSessions(typeof args.limit === 'number' ? args.limit : 500)
+    return { skills: skillImpact(sessions), presets: presetImpact(sessions), sessions: sessions.length }
+  })
+  rpc.handle('impact/session', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const [current, sessions] = await Promise.all([telemetry.summary(sessionId), telemetry.recentSessions(500)])
+    return sessionVsPeers(current, sessions, typeof args.n === 'number' ? args.n : 20)
   })
   // ---- doctor: is the running plugin the source, and are its seams present?
   rpc.handle('doctor', async () => {

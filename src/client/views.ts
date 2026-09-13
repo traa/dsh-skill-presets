@@ -118,6 +118,17 @@ function pct(n: number): string {
   return `${Math.round(n * 100)}%`
 }
 
+/** Signed delta rendering: "+12 pt" / "−0.4". */
+function delta(v: number | undefined, kind: 'pct' | 'num'): string {
+  if (v === undefined) return '—'
+  const sign = v > 0 ? '+' : v < 0 ? '−' : '±'
+  return kind === 'pct' ? `${sign}${Math.abs(Math.round(v * 100))} pt` : `${sign}${Math.abs(v).toFixed(1)}`
+}
+function deltaClass(v: number | undefined, higherIsBetter = true): string {
+  if (v === undefined || Math.abs(v) < 1e-9) return ''
+  return (v > 0) === higherIsBetter ? 'green' : 'red'
+}
+
 // ---------------------------------------------------------------- Settings --
 
 export function makeSettingsPage(React: ReactLike, controller: SettingsController): () => unknown {
@@ -428,6 +439,34 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         h('span', { style: { flex: 1 } }),
         h('button', { className: 'skp-btn small', onClick: () => { void controller.loadInsights(true) } }, 'Rebuild'),
       ),
+      snap.impact !== undefined ? h('div', { className: 'skp-col' },
+        h('div', { className: 'skp-sub', style: { fontWeight: 650 } }, `Impact — sessions that LOADED a skill vs sessions offered it that did not (${snap.impact.sessions} sessions; rows with < 5 on a side are greyed)`),
+        snap.impact.skills.length === 0 ? h('div', { className: 'skp-sub' }, 'No sessions with outcomes yet.') : h('table', { className: 'skp-table' },
+          h('thead', null, h('tr', null, h('th', null, 'Skill'), h('th', null, 'with / without'), h('th', null, 'Δ all green'), h('th', null, 'Δ PR opened'), h('th', null, 'Δ rating'), h('th', null, 'Δ drift files'), h('th', null, 'Δ denials'))),
+          h('tbody', null, ...snap.impact.skills.map(r => h('tr', { key: r.key, style: r.enough ? {} : { opacity: 0.55 } },
+            h('td', { className: 'skp-mono' }, r.key),
+            h('td', { className: 'skp-sub' }, `${r.with.sessions} / ${r.without.sessions}`),
+            h('td', null, h('span', { className: `skp-pill ${deltaClass(r.delta.greenRate)}` }, delta(r.delta.greenRate, 'pct'))),
+            h('td', null, h('span', { className: `skp-pill ${deltaClass(r.delta.prRate)}` }, delta(r.delta.prRate, 'pct'))),
+            h('td', null, h('span', { className: `skp-pill ${deltaClass(r.delta.meanRating)}` }, delta(r.delta.meanRating, 'num'))),
+            h('td', null, h('span', { className: `skp-pill ${deltaClass(r.delta.meanDriftFiles, false)}` }, delta(r.delta.meanDriftFiles, 'num'))),
+            h('td', null, h('span', { className: `skp-pill ${deltaClass(r.delta.meanDenied, false)}` }, delta(r.delta.meanDenied, 'num'))),
+          ))),
+        ),
+        snap.impact.presets.length > 1 ? h('div', { className: 'skp-col' },
+          h('div', { className: 'skp-sub', style: { fontWeight: 650, marginTop: 8 } }, 'Presets — each vs all others'),
+          h('table', { className: 'skp-table' },
+            h('thead', null, h('tr', null, h('th', null, 'Preset'), h('th', null, 'sessions'), h('th', null, 'all green'), h('th', null, 'PR opened'), h('th', null, 'rating'), h('th', null, 'Δ green vs others'))),
+            h('tbody', null, ...snap.impact.presets.map(r => h('tr', { key: r.key, style: r.enough ? {} : { opacity: 0.55 } },
+              h('td', null, r.key), h('td', null, String(r.with.sessions)),
+              h('td', null, r.with.greenRate !== undefined ? pct(r.with.greenRate) : '—'),
+              h('td', null, r.with.prRate !== undefined ? pct(r.with.prRate) : '—'),
+              h('td', null, r.with.meanRating !== undefined ? r.with.meanRating.toFixed(2) : '—'),
+              h('td', null, h('span', { className: `skp-pill ${deltaClass(r.delta.greenRate)}` }, delta(r.delta.greenRate, 'pct'))),
+            ))),
+          ),
+        ) : null,
+      ) : null,
       h('div', { className: 'skp-col' },
         h('div', { className: 'skp-sub', style: { fontWeight: 650 } }, 'Skill load rate — of the sessions a skill was offered in, how many loaded it'),
         rows.length === 0 ? h('div', { className: 'skp-sub' }, 'No usage yet.') : h('table', { className: 'skp-table' },
@@ -676,6 +715,19 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
           ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
         )),
       ),
+      snap.peers !== undefined && snap.peers.peerCount > 0 ? h('div', { className: 'skp-col' },
+        h('h3', null, `This session vs your last ${snap.peers.peerCount} under ${card.activePreset?.title ?? 'no preset'}`),
+        h('table', { className: 'skp-table' },
+          h('thead', null, h('tr', null, h('th', null, ''), h('th', null, 'now'), h('th', null, 'peers'))),
+          h('tbody', null,
+            h('tr', null, h('td', { className: 'skp-sub' }, 'skills loaded'), h('td', null, String(snap.peers.current.meanLoaded ?? 0)), h('td', null, (snap.peers.peers.meanLoaded ?? 0).toFixed(1))),
+            h('tr', null, h('td', { className: 'skp-sub' }, 'all practices green'), h('td', null, snap.peers.current.greenRate !== undefined ? (snap.peers.current.greenRate === 1 ? 'yes' : 'no') : '—'), h('td', null, snap.peers.peers.greenRate !== undefined ? pct(snap.peers.peers.greenRate) : '—')),
+            h('tr', null, h('td', { className: 'skp-sub' }, 'PR opened'), h('td', null, snap.peers.current.prRate !== undefined ? (snap.peers.current.prRate === 1 ? 'yes' : 'no') : '—'), h('td', null, snap.peers.peers.prRate !== undefined ? pct(snap.peers.peers.prRate) : '—')),
+            h('tr', null, h('td', { className: 'skp-sub' }, 'drift files'), h('td', null, String(snap.peers.current.meanDriftFiles ?? 0)), h('td', null, (snap.peers.peers.meanDriftFiles ?? 0).toFixed(1))),
+            h('tr', null, h('td', { className: 'skp-sub' }, 'denials'), h('td', null, String(snap.peers.current.meanDenied ?? 0)), h('td', null, (snap.peers.peers.meanDenied ?? 0).toFixed(1))),
+          ),
+        ),
+      ) : null,
       h('div', { className: 'skp-col' },
         h('h3', null, `Skills · ${Object.keys(loaded).length} of ${card.offered.length} loaded`),
         ...card.offered.map((s) => {
