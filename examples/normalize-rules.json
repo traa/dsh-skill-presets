@@ -49,6 +49,18 @@
     "why": "Vendor slash commands are not part of the harness; the equivalent is a skill or tool when one exists."
   },
   {
+    "id": "ask-user-tool",
+    "pattern": "`?AskUserQuestion`?(?:\\s+tool)?",
+    "replacement": "the `ask_user_question` tool",
+    "why": "The harness asks the user through `ask_user_question`."
+  },
+  {
+    "id": "cross-model-vendors",
+    "pattern": "\\b(?:Codex CLI|Gemini CLI|Copilot CLI|Copilot|Cursor IDE)\\b",
+    "replacement": "another configured provider",
+    "why": "A second opinion comes from whatever other provider the harness has; the text must not name one."
+  },
+  {
     "id": "vendor-agent-name",
     "pattern": "\\bClaude Code\\b",
     "replacement": "the coding agent",

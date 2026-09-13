@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -17,6 +17,7 @@ export interface SettingsSnapshot {
   doctor?: DoctorReport
   impact?: ImpactReport
   experiments?: ExperimentsAggregate
+  lint?: LibraryLint
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -52,6 +53,11 @@ export class SettingsController extends Store<SettingsSnapshot> {
   setTab(tab: SettingsSnapshot['tab']): void {
     this.set({ tab, notice: undefined, error: undefined })
     if (tab === 'insights' && this.get().rollup === undefined) void this.loadInsights()
+    if (tab === 'library' && this.get().lint === undefined) void this.loadLint()
+  }
+
+  async loadLint(): Promise<void> {
+    try { this.set({ lint: await rpc<LibraryLint>('lint', {}) }) } catch { /* advisory */ }
   }
 
   async loadInsights(rebuild = false): Promise<void> {
