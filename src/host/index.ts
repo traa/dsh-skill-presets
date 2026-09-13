@@ -73,7 +73,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   const service = new SkillPresetsService({ root, log: warn })
-  ctx.set('skillPresets', service)
+  ctx.provide('skillPresets', service)
   const telemetry = new Telemetry(service.paths(), warn)
 
   // ------------------------------------------------------------ practices --
