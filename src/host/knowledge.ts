@@ -63,8 +63,9 @@ export function skillNameFor(title: string): string {
     name = name.length === 0 ? w : `${name}-${w}`
   }
   if (name.length === 0) name = base.slice(0, 48).replace(/-+$/u, '')
-  if (!/^[a-z0-9]/u.test(name)) name = `rule-${name}`
-  return name.length > 0 ? name : 'insight'
+  if (name.length === 0) return 'insight'
+  if (!/^[a-z]/u.test(name)) name = `rule-${name}`
+  return name
 }
 
 /** Render the SKILL.md. Deterministic; the body is the insight. */
