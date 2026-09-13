@@ -112,6 +112,7 @@ export type PracticeId =
   | 'artifact-chain'
   | 'plan-before-code'
   | 'plan-drift'
+  | 'worktree-hygiene'
 
 /** Per-practice configuration. */
 export interface PracticeConfig {
@@ -128,6 +129,8 @@ export interface PracticesDoc {
   readonly instructionFiles: readonly string[]
   /** Branches on which editing in the primary checkout is a violation. */
   readonly protectedBranches: readonly string[]
+  /** Remove merged, clean worktrees automatically (on session end and hourly). */
+  readonly autoCleanWorktrees: boolean
   readonly practices: readonly PracticeConfig[]
 }
 
@@ -181,6 +184,7 @@ export type UsageEvent =
   | { t: string, kind: 'practice', id: PracticeId, status: PracticeStatus, evidence: string[] }
   | { t: string, kind: 'denied', tool: string, reason: string }
   | { t: string, kind: 'drift', path: string }
+  | { t: string, kind: 'worktree', action: 'created' | 'removed', path: string, branch?: string, reason?: string }
   | { t: string, kind: 'suggested', from: Stage | null, to: Stage, confidence: number }
   | { t: string, kind: 'suggestion-accepted', from: Stage | null, to: Stage, afterMs: number }
   | { t: string, kind: 'suggestion-dismissed', from: Stage | null, to: Stage, afterMs: number }

@@ -68,6 +68,59 @@ controller, at the last completed turn) and pins the chosen preset on the child
 loaded/offered, loads, turns, practice statuses, denials, drift, rating, model.
 When the controller is not composed the button explains the manual path.
 
+## Worktree lifecycle
+
+`worktree-first` creates a worktree per piece of work; nothing used to remove
+them. Now a worktree lives exactly as long as its unmerged work:
+
+| Verdict | When | Action |
+|---|---|---|
+| **removable** | branch merged into the default branch (or its PR is `MERGED`, or it has no commits beyond default) **and** the tree is clean | removed with `git worktree remove`, branch deleted with `git branch -d`, `git worktree prune` |
+| **attention** | dirty tree, detached HEAD, or a `node_modules` **symlink** inside | listed with the reason; never touched |
+| **keep** | primary checkout, locked, on the default branch, or has unmerged commits | left alone |
+
+Automatic (`autoCleanWorktrees`, on by default): when a session ends, for the
+repo it worked in; and hourly for every live repo. Manual: the session's
+Skills tab lists worktrees with **Remove**; `dsh-skill-presets worktrees
+[--dry-run|--clean]`. The **Clean up worktrees** practice goes amber on merged
+leftovers and **red** on a `node_modules` symlink — the exact footgun that made
+Phase 2's post-merge build a silent no-op. `worktree-first` now says `npm ci`
+inside the worktree, never a symlink; `worktree-cleanup` teaches the removal
+rules.
+
+## Strict catalog
+
+With **Strict skill catalog** on, each session's inherited catalog is narrowed
+to its resolved set through the harness's `ctx.skills.restrict()` (a
+per-scope allow-list mirroring `ctx.tools.restrict()`; added in-tree by
+[traa/deepseek-harness#1](https://github.com/traa/deepseek-harness/pull/1)),
+re-applied only when the set changes, released on disposal. The chip shows
+🔒. When the running harness lacks the seam, the `skill` pre-execute guard
+still denies out-of-set loads (🔐) and the Practices tab says so — nothing
+depends on the seam landing.
+
+## Hooks export (optional)
+
+**Generate hook files** writes the same detectors as command hooks for **both**
+bridges the harness ships — `<workbench>/hooks/skill-presets.claude-code.json`
+and `skill-presets.codex.json` — each calling `dsh-skill-presets check
+<practice> --hook <dialect>`, which replays the detector against live git facts
+plus the gated call from stdin and exits 2 (reason on stderr) only when the
+practice is red **and** hard. The native `tools/pre-execute` gate is the
+primary mechanism; this is for setups that already run hooks in one dialect.
+
+## Replay evals
+
+`evals/fixtures/<name>/fixture.json` is a **redacted** session: tool names,
+path/command/skill arguments, error flags, first result line, a git-facts
+snapshot, usage events — no prompt text. `expected.json` pins the practice
+statuses, detected stage, and loaded/unknown skills. `npm test` replays the
+three shipped fixtures through the real tracker; `dsh-skill-presets eval
+[--update]` runs them (and `<workbench>/skills/evals/`) from the CLI; **Save as
+fixture** in the sidebar records the current session. Change a detector, a
+stage rule, or a summary fold and the fixtures fail first — the playbook's
+"re-run the evals whenever a skill or hook changes", made concrete.
+
 ## How the model sees exactly one set
 
 The plugin registers one `SkillProvider` into the host `ctx.skills` registry.
@@ -85,9 +138,8 @@ restart, no filesystem watching.
 | `git-repo` | the session cwd is inside a git work tree | `worktree-first`, `pr-always` |
 
 Enforcement is **additive** by default: skills from `~/.dsh/skills` or a
-project's `.dsh/skills` stay visible. **Strict** mode (Practices tab) denies a
-`skill` call for a name outside the set with a reason; hiding them from the
-catalog too needs the in-tree `SkillRestriction` seam (roadmap, phase 3).
+project's `.dsh/skills` stay visible. **Strict** mode narrows the catalog
+itself (see *Strict catalog*).
 
 ## The foundation
 
@@ -141,6 +193,7 @@ judged there, not at the checkout it was opened in.
 | Commit the stage artifact | the active stage's artifact exists | Build/Test without `plan.md`, Design without `intent.md` | — |
 | Plan before code | `plan.md` present before the first edit in Build | edited with no `plan.md` | — |
 | Keep plan.md in step with the diff | every Build edit is named in `plan.md`, or `plan.md` was updated after | — (amber while unplanned edits are outstanding) | — |
+| Clean up worktrees | no merged leftovers, no `node_modules` symlink | a `node_modules` symlink in a worktree | — (amber on merged leftovers / stale) |
 
 Modes per practice: **off**, **advisory** (a prompt line when at risk),
 **hard** (the offending tool call is denied with a reason naming the skill to
@@ -218,8 +271,12 @@ composed, else `$DSH_WORKBENCH` → `$DSH_SETTINGS_REPO` → `$DSH_HOME/settings
 ## CLI
 
 ```
-dsh-skill-presets status | install [source…] | update [source…] | check [source…]
+dsh-skill-presets status | install [source…] | update [source…] | check-updates [source…]
                   | activate <id|none> | summary <usage.jsonl> | rollup
+                  | worktrees [cwd] [--dry-run|--clean]
+                  | hooks generate [dir]
+                  | check <practice> [--cwd d] [--json] [--hook <dialect>]
+                  | eval [dir] [--update] [--only name]
 ```
 
 ## Acceptance checklist
@@ -239,10 +296,8 @@ dsh-skill-presets status | install [source…] | update [source…] | check [sou
 
 Phase 2 — shipped: per-session presets, stage suggestions, plan drift,
 experiments (see above).
-Phase 3 — in-tree `ctx.skills.restrict()` mirroring `tools.restrict()` for a
-truly strict catalog, hard-gate practices, optional export of the same
-detectors to both shipped hook bridges (`dsh-hooks-claude-code`,
-`dsh-hooks-codex`), session-replay evals re-run when a skill/practice changes.
+Phase 3 — shipped: worktree lifecycle, strict catalog (in-tree seam in
+traa/deepseek-harness#1), hooks export, replay evals.
 Phase 4 — `dsh-agent-teams` publishing an `agentTeams` service + SDLC team
 templates, promote a `dsh-knowledge` insight to a local skill, stale-skill
 pruning, preset export/import.

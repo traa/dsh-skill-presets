@@ -1,0 +1,14 @@
+{
+  "practices": {
+    "worktree": "green",
+    "pull-request": "amber",
+    "conductor": "red",
+    "artifact-chain": "amber",
+    "plan-before-code": "n/a",
+    "plan-drift": "n/a",
+    "worktree-hygiene": "green"
+  },
+  "stage": "plan",
+  "loaded": [],
+  "unknown": []
+}

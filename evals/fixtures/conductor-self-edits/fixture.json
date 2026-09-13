@@ -1,0 +1,133 @@
+{
+  "name": "conductor-self-edits",
+  "description": "Delegate preset with a team attached; the conductor edits a file itself and delegates before any approval turn. Expect conductor red.",
+  "practices": {
+    "version": 1,
+    "strictSkills": false,
+    "autoCleanWorktrees": true,
+    "instructionFiles": [
+      "AGENTS.md",
+      "CLAUDE.md",
+      "GEMINI.md",
+      ".agents/AGENTS.md",
+      "CONTRIBUTING.md"
+    ],
+    "protectedBranches": [
+      "main",
+      "master",
+      "develop",
+      "trunk"
+    ],
+    "practices": [
+      {
+        "id": "worktree",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "pull-request",
+        "mode": "advisory",
+        "params": {
+          "checkEveryTurns": 10
+        }
+      },
+      {
+        "id": "conductor",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "artifact-chain",
+        "mode": "advisory",
+        "params": {
+          "root": "docs/sdlc"
+        }
+      },
+      {
+        "id": "plan-before-code",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "plan-drift",
+        "mode": "advisory",
+        "params": {}
+      },
+      {
+        "id": "worktree-hygiene",
+        "mode": "advisory",
+        "params": {
+          "staleDays": 14
+        }
+      }
+    ]
+  },
+  "teamAttached": true,
+  "cwd": "/repo",
+  "facts": {
+    "inRepo": true,
+    "gitAvailable": true,
+    "ghAvailable": true,
+    "hasUpstream": true,
+    "ahead": 0,
+    "dirty": false,
+    "topLevel": "/repo",
+    "artifacts": [],
+    "instructionFiles": [
+      "AGENTS.md"
+    ],
+    "readAt": "2026-01-01T00:00:00.000Z",
+    "isWorktree": true,
+    "branch": "feat/team"
+  },
+  "calls": [
+    {
+      "t": "2026-01-01T00:00:01.000Z",
+      "turn": 1,
+      "name": "team_status",
+      "target": "",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:01.000Z",
+      "turn": 1,
+      "name": "team_delegate",
+      "target": "implementer",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:02.000Z",
+      "turn": 2,
+      "name": "edit",
+      "target": "/repo/src/x.ts",
+      "isError": false
+    },
+    {
+      "t": "2026-01-01T00:00:02.000Z",
+      "turn": 2,
+      "name": "team_wait",
+      "target": "",
+      "isError": false
+    }
+  ],
+  "userTurns": [
+    1,
+    2
+  ],
+  "events": [
+    {
+      "t": "t",
+      "kind": "offered",
+      "preset": "delegate",
+      "overlays": [
+        "team-attached",
+        "git-repo"
+      ],
+      "skills": [
+        "conductor-protocol",
+        "worktree-first",
+        "pr-always"
+      ]
+    }
+  ]
+}

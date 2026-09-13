@@ -1,0 +1,17 @@
+{
+  "practices": {
+    "worktree": "green",
+    "pull-request": "green",
+    "conductor": "n/a",
+    "artifact-chain": "green",
+    "plan-before-code": "green",
+    "plan-drift": "green",
+    "worktree-hygiene": "green"
+  },
+  "stage": "test",
+  "loaded": [
+    "pr-always",
+    "worktree-first"
+  ],
+  "unknown": []
+}

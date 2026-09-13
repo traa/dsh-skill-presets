@@ -20,6 +20,9 @@
       },
       {
         "ref": "local/pr-always"
+      },
+      {
+        "ref": "local/worktree-cleanup"
       }
     ],
     "enabled": true

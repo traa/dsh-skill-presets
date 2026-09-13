@@ -47,7 +47,17 @@ export interface LockedSkill {
 export interface Lock { version: 1, sources: Record<string, { commit: string, fetchedAt: string }>, skills: LockedSkill[] }
 export interface PracticeConfig { id: string, mode: 'off' | 'advisory' | 'hard', params: Record<string, unknown> }
 export interface PracticesDoc {
-  version: 1, strictSkills: boolean, instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
+  version: 1, strictSkills: boolean, autoCleanWorktrees: boolean, instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
+}
+export interface WorktreeRow {
+  path: string, head: string, branch?: string, primary: boolean, locked?: string | true, prunable?: string, detached: boolean,
+  dirty?: boolean, merged?: boolean, ahead?: number, hasUpstream?: boolean, aheadOfDefault?: number, nodeModulesSymlink?: string,
+  ageDays?: number, prState?: string, prUrl?: string, createdBy?: string, createdAt?: string
+  verdict: { kind: 'keep' | 'removable' | 'attention', reason: string }
+}
+export interface CleanupResult {
+  removed: { path: string, branch?: string, reason: string }[], kept: { path: string, reason: string }[],
+  attention: { path: string, reason: string }[], errors: { path: string, error: string }[], dryRun: boolean
 }
 export interface ActiveDoc {
   version: 2
@@ -85,6 +95,8 @@ export interface Status {
   resolution: Resolution
   notes: string[]
   foundationInstalled: boolean
+  /** Whether the running harness has ctx.skills.restrict(); undefined until an agent was seen. */
+  restrictSeam?: boolean
 }
 export interface PracticeResult { id: string, status: 'green' | 'amber' | 'red' | 'n/a', evidence: string[], firstViolationAt?: string }
 export interface GitFacts {
@@ -121,6 +133,9 @@ export interface Scorecard {
   stageGuess: StageGuess
   suggestion?: Suggestion
   experiments: Experiment[]
+  /** Strict catalog state for this session. `seam` undefined = not yet known. */
+  strict: { enabled: boolean, seam?: boolean, applied: boolean }
+  worktrees?: { defaultBranch: string, list: WorktreeRow[] }
   overlays: string[]
   offered: { name: string, via: string, description: string }[]
   unresolved: { ref: string, reason: string }[]

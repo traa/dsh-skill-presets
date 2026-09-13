@@ -101,6 +101,9 @@
       },
       {
         "ref": "local/pr-always"
+      },
+      {
+        "ref": "local/worktree-cleanup"
       }
     ],
     "createdAt": "2026-01-01T00:00:00.000Z",
@@ -140,6 +143,9 @@
       },
       {
         "ref": "local/pr-always"
+      },
+      {
+        "ref": "local/worktree-cleanup"
       }
     ],
     "createdAt": "2026-01-01T00:00:00.000Z",

@@ -88,10 +88,11 @@ export const SCHEMAS: Record<string, unknown> = {
     title: 'dsh-skill-presets practices',
     type: 'object',
     additionalProperties: false,
-    required: ['version', 'strictSkills', 'instructionFiles', 'protectedBranches', 'practices'],
+    required: ['version', 'strictSkills', 'autoCleanWorktrees', 'instructionFiles', 'protectedBranches', 'practices'],
     properties: {
       version: { const: 1 },
       strictSkills: { type: 'boolean' },
+      autoCleanWorktrees: { type: 'boolean' },
       instructionFiles: { type: 'array', items: { type: 'string' } },
       protectedBranches: { type: 'array', items: { type: 'string' } },
       practices: {

@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC, STAGE_ORDER, defaultPractices } from './curated.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
+import { cleanupWorktrees, scanWorktrees, type CleanupResult, type WorktreeInfo } from './practices/worktrees.ts'
 import { BUILTIN_NORMALIZE_RULES, validateRules } from './normalize.ts'
 import {
   clearParsedCache, resolveSet, splitRef, validateOverlaysFile, validatePreset, validatePresetsFile,
@@ -133,6 +134,46 @@ export class SkillPresetsService {
     const next = recordAcceptance(await this.suggestions(), from, to)
     await writeJson(this.paths().suggestions, next)
     return next
+  }
+
+  // ------------------------------------------------------------ worktrees --
+
+  /** Worktrees the plugin observed being created: absolute path → session + time. */
+  async createdWorktrees(): Promise<Record<string, { sessionId: string, at: string }>> {
+    return (await readJson(this.paths().worktrees, () => ({}) as Record<string, { sessionId: string, at: string }>, (raw) => {
+      if (typeof raw !== 'object' || raw === null) throw new TypeError('worktrees malformed')
+      const out: Record<string, { sessionId: string, at: string }> = {}
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof v === 'object' && v !== null && typeof (v as { sessionId: unknown }).sessionId === 'string') out[k] = { sessionId: (v as { sessionId: string }).sessionId, at: String((v as { at?: unknown }).at ?? '') }
+      }
+      return out
+    })).value
+  }
+
+  async rememberWorktree(path: string, sessionId: string): Promise<void> {
+    const current = await this.createdWorktrees()
+    await writeJson(this.paths().worktrees, { ...current, [path]: { sessionId, at: this.now().toISOString() } })
+  }
+
+  async forgetWorktrees(paths: readonly string[]): Promise<void> {
+    const current = await this.createdWorktrees()
+    for (const p of paths) delete current[p]
+    await writeJson(this.paths().worktrees, current)
+  }
+
+  /** Scan the repository containing `cwd`. */
+  async worktrees(cwd: string): Promise<{ defaultBranch: string, worktrees: WorktreeInfo[] }> {
+    return await scanWorktrees(cwd, { created: await this.createdWorktrees() })
+  }
+
+  /**
+   * Remove merged + clean worktrees (and their branches) in the repository
+   * containing `cwd`. Dirty or unmerged trees are reported, never touched.
+   */
+  async cleanupWorktrees(cwd: string, options: { dryRun?: boolean, only?: string[] } = {}): Promise<CleanupResult> {
+    const result = await cleanupWorktrees(cwd, { created: await this.createdWorktrees(), ...options })
+    if (options.dryRun !== true && result.removed.length > 0) await this.forgetWorktrees(result.removed.map(r => r.path))
+    return result
   }
 
   /** stage → preset ids, for suggestion targeting. */

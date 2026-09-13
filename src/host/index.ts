@@ -18,6 +18,11 @@ import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
+import { StrictCatalog } from './strict.ts'
+import { renderHookFile } from './hooks.ts'
+import { runEvals, saveFixture } from './evals.ts'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -87,12 +92,31 @@ export function apply(ctx: Context, config: Config = {}): void {
   // ------------------------------------------------------------ practices --
   const tracker = new PracticeTracker({
     practices: async () => await service.practices(),
+    createdWorktrees: async () => await service.createdWorktrees(),
+    onWorktreeCreated: (sessionId, path) => {
+      void service.rememberWorktree(path, sessionId)
+      telemetry.record(sessionId, { kind: 'worktree', action: 'created', path })
+    },
     activeStage: async (sessionId, agentPreset) => await service.activeStage({ id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) }),
     onResult: (sessionId, result) => {
       telemetry.record(sessionId, { kind: 'practice', id: result.id, status: result.status, evidence: [...result.evidence] })
     },
     log: warn,
   })
+
+  // ---------------------------------------------------------------- strict --
+  // With `strictSkills`, the session's inherited catalog is narrowed to the
+  // resolved set through `agent.ctx.skills.restrict()` when the harness has it.
+  const strict = new StrictCatalog(warn)
+  ctx.effect(() => () => strict.releaseAll(), 'skill-presets: strict catalog')
+  const strictSupport = new Map<string, boolean>()
+  const applyStrict = async (agent: AgentLike, names: readonly string[]): Promise<void> => {
+    const sessionId = agent.session.id
+    const doc = await service.practices()
+    if (!doc.strictSkills) { strict.release(sessionId); return }
+    const outcome = strict.apply(sessionId, agent.ctx, names)
+    strictSupport.set(sessionId, outcome !== 'unsupported')
+  }
 
   // -------------------------------------------------------------- provider --
   // Per-agent overlay conditions are cached so `list()` stays cheap, and a
@@ -160,10 +184,37 @@ export function apply(ctx: Context, config: Config = {}): void {
     })
   }) as never)
 
+  // Auto-clean: merged + clean worktrees of the repo a session worked in are
+  // removed when the session ends, and once an hour for every live repo.
+  const autoClean = async (cwd: string, sessionId?: string): Promise<void> => {
+    try {
+      if (!(await service.practices()).autoCleanWorktrees) return
+      const result = await service.cleanupWorktrees(cwd)
+      for (const r of result.removed) {
+        log(`removed merged worktree ${r.path}${r.branch !== undefined ? ` (branch ${r.branch})` : ''}: ${r.reason}`)
+        if (sessionId !== undefined) telemetry.record(sessionId, { kind: 'worktree', action: 'removed', path: r.path, ...(r.branch !== undefined ? { branch: r.branch } : {}), reason: r.reason })
+      }
+      for (const e of result.errors) warn(`worktree cleanup ${e.path}: ${e.error}`)
+    } catch (error) {
+      warn(`worktree cleanup failed: ${(error as Error).message}`)
+    }
+  }
+  const hourly = setInterval(() => {
+    const roots = new Set<string>()
+    for (const id of tracker.live()) { const top = tracker.results(id)?.facts?.topLevel; if (top !== undefined) roots.add(top) }
+    for (const root of roots) void autoClean(root)
+  }, 3_600_000)
+  hourly.unref?.()
+  ctx.effect(() => () => clearInterval(hourly), 'skill-presets: hourly worktree sweep')
+
   ctx.on('agent/disposed' as never, ((payload: { agent: AgentLike }) => {
     const sessionId = payload.agent.session.id
+    const top = tracker.results(sessionId)?.facts?.topLevel
+    strict.release(sessionId)
+    strictSupport.delete(sessionId)
     void tracker.onDisposed(sessionId).then(async () => {
       await service.sessionDisposed(sessionId)
+      if (top !== undefined) await autoClean(top, sessionId)
       offeredState.delete(sessionId)
       overlayState.delete(sessionId)
       lastPreset.delete(sessionId)
@@ -184,6 +235,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset)
       const facts = tracker.results(sessionId)?.facts
       const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true }, sessionOf(agent))
+      await applyStrict(agent, set.skills.map(s => s.name))
       const activeId = set.preset?.id ?? null
       const key = `${activeId ?? ''}|${set.overlays.join(',')}|${set.skills.map(s => s.name).join(',')}`
       if (offeredState.get(sessionId) !== key) {
@@ -381,7 +433,11 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // ------------------------------------------------------------------ RPC --
   const rpc = new Rpc(ctx)
-  rpc.handle('status', async () => await service.status())
+  rpc.handle('status', async () => ({
+    ...await service.status(),
+    // The seam is a property of the running harness; report it once any agent has been seen.
+    restrictSeam: [...strictSupport.values()].some(Boolean) ? true : strictSupport.size > 0 ? false : undefined,
+  }))
   rpc.handle('library/list', async () => ({ lock: await service.library.lock(), sources: await service.sources() }))
   rpc.handle('library/check', async (args) => await service.check(Array.isArray(args.sources) ? args.sources as string[] : undefined))
   rpc.handle('library/install', async (args) => ({
@@ -480,6 +536,63 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     return { cards }
   })
+  // ---- evals: save this session as a fixture; run the workbench set
+  rpc.handle('evals/save', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const score = tracker.results(sessionId)
+    if (state === undefined || score?.facts === undefined) return { ok: false, message: 'session is not live or has no git facts yet' }
+    const stage = await service.activeStage({ id: sessionId, ...(state.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })
+    const dir = await saveFixture(join(service.paths().skills, 'evals'), optStr(args, 'name') ?? sessionId.slice(0, 8), {
+      practices: await service.practices(),
+      ...(stage !== undefined ? { activeStage: stage } : {}),
+      teamAttached: score.teamAttached,
+      cwd: state.cwd ?? '/repo',
+      facts: score.facts,
+      calls: state.calls,
+      userTurns: state.userTurns,
+      events: await telemetry.events(sessionId),
+    }, optStr(args, 'description'))
+    // Write expected.json from the current folds so the fixture guards against regressions from here on.
+    await runEvals(join(service.paths().skills, 'evals'), { only: dir.split('/').pop() ?? '' })
+    return { ok: true, dir }
+  })
+  rpc.handle('evals/run', async args => await runEvals(join(service.paths().skills, 'evals'), { update: args.update === true }))
+  // ---- hooks export (optional; both bridges)
+  rpc.handle('hooks/generate', async () => {
+    const dir = join(service.paths().root, 'hooks')
+    await mkdir(dir, { recursive: true })
+    const files: string[] = []
+    for (const dialect of ['claude-code', 'codex'] as const) {
+      const file = join(dir, `skill-presets.${dialect}.json`)
+      await writeFile(file, renderHookFile(dialect), 'utf8')
+      files.push(file)
+    }
+    return { ok: true, files }
+  })
+  // ---- worktrees
+  rpc.handle('worktrees/list', async (args) => {
+    const sessionId = optStr(args, 'sessionId')
+    const cwd = optStr(args, 'cwd') ?? (sessionId !== undefined ? tracker.results(sessionId)?.facts?.topLevel : undefined)
+    if (cwd === undefined) return { defaultBranch: 'main', worktrees: [], note: 'no repository for this session yet' }
+    const scan = await service.worktrees(cwd)
+    const { classify } = await import('./practices/worktrees.ts')
+    return { ...scan, worktrees: scan.worktrees.map(w => ({ ...w, verdict: classify(w, scan.defaultBranch) })) }
+  })
+  rpc.handle('worktrees/cleanup', async (args) => {
+    const sessionId = optStr(args, 'sessionId')
+    const cwd = optStr(args, 'cwd') ?? (sessionId !== undefined ? tracker.results(sessionId)?.facts?.topLevel : undefined)
+    if (cwd === undefined) return { ok: false, message: 'no repository for this session yet' }
+    const result = await service.cleanupWorktrees(cwd, {
+      ...(args.dryRun === true ? { dryRun: true } : {}),
+      ...(Array.isArray(args.only) ? { only: (args.only as unknown[]).filter((x): x is string => typeof x === 'string') } : {}),
+    })
+    if (sessionId !== undefined) {
+      for (const r of result.removed) telemetry.record(sessionId, { kind: 'worktree', action: 'removed', path: r.path, ...(r.branch !== undefined ? { branch: r.branch } : {}), reason: r.reason })
+      tracker.invalidateWorktrees(sessionId)
+    }
+    return { ok: true, result }
+  })
   rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })
   rpc.handle('practices/save', async args => await service.savePractices(args.practices as PracticesDoc))
@@ -506,10 +619,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     const resolved = await service.activeFor(identity)
     const { guess, suggestion } = await suggestionFor(sessionId)
     const related = await experiments.forSession(sessionId)
+    const wt = tracker.worktreesOf(sessionId)
+    const { classify } = await import('./practices/worktrees.ts')
     return {
       sessionId,
       live: score !== undefined,
       experiments: related,
+      strict: {
+        enabled: (await service.practices()).strictSkills,
+        seam: strictSupport.get(sessionId) ?? (score !== undefined ? false : undefined),
+        applied: strict.isApplied(sessionId),
+      },
+      ...(wt !== undefined ? { worktrees: { defaultBranch: wt.defaultBranch, list: wt.list.map(w => ({ ...w, verdict: classify(w, wt.defaultBranch) })) } } : {}),
       stageGuess: guess,
       ...(suggestion !== undefined ? { suggestion } : {}),
       active,

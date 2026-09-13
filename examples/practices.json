@@ -1,6 +1,7 @@
 {
   "version": 1,
   "strictSkills": false,
+  "autoCleanWorktrees": true,
   "instructionFiles": [
     "AGENTS.md",
     "CLAUDE.md",
@@ -48,6 +49,13 @@
       "id": "plan-drift",
       "mode": "advisory",
       "params": {}
+    },
+    {
+      "id": "worktree-hygiene",
+      "mode": "advisory",
+      "params": {
+        "staleDays": 14
+      }
     }
   ]
 }
