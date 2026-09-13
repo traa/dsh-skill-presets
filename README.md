@@ -91,34 +91,22 @@ rules.
 ## Strict catalog
 
 **Strict skill catalog** (Practices tab) makes the model's catalog *exactly*
-the resolved set. It is done with **composition only — the harness is never
-modified**:
+the resolved set — with **composition only; the harness is never modified**.
 
-1. Skills the model may see come from two places: this plugin's provider
-   (the active preset + overlays) and the agent preset's own
-   `skill-filesystem` row (`~/.dsh/skills`, `<project>/.dsh/skills`,
-   `.agents/skills`). Move anything you still want from those directories
-   into the library (`library/local/`) and add it to a preset.
-2. Copy the agent preset you use into the user root and drop its filesystem
-   discovery:
-   ```sh
-   cp -r <harness>/packages/preset/agent-presets/presets/standard ~/.dsh/.agent-presets/standard-strict
-   # in ~/.dsh/.agent-presets/standard-strict/agent.cordis.yml delete the two lines:
-   #   - id: skill-filesystem
-   #     name: '@deepseek-ai/dsh-skill-filesystem'
-   # and give preset.yml a distinct name.
-   ```
-   The shipped `standard` stays as it is; the copy is yours and survives a
-   harness pull.
-3. Settings → Skills → *Defaults per harness agent preset* → map
-   `standard-strict` to the skill preset you want new sessions to start from.
+The agent preset's own `skill-filesystem` row is what still shows the model
+`~/.dsh/skills` and `<project>/.dsh/skills`. Press **Create strict agent
+preset** (Practices tab) or run `dsh-skill-presets strict-preset standard
+--skill-preset build`: it copies the shipped agent preset into
+`~/.dsh/.agent-presets/standard-strict/` **without** that row — the
+harness's own copy-then-edit authoring model — and maps it under *Defaults per
+harness agent preset*. Restart once so the agent-preset picker lists it, then
+choose it for new sessions. Move anything you still want from those skill
+directories into `library/local/` first.
 
 Now every skill the model can load comes from this plugin, and the `skill`
-pre-execute guard denies anything outside the set with a reason naming the
-preset (🔐 on the chip). The plugin also feature-detects a
-`ctx.skills.restrict()` seam and will use it if a future harness release
-ships one (🔒), but nothing depends on that: the doctor reports the seam as a
-`warn` with the composition recipe above as the fix.
+pre-execute guard denies anything outside the set with a reason (🔐). The
+plugin also feature-detects a `ctx.skills.restrict()` seam and will use it if
+a future harness release ships one (🔒); nothing depends on that.
 
 ## Hooks export (optional)
 
@@ -413,6 +401,7 @@ dsh-skill-presets status | install [source…] | update [source…] | check-upda
                   | eval [dir] [--update] [--only name]
                   | export <file> [preset…] | import <file> [--replace|--rename] [--dry-run]
                   | doctor [--profile name] [--json] | lint [ref] [--json]
+                  | strict-preset <base> [id] [--skill-preset <id>]
 ```
 
 ## Acceptance checklist
