@@ -19,6 +19,7 @@ import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
+import { TeamReader, type AgentTeamsLike } from './teams.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -104,6 +105,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     log: warn,
   })
 
+  /** The registry's invalidate control, set when the provider registers. */
+  let invalidate: (() => void) | undefined
+
+  // ----------------------------------------------------------------- teams --
+  // Service first (dsh-agent-teams ≥ the ctx.agentTeams PR), tool visibility else.
+  const teams = new TeamReader(() => ctx.get('agentTeams') as AgentTeamsLike | undefined, agent => teamAttachedFor(ctx, agent))
+  ctx.inject(['agentTeams'], (teamsCtx) => {
+    const service = (teamsCtx as unknown as { agentTeams: AgentTeamsLike }).agentTeams
+    teamsCtx.effect(() => service.onAttachmentChange((sessionId) => {
+      teams.invalidate(sessionId)
+      invalidate?.() // the team-attached overlay may have flipped
+    }), 'skill-presets: attachment listener')
+  })
+
   // ---------------------------------------------------------------- strict --
   // With `strictSkills`, the session's inherited catalog is narrowed to the
   // resolved set through `agent.ctx.skills.restrict()` when the harness has it.
@@ -122,13 +137,12 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Per-agent overlay conditions are cached so `list()` stays cheap, and a
   // flip calls `invalidate()` so the catalog is republished on the next step.
   const overlayState = new Map<string, string>()
-  let invalidate: (() => void) | undefined
   const provider: SkillProviderLike = createProvider({
     setFor: async (scope, cwd) => {
       try {
         const agent = scope as AgentLike | undefined
         const sessionId = agent?.session?.id
-        const teamAttached = teamAttachedFor(ctx, scope)
+        const teamAttached = sessionId !== undefined ? (await teams.view(sessionId, scope)).attached : teamAttachedFor(ctx, scope)
         const facts = sessionId !== undefined ? tracker.results(sessionId)?.facts : undefined
         let inGitRepo = facts?.inRepo === true
         if (facts === undefined && sessionId !== undefined && cwd !== undefined) {
@@ -231,8 +245,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     try {
       const agent = payload.agent
       const sessionId = agent.session.id
-      const teamAttached = teamAttachedFor(ctx, agent)
-      await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset)
+      const team = await teams.view(sessionId, agent)
+      const teamAttached = team.attached
+      await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset, team.approvalRequired)
       const facts = tracker.results(sessionId)?.facts
       const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true }, sessionOf(agent))
       await applyStrict(agent, set.skills.map(s => s.name))
@@ -375,7 +390,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const refreshPrompt = async (agent: AgentLike): Promise<void> => {
       const sessionId = agent.session.id
       try {
-        const teamAttached = teamAttachedFor(ctx, agent)
+        const teamAttached = (await teams.view(sessionId, agent)).attached
         const score = tracker.results(sessionId)
         const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true }, sessionOf(agent))
         const preset = set.preset

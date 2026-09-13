@@ -28,6 +28,7 @@ export interface SessionState {
   factsDirty: boolean
   factsPending?: Promise<void>
   teamAttached: boolean
+  approvalRequired?: boolean
   ended: boolean
   results: PracticeResult[]
   lastReported: Map<PracticeId, string>
@@ -83,8 +84,9 @@ export class PracticeTracker {
   }
 
   /** A new step is about to run; `turn` comes from the loop. */
-  async onPreStep(sessionId: string, turn: number, teamAttached: boolean, cwd?: string, agentPreset?: string): Promise<void> {
+  async onPreStep(sessionId: string, turn: number, teamAttached: boolean, cwd?: string, agentPreset?: string, approvalRequired?: boolean): Promise<void> {
     const state = this.session(sessionId, cwd, agentPreset)
+    state.approvalRequired = approvalRequired
     if (turn !== state.currentTurn) {
       state.currentTurn = turn
       state.userTurns.push(turn)
@@ -226,6 +228,7 @@ export class PracticeTracker {
       calls: state.calls,
       ...(state.facts !== undefined ? { facts: state.facts } : {}),
       teamAttached: state.teamAttached,
+      ...(state.approvalRequired !== undefined ? { approvalRequired: state.approvalRequired } : {}),
       userTurns: state.userTurns,
       protectedBranches: doc.protectedBranches,
       ended: state.ended,
