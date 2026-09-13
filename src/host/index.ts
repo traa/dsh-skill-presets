@@ -27,6 +27,7 @@ import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle }
 import { diagnose, probe, worstSeverity } from './doctor.ts'
 import { presetImpact, sessionVsPeers, skillImpact } from './impact.ts'
 import { lintLibrary } from './lint.ts'
+import { orphanSkills, suggestPlacement } from './placement.ts'
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
@@ -681,8 +682,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       const { writeJson } = await import('./store.ts')
       await writeJson(service.paths().lock, { ...lock, skills: lock.skills.map(s => s === entry ? { ...s, promotedFrom: str(args, 'insightId') } : s) })
     }
-    return { ok: true, ...out, ref: `local/${out.name}` }
+    const text = await service.library.readSkillFile('local', out.name)
+    const suggestedPresets = suggestPlacement(text ?? out.name, await service.presets())
+    return { ok: true, ...out, ref: `local/${out.name}`, suggestedPresets }
   })
+  rpc.handle('placement/orphans', async () => {
+    const [lock, presets] = await Promise.all([service.library.lock(), service.presets()])
+    return orphanSkills(lock, presets, new Map(lock.skills.map(s => [`${s.source}/${s.dir}`, s.description])))
+  })
+  rpc.handle('placement/suggest', async args => suggestPlacement(str(args, 'text'), await service.presets()))
   // ---- SDLC team templates → dsh-agent-teams (feature-detected via its HTTP RPC)
   const agentTeamsRpc = async (method: string, body: unknown): Promise<unknown> => {
     const webServer = ctx.get('webServer') as { port?: number, address?: () => { port?: number } } | undefined

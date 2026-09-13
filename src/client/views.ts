@@ -237,6 +237,15 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           h('span', { className: 'skp-chips' }, ...o.skills.map(s => h('span', { key: s.ref, className: 'skp-chip overlay' }, s.ref.split('/').pop()))),
         )),
       ),
+      snap.orphans !== undefined && snap.orphans.length > 0 ? h('div', { className: 'skp-col' },
+        h('div', { className: 'skp-sub', style: { fontWeight: 650 } }, `Installed but in no preset (${snap.orphans.length}) — the model never sees these`),
+        ...snap.orphans.slice(0, 12).map(o => h('div', { key: o.ref, className: 'skp-row' },
+          h('span', { className: 'skp-mono' }, o.name),
+          ...o.placements.map(p => h('button', { key: p.preset, className: 'skp-btn small', disabled: snap.busy !== undefined, title: `matched: ${p.matched.join(', ')}`, onClick: () => { void controller.addToPreset(p.preset, o.ref) } }, `add to ${p.title}`)),
+          o.placements.length === 0 ? h('span', { className: 'skp-sub' }, 'no stage match — pick a preset and Edit') : null,
+        )),
+        snap.orphans.length > 12 ? h('div', { className: 'skp-sub' }, `… and ${snap.orphans.length - 12} more in the Library tab`) : null,
+      ) : null,
       status.resolution.unresolved.length > 0 ? h('div', { className: 'skp-msg error' }, `Active preset has unresolved skills: ${status.resolution.unresolved.map(u => `${u.ref} (${u.reason})`).join('; ')}`) : null,
     )
   }
@@ -350,7 +359,10 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           detail.locked.normalized ? ' · normalized from upstream' : '',
           detail.locked.history !== undefined && detail.locked.history.length > 0 ? ` · ${detail.locked.history.length} previous version${detail.locked.history.length === 1 ? '' : 's'}` : '',
         ) : null,
-        detail.usedBy.length > 0 ? h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'In presets:'), ...detail.usedBy.map(p => h('span', { key: p, className: 'skp-chip' }, p))) : h('div', { className: 'skp-sub' }, 'Not in any preset.'),
+        detail.usedBy.length > 0 ? h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'In presets:'), ...detail.usedBy.map(p => h('span', { key: p, className: 'skp-chip' }, p)))
+          : h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Not in any preset.'),
+            ...((snap.lastPromotion?.ref === detail.ref ? snap.lastPromotion.suggestedPresets : (snap.orphans?.find(o => o.ref === detail.ref)?.placements ?? [])).map(p =>
+              h('button', { key: p.preset, className: 'skp-btn small primary', disabled: snap.busy !== undefined, title: `matched: ${p.matched.join(', ')}`, onClick: () => { void controller.addToPreset(p.preset, detail.ref) } }, `add to ${p.title}`)))),
         h('div', { className: 'skp-chips' }, ...detail.files.map(f => h('span', { key: f.path, className: 'skp-chip' }, `${f.path} (${f.bytes} B)`))),
         (snap.lint?.byRef[detail.ref] ?? []).length > 0 ? h('div', { className: 'skp-col' },
           h('strong', null, 'Lint'),

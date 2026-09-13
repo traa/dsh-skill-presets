@@ -173,6 +173,8 @@ export interface ExperimentsAggregate {
   pairs: { a: string, b: string, experiments: number, aWins: number, bWins: number, ties: number }[]
 }
 export interface LibraryLint { byRef: Record<string, { rule: string, severity: 'error' | 'warn' | 'info', message: string, line?: number }[]>, counts: { error: number, warn: number, info: number } }
+export interface Placement { preset: string, title: string, stage: string, score: number, matched: string[] }
+export interface OrphanSkill { ref: string, name: string, placements: Placement[] }
 export interface DoctorReport { findings: { id: string, severity: 'ok' | 'warn' | 'fail', message: string, fix?: string }[], worst: 'ok' | 'warn' | 'fail', probedAt: string }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
