@@ -227,6 +227,47 @@ export function detectWorktreeHygiene(view: SessionView): PracticeResult {
 }
 
 /** Every detector, in display order. */
+/**
+ * When a PR of this repo is merged, the local checkout must be brought level
+ * BEFORE more work happens: pull, install, rebuild, sweep the merged worktree.
+ * Otherwise the next edits are written against yesterday's code and the
+ * running server keeps serving a stale build — which is exactly how two
+ * "suspiciously fast build" incidents happened.
+ *
+ * Red when the remote default branch is ahead (a merge landed), or when a
+ * pull happened and nothing was rebuilt afterwards. Green once the checkout
+ * is level and the build is newer than the source.
+ */
+export function detectPostMergeSync(view: SessionView): PracticeResult {
+  const facts = view.facts
+  if (facts?.inRepo !== true) return { id: 'post-merge-sync', status: 'n/a', evidence: ['not a git repository'] }
+  const synced = view.calls.filter(c => isSyncCommand(c.target)).length
+  if (facts.behind === undefined) {
+    return { id: 'post-merge-sync', status: 'n/a', evidence: ['no remote default branch to compare with'] }
+  }
+  if (facts.behind > 0) {
+    return {
+      id: 'post-merge-sync',
+      status: 'red',
+      evidence: [`origin/${facts.defaultBranch ?? 'main'} is ${facts.behind} commit${facts.behind === 1 ? '' : 's'} ahead of this checkout — a merge landed`, ...(synced > 0 ? ['a sync was run but the checkout is still behind; check its output'] : [])],
+    }
+  }
+  if (facts.buildStale === true) {
+    return { id: 'post-merge-sync', status: 'red', evidence: ['the checkout is level with the remote but lib/ is older than src/ — the build never ran after the pull'] }
+  }
+  return {
+    id: 'post-merge-sync',
+    status: 'green',
+    evidence: [`level with origin/${facts.defaultBranch ?? 'main'}${facts.buildStale === false ? ', build is current' : ''}`],
+  }
+}
+
+/** `dsh-skill-presets sync`, or the hand-rolled equivalent. */
+function isSyncCommand(target: string | undefined): boolean {
+  if (target === undefined) return false
+  return /\bdsh-skill-presets\s+sync\b/u.test(target) || (/\bgit\s+pull\b/u.test(target) && /\bnpm\s+(?:ci|install)\b|\bnpm\s+run\s+build\b/u.test(target))
+}
+
 export const DETECTORS: Record<PracticeId, (view: SessionView) => PracticeResult> = {
   'worktree': detectWorktree,
   'pull-request': detectPullRequest,
@@ -235,6 +276,7 @@ export const DETECTORS: Record<PracticeId, (view: SessionView) => PracticeResult
   'plan-before-code': detectPlanBeforeCode,
   'plan-drift': detectPlanDrift,
   'worktree-hygiene': detectWorktreeHygiene,
+  'post-merge-sync': detectPostMergeSync,
 }
 
 /** Run every enabled detector. */

@@ -18,7 +18,8 @@ import { PRACTICE_INFO } from '../host/curated.ts'
 import type { PracticeId } from '../host/types.ts'
 import { runEvals } from '../host/evals.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from '../host/bundle.ts'
-import { diagnose, probe, worstSeverity } from '../host/doctor.ts'
+import { diagnose, probe, pluginRoot, worstSeverity } from '../host/doctor.ts'
+import { checkSync, performSync, type SyncTarget } from '../host/sync.ts'
 import { lintLibrary } from '../host/lint.ts'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -233,6 +234,26 @@ async function main(): Promise<number> {
       console.log(`${lint.counts.error} error(s), ${lint.counts.warn} warning(s), ${lint.counts.info} note(s)`)
       return lint.counts.error > 0 ? 1 : 0
     }
+    case 'sync': {
+      // sync [--dry-run] [root…]   pull + install + build + sweep, per checkout
+      const roots = rest.filter(a => !a.startsWith('--'))
+      const targets: SyncTarget[] = (roots.length > 0 ? roots : [pluginRoot()]).map(r => ({ root: r, name: r.split('/').filter(Boolean).pop() ?? r }))
+      let code = 0
+      let restart = false
+      for (const target of targets) {
+        const check = await checkSync(target)
+        if (check.refused !== undefined) { console.log(`${target.name}: refused — ${check.refused}`); code = 1; continue }
+        if (check.work === 'none') { console.log(`${target.name}: already level with origin/${check.defaultBranch} (${check.local.slice(0, 7)}), build current`); continue }
+        if (rest.includes('--dry-run')) { console.log(`${target.name}: would ${check.work === 'pull' ? `sync ${check.local.slice(0, 7)} → ${check.remote.slice(0, 7)}` : 'rebuild (level with the remote, but lib/ is older than src/)'}`); continue }
+        const result = await performSync(target, check, undefined, async root => await service.cleanupWorktrees(root))
+        for (const s of result.steps) console.log(`${target.name}: ${s.ok ? 'ok  ' : 'FAIL'} ${s.step} (${(s.ms / 1000).toFixed(1)} s)${s.note !== undefined ? ` — ${s.note}` : ''}`)
+        if (!result.ok) { code = 1; continue }
+        restart = restart || result.restartNeeded
+        console.log(`${target.name}: ${check.work === 'pull' ? `${check.local.slice(0, 7)} → ${check.remote.slice(0, 7)}` : `rebuilt at ${check.local.slice(0, 7)}`}`)
+      }
+      if (restart) console.log('\nThe running server still holds the previous build — it must be restarted to pick this up.')
+      return code
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -253,6 +274,7 @@ async function main(): Promise<number> {
         '  export <file> [preset…]              write a shareable bundle (presets, overlays, pinned lock, local skill bodies)',
         '  import <file> [--replace|--rename] [--dry-run]   plan and apply a bundle; collisions kept as ours by default',
         '  lint [ref] [--json]    provider-neutrality + routing quality of installed skills; exit 1 on errors',
+        '  sync [--dry-run] [root…]   after a merge: pull --ff-only + npm ci + build + sweep merged worktrees',
         '  doctor [--profile name] [--json]   is the running plugin the source? seams present? store sane?',
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',

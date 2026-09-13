@@ -19,6 +19,7 @@ export const HOOK_PLAN: readonly { practice: PracticeId, event: 'PreToolUse' | '
   { practice: 'conductor', event: 'PreToolUse', tools: ['write', 'edit', 'bash'] },
   { practice: 'plan-before-code', event: 'PreToolUse', tools: ['write', 'edit'] },
   { practice: 'plan-drift', event: 'PreToolUse', tools: ['write', 'edit'] },
+  { practice: 'post-merge-sync', event: 'PreToolUse', tools: ['write', 'edit', 'bash'] },
   { practice: 'pull-request', event: 'Stop', tools: [] },
 ]
 
