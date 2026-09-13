@@ -149,6 +149,7 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
     stageGuess: { stage: 'test', confidence: 0.85, why: ['PR open: https://x/pull/1'] },
     suggestion: { from: 'build', to: 'test', presetId: 'test-review', confidence: 0.85, why: ['PR open'] },
     experiments: [{ id: 'e1', parent: 's-2', child: 's-3', parentPreset: 'build', childPreset: 'design', at: 't' }],
+    strict: { enabled: true, seam: true, applied: true },
     overlays: ['git-repo'],
     offered: [{ name: 'worktree-first', via: 'overlay:git-repo', description: 'd' }, { name: 'executing-plans', via: 'preset', description: 'd' }],
     unresolved: [],

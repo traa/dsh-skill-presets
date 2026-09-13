@@ -18,6 +18,7 @@ import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
+import { StrictCatalog } from './strict.ts'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
@@ -98,6 +99,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
     log: warn,
   })
+
+  // ---------------------------------------------------------------- strict --
+  // With `strictSkills`, the session's inherited catalog is narrowed to the
+  // resolved set through `agent.ctx.skills.restrict()` when the harness has it.
+  const strict = new StrictCatalog(warn)
+  ctx.effect(() => () => strict.releaseAll(), 'skill-presets: strict catalog')
+  const strictSupport = new Map<string, boolean>()
+  const applyStrict = async (agent: AgentLike, names: readonly string[]): Promise<void> => {
+    const sessionId = agent.session.id
+    const doc = await service.practices()
+    if (!doc.strictSkills) { strict.release(sessionId); return }
+    const outcome = strict.apply(sessionId, agent.ctx, names)
+    strictSupport.set(sessionId, outcome !== 'unsupported')
+  }
 
   // -------------------------------------------------------------- provider --
   // Per-agent overlay conditions are cached so `list()` stays cheap, and a
@@ -191,6 +206,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.on('agent/disposed' as never, ((payload: { agent: AgentLike }) => {
     const sessionId = payload.agent.session.id
     const top = tracker.results(sessionId)?.facts?.topLevel
+    strict.release(sessionId)
+    strictSupport.delete(sessionId)
     void tracker.onDisposed(sessionId).then(async () => {
       await service.sessionDisposed(sessionId)
       if (top !== undefined) await autoClean(top, sessionId)
@@ -214,6 +231,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset)
       const facts = tracker.results(sessionId)?.facts
       const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true }, sessionOf(agent))
+      await applyStrict(agent, set.skills.map(s => s.name))
       const activeId = set.preset?.id ?? null
       const key = `${activeId ?? ''}|${set.overlays.join(',')}|${set.skills.map(s => s.name).join(',')}`
       if (offeredState.get(sessionId) !== key) {
@@ -411,7 +429,11 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // ------------------------------------------------------------------ RPC --
   const rpc = new Rpc(ctx)
-  rpc.handle('status', async () => await service.status())
+  rpc.handle('status', async () => ({
+    ...await service.status(),
+    // The seam is a property of the running harness; report it once any agent has been seen.
+    restrictSeam: [...strictSupport.values()].some(Boolean) ? true : strictSupport.size > 0 ? false : undefined,
+  }))
   rpc.handle('library/list', async () => ({ lock: await service.library.lock(), sources: await service.sources() }))
   rpc.handle('library/check', async (args) => await service.check(Array.isArray(args.sources) ? args.sources as string[] : undefined))
   rpc.handle('library/install', async (args) => ({
@@ -565,6 +587,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       sessionId,
       live: score !== undefined,
       experiments: related,
+      strict: {
+        enabled: (await service.practices()).strictSkills,
+        seam: strictSupport.get(sessionId) ?? (score !== undefined ? false : undefined),
+        applied: strict.isApplied(sessionId),
+      },
       ...(wt !== undefined ? { worktrees: { defaultBranch: wt.defaultBranch, list: wt.list.map(w => ({ ...w, verdict: classify(w, wt.defaultBranch) })) } } : {}),
       stageGuess: guess,
       ...(suggestion !== undefined ? { suggestion } : {}),

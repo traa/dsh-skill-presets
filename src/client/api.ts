@@ -95,6 +95,8 @@ export interface Status {
   resolution: Resolution
   notes: string[]
   foundationInstalled: boolean
+  /** Whether the running harness has ctx.skills.restrict(); undefined until an agent was seen. */
+  restrictSeam?: boolean
 }
 export interface PracticeResult { id: string, status: 'green' | 'amber' | 'red' | 'n/a', evidence: string[], firstViolationAt?: string }
 export interface GitFacts {
@@ -131,6 +133,8 @@ export interface Scorecard {
   stageGuess: StageGuess
   suggestion?: Suggestion
   experiments: Experiment[]
+  /** Strict catalog state for this session. `seam` undefined = not yet known. */
+  strict: { enabled: boolean, seam?: boolean, applied: boolean }
   worktrees?: { defaultBranch: string, list: WorktreeRow[] }
   overlays: string[]
   offered: { name: string, via: string, description: string }[]

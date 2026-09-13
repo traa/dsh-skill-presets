@@ -360,7 +360,12 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           h('span', { style: { flex: 1 } }),
           h('button', { className: `skp-btn small${doc.strictSkills ? ' primary' : ''}`, onClick: () => save({ strictSkills: !doc.strictSkills }) }, doc.strictSkills ? 'on' : 'off'),
         ),
-        h('div', { className: 'skp-sub' }, 'When on, a `skill` call for a name outside the active preset (plus overlays) is denied with a reason. Hiding such skills from the catalog additionally needs the in-tree skill restriction seam; until then this is the guard only.'),
+        h('div', { className: 'skp-sub' },
+          'When on, the model\'s skill catalog for each session is narrowed to the resolved set (preset + overlays) through the harness\'s `ctx.skills.restrict()`, and a `skill` call for anything else is denied with a reason. ',
+          status.restrictSeam === true ? h('span', { className: 'skp-pill green' }, 'restrict seam present — catalog is hidden, not just denied')
+            : status.restrictSeam === false ? h('span', { className: 'skp-pill amber' }, 'restrict seam absent in this harness — guard only (denial), catalog still lists other skills')
+              : h('span', { className: 'skp-pill' }, 'seam support unknown until a session runs'),
+        ),
       ),
       h('div', { className: 'skp-card' },
         h('div', { className: 'skp-row' },
@@ -522,6 +527,7 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
         h('i', { className: `skp-dot ${worst === 'n/a' ? '' : worst}` }),
         h('span', { className: 'skp-swatch', style: { background: card?.activePreset?.color ?? 'var(--dsw-alias-border-l2)' } }),
         title,
+        card?.strict.enabled === true ? h('span', { className: 'skp-lock', title: card.strict.applied ? 'Strict: catalog narrowed to this set' : 'Strict: guard only (harness lacks skills.restrict)' }, card.strict.applied ? '🔒' : '🔐') : null,
         card !== undefined && card.overlays.length > 0 ? h('span', { className: 'skp-sub' }, `+${card.overlays.length}`) : null,
         suggestion !== undefined ? h('span', { className: 'skp-sub' }, `→ ${STAGE_LABEL[suggestion.to] ?? suggestion.to}?`) : null,
       ),
