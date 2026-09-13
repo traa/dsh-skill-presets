@@ -142,6 +142,35 @@ fixture** in the sidebar records the current session. Change a detector, a
 stage rule, or a summary fold and the fixtures fail first — the playbook's
 "re-run the evals whenever a skill or hook changes", made concrete.
 
+## Updates are automatic
+
+Merging the PR is the last thing a human does. Every `syncEverySec` (default
+120 s) the plugin fetches each sync target — itself, plus any sibling plugin
+listed in `syncTargets` — and when `origin/main` is strictly ahead of a clean
+`main` checkout it runs **`git pull --ff-only` → `npm ci` → `npm run build` →
+sweep merged worktrees**, then writes a *restart pending* flag
+(`<dshHome>/skill-presets.restart.json`). It never restarts itself: a process
+should not kill the session it is serving.
+
+The restart is the supervisor's job:
+
+```sh
+dsh-skill-presets serve            # runs `pnpm dsh web` from the harness checkout and
+                                   # relaunches it when the flag says pending and no
+                                   # session is mid-turn (or after a crash)
+dsh-skill-presets install-agent    # writes a launchd agent for `serve`; prints the
+                                   # bootstrap command — NOT loaded automatically
+```
+
+Under the supervisor the Skills page shows *"An update is built and waiting
+for a restart"* with **Restart now**; the supervisor also restarts on its own
+within a minute once every session is idle. Without the supervisor the pull
+and build still happen automatically; the banner tells you to restart by hand
+once and to start with `serve` from then on. `doctor` reports both states.
+Anything unusual — a dirty checkout, a non-`main` branch, local commits the
+remote lacks, a failing build step — stops the sync for that target and is
+logged; the previous build keeps running.
+
 ## Doctor
 
 `dsh-skill-presets doctor [--profile web]` — and a banner on the Skills page
@@ -391,6 +420,7 @@ dsh-skill-presets status | install [source…] | update [source…] | check-upda
                   | eval [dir] [--update] [--only name]
                   | export <file> [preset…] | import <file> [--replace|--rename] [--dry-run]
                   | doctor [--profile name] [--json] | lint [ref] [--json]
+                  | sync [--dry-run] [root…] | serve [--harness d] | install-agent
 ```
 
 ## Acceptance checklist

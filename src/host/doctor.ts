@@ -53,6 +53,9 @@ export interface ProbeResults {
   libVersion?: string
   /** The root that was probed, to compare with what the profile resolves. */
   probedRoot?: string
+  /** Self-update state. */
+  restartPending?: { pending: boolean, reason?: string, since?: string }
+  supervised?: boolean
 }
 
 export function diagnose(r: ProbeResults): Finding[] {
@@ -86,6 +89,8 @@ export function diagnose(r: ProbeResults): Finding[] {
     push('version', 'fail', `the host runs ${r.hostVersion} but lib/ is ${r.libVersion}`, 'restart the profile')
   }
 
+  if (r.restartPending?.pending === true) push('restart', 'fail', `a self-update landed (${r.restartPending.reason ?? 'unknown'}) and the server has not restarted yet`, r.supervised === true ? 'the supervisor restarts as soon as no session is mid-turn' : 'start the server with `dsh-skill-presets serve` so this happens by itself; for now, restart by hand')
+  if (r.supervised === false) push('supervisor', 'warn', 'the server is not running under the supervisor; merged PRs are pulled and built automatically but the restart stays manual', 'quit the terminal server and run `dsh-skill-presets serve` (or `install-agent` for launchd)')
   if (r.restrictSeam === false) push('restrict-seam', 'warn', 'this harness has no ctx.skills.restrict(); strict mode denies out-of-set loads but the catalog still lists skills from ~/.dsh/skills and project .dsh/skills', 'for an exact catalog use composition: copy your agent preset under <dshHome>/.agent-presets/, delete its skill-filesystem row, map it under Settings → Skills → Defaults per agent preset; the harness itself stays untouched')
   else if (r.restrictSeam === true) push('restrict-seam', 'ok', 'ctx.skills.restrict() present')
   if (r.agentTeams === false) push('agent-teams', 'warn', 'ctx.agentTeams is absent; team attachment is inferred from tool visibility', 'update dsh-agent-teams to a build with the service')
@@ -145,6 +150,8 @@ export interface ProbeOptions {
   host?: { startedAt: number, restrictSeam?: boolean, agentTeams?: boolean, version?: string }
   runEvals?: () => Promise<{ total: number, failed: number }>
   env?: Record<string, string | undefined>
+  restartPending?: { pending: boolean, reason?: string, since?: string }
+  supervised?: boolean
 }
 
 export async function probe(options: ProbeOptions = {}): Promise<ProbeResults> {
@@ -232,6 +239,8 @@ export async function probe(options: ProbeOptions = {}): Promise<ProbeResults> {
     ...(options.runEvals !== undefined ? { evals: await options.runEvals() } : {}),
     ...(options.host?.version !== undefined ? { hostVersion: options.host.version } : {}),
     ...(libVersion !== undefined ? { libVersion } : {}),
+    ...(options.restartPending !== undefined ? { restartPending: options.restartPending } : {}),
+    ...(options.supervised !== undefined ? { supervised: options.supervised } : {}),
   }
 }
 

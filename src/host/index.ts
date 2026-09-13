@@ -24,7 +24,8 @@ import { loadTemplates, toBlueprintInput } from './templates.ts'
 import { KnowledgeBridge } from './knowledge.ts'
 import { pruningReport } from './pruning.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from './bundle.ts'
-import { diagnose, probe, worstSeverity } from './doctor.ts'
+import { diagnose, probe, pluginRoot, worstSeverity } from './doctor.ts'
+import { checkSync, performSync, readRestartFlag, writeRestartFlag, RESTART_EXIT_CODE, type SyncResult, type SyncTarget } from './sync.ts'
 import { presetImpact, sessionVsPeers, skillImpact } from './impact.ts'
 import { lintLibrary } from './lint.ts'
 import { orphanSkills, suggestPlacement } from './placement.ts'
@@ -36,7 +37,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
-import { resolveWorkbenchFallback } from './store.ts'
+import { resolveDshHome, resolveWorkbenchFallback } from './store.ts'
 import { Telemetry, practiceDeltaAround } from './telemetry.ts'
 import { buildTools } from './tools.ts'
 import type { Overlay, PracticesDoc, Preset, SkillSource } from './types.ts'
@@ -45,6 +46,10 @@ import type { Overlay, PracticesDoc, Preset, SkillSource } from './types.ts'
 export interface Config {
   /** Absolute workbench root override. Normally unset. */
   root?: string
+  /** Seconds between checks for merged work on the sync targets; 0 disables. Default 120. */
+  syncEverySec?: number
+  /** Extra checkouts to keep in sync (sibling plugins); the plugin itself is always included. */
+  syncTargets?: { root: string, name?: string, build?: string[][], needsRestart?: boolean }[]
 }
 
 /**
@@ -599,10 +604,80 @@ export function apply(ctx: Context, config: Config = {}): void {
     const [current, sessions] = await Promise.all([telemetry.summary(sessionId), telemetry.recentSessions(500)])
     return sessionVsPeers(current, sessions, typeof args.n === 'number' ? args.n : 20)
   })
+  // ---- self-update: merged PR → pull, build, sweep, flag a restart; the supervisor restarts when idle
+  const dshHome = resolveDshHome()
+  const syncTargets = (): SyncTarget[] => {
+    const targets: SyncTarget[] = [{ root: pluginRoot(), name: 'dsh-skill-presets', needsRestart: true }]
+    for (const extra of (config as { syncTargets?: { root: string, name?: string, build?: string[][], needsRestart?: boolean }[] }).syncTargets ?? []) {
+      targets.push({ root: extra.root, name: extra.name ?? extra.root.split('/').pop() ?? extra.root, ...(extra.build !== undefined ? { build: extra.build } : {}), needsRestart: extra.needsRestart !== false })
+    }
+    return targets
+  }
+  const syncLog: SyncResult[] = []
+  let syncing = false
+  const anyBusy = (): boolean => {
+    const agents = ctx.get('agents') as { list?(): { status?: string }[] } | undefined
+    try { return (agents?.list?.() ?? []).some(a => a.status === 'running') } catch { return false }
+  }
+  const runSync = async (reason: string): Promise<SyncResult[]> => {
+    if (syncing) return []
+    syncing = true
+    const done: SyncResult[] = []
+    try {
+      for (const target of syncTargets()) {
+        const check = await checkSync(target)
+        if (!check.behind) continue
+        if (check.dirty) { warn(`${target.name}: origin/main moved but the checkout is dirty; not syncing`); continue }
+        log(`${target.name}: origin/main ${check.remote.slice(0, 7)} ahead of ${check.local.slice(0, 7)} (${reason}); syncing`)
+        const result = await performSync(target, check, undefined, async root => await service.cleanupWorktrees(root))
+        syncLog.unshift(result)
+        syncLog.splice(20)
+        done.push(result)
+        for (const s of result.steps) (s.ok ? log : warn)(`${target.name}: ${s.step} ${s.ok ? 'ok' : 'FAILED'} (${s.ms} ms)${s.note !== undefined ? ` — ${s.note}` : ''}`)
+        if (result.restartPending) {
+          const current = await readRestartFlag(dshHome)
+          await writeRestartFlag(dshHome, { pending: true, reason: `${target.name} ${check.local.slice(0, 7)} → ${check.remote.slice(0, 7)}`, since: current.pending ? current.since ?? new Date().toISOString() : new Date().toISOString(), updates: { ...current.updates, [target.name]: check.remote }, ...({ busy: anyBusy() } as object) })
+        }
+      }
+    } finally {
+      syncing = false
+    }
+    return done
+  }
+  // Keep the flag's `busy` honest so the supervisor restarts between turns, not mid-turn.
+  const busyTick = setInterval(() => {
+    void (async () => {
+      const flag = await readRestartFlag(dshHome) as { pending: boolean, busy?: boolean }
+      if (!flag.pending) return
+      const busy = anyBusy()
+      if (flag.busy !== busy) await writeRestartFlag(dshHome, { ...flag, ...({ busy } as object) })
+    })()
+  }, 5000)
+  busyTick.unref?.()
+  ctx.effect(() => () => clearInterval(busyTick), 'skill-presets: busy flag')
+  const syncEvery = Number((config as { syncEverySec?: number }).syncEverySec ?? 120)
+  if (syncEvery > 0) {
+    const t = setInterval(() => { void runSync('poll') }, Math.max(30, syncEvery) * 1000)
+    t.unref?.()
+    ctx.effect(() => () => clearInterval(t), 'skill-presets: sync poll')
+  }
+  rpc.handle('sync/status', async () => ({ targets: syncTargets().map(t => t.name), recent: syncLog, restart: await readRestartFlag(dshHome), supervised: process.env.DSH_SUPERVISED === '1', syncEverySec: syncEvery }))
+  rpc.handle('sync/now', async () => ({ results: await runSync('manual'), restart: await readRestartFlag(dshHome) }))
+  rpc.handle('restart/now', async () => {
+    // Under the supervisor: exit with the agreed code and it relaunches us.
+    // Without one: refuse — an exit would just stop the server.
+    if (process.env.DSH_SUPERVISED !== '1') return { ok: false, message: 'the server is not running under `dsh-skill-presets serve`; restart it by hand this once, then start it with serve so future restarts are automatic' }
+    if (anyBusy()) return { ok: false, message: 'a session is mid-turn; the supervisor will restart as soon as it is idle' }
+    await writeRestartFlag(dshHome, { pending: true, reason: 'manual', since: new Date().toISOString() })
+    setTimeout(() => process.exit(RESTART_EXIT_CODE), 300)
+    return { ok: true, message: 'restarting' }
+  })
   // ---- doctor: is the running plugin the source, and are its seams present?
   rpc.handle('doctor', async () => {
     const results = await probe({
       paths: service.paths(),
+      restartPending: await readRestartFlag(dshHome),
+      supervised: process.env.DSH_SUPERVISED === '1',
       host: {
         startedAt,
         ...([...strictSupport.values()].some(Boolean) ? { restrictSeam: true } : strictSupport.size > 0 ? { restrictSeam: false } : {}),

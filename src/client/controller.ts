@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type SyncStatus, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -15,6 +15,7 @@ export interface SettingsSnapshot {
   insights?: InsightCandidate[]
   pruning?: PruningReport
   doctor?: DoctorReport
+  sync?: SyncStatus
   impact?: ImpactReport
   experiments?: ExperimentsAggregate
   lint?: LibraryLint
@@ -46,8 +47,8 @@ export class SettingsController extends Store<SettingsSnapshot> {
   async refresh(): Promise<void> {
     this.set({ loading: true, error: undefined })
     try {
-      const [status, doctor, orphans] = await Promise.all([rpc<Status>('status'), rpc<DoctorReport>('doctor').catch(() => undefined), rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined)])
-      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}) })
+      const [status, doctor, orphans, sync] = await Promise.all([rpc<Status>('status'), rpc<DoctorReport>('doctor').catch(() => undefined), rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined), rpc<SyncStatus>('sync/status').catch(() => undefined)])
+      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}), ...(sync !== undefined ? { sync } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }
@@ -286,6 +287,25 @@ export class SettingsController extends Store<SettingsSnapshot> {
       await this.openSkill(out.ref)
       return `Promoted to local skill "${out.name}". Edit the body into a checklist${out.suggestedPresets.length > 0 ? `; it looks like a ${out.suggestedPresets.map(p => p.title).join(' or ')} skill — add it from the drawer` : ''}.`
     })
+  }
+
+  async syncNow(): Promise<void> {
+    await this.action('sync', async () => {
+      const out = await rpc<{ results: { target: string, ok: boolean, from: string, to: string }[], restart: { pending: boolean } }>('sync/now', {})
+      if (out.results.length === 0) return 'Everything is up to date with origin/main.'
+      return `${out.results.map(r => `${r.target}: ${r.ok ? 'synced' : 'FAILED'} ${r.from.slice(0, 7)} → ${r.to.slice(0, 7)}`).join('; ')}${out.restart.pending ? ' — restart pending' : ''}`
+    })
+  }
+
+  async restartNow(): Promise<void> {
+    this.set({ busy: 'restart', error: undefined, notice: 'Restarting… the page reconnects by itself.' })
+    try {
+      const out = await rpc<{ ok: boolean, message: string }>('restart/now', {})
+      if (!out.ok) this.set({ busy: undefined, notice: undefined, error: out.message })
+    } catch {
+      // The connection drops when the server exits; that is success.
+      this.set({ busy: undefined })
+    }
   }
 
   async generateHooks(): Promise<void> {

@@ -20,6 +20,9 @@ import { runEvals } from '../host/evals.ts'
 import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from '../host/bundle.ts'
 import { diagnose, probe, worstSeverity } from '../host/doctor.ts'
 import { lintLibrary } from '../host/lint.ts'
+import { checkSync, performSync, readRestartFlag, type SyncTarget } from '../host/sync.ts'
+import { pluginRoot } from '../host/doctor.ts'
+import { resolveDshHome } from '../host/store.ts'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -233,6 +236,73 @@ async function main(): Promise<number> {
       console.log(`${lint.counts.error} error(s), ${lint.counts.warn} warning(s), ${lint.counts.info} note(s)`)
       return lint.counts.error > 0 ? 1 : 0
     }
+    case 'sync': {
+      // sync [--dry-run] [root…]   pull+build+sweep every target whose origin/main is ahead
+      const roots = rest.filter(a => !a.startsWith('--'))
+      const targets: SyncTarget[] = (roots.length > 0 ? roots : [pluginRoot()]).map(r => ({ root: r, name: r.split('/').pop() ?? r, needsRestart: true }))
+      let code = 0
+      for (const target of targets) {
+        const check = await checkSync(target)
+        if (check.note !== undefined) { console.log(`${target.name}: ${check.note}`); continue }
+        if (!check.behind) { console.log(`${target.name}: up to date (${check.local.slice(0, 7)})`); continue }
+        if (check.dirty) { console.log(`${target.name}: origin/main is ahead but the checkout is dirty — not touching it`); code = 1; continue }
+        if (rest.includes('--dry-run')) { console.log(`${target.name}: would sync ${check.local.slice(0, 7)} → ${check.remote.slice(0, 7)}`); continue }
+        const result = await performSync(target, check, undefined, async root => await service.cleanupWorktrees(root))
+        for (const s of result.steps) console.log(`${target.name}: ${s.ok ? 'ok  ' : 'FAIL'} ${s.step} (${s.ms} ms)${s.note !== undefined ? ` — ${s.note}` : ''}`)
+        if (!result.ok) code = 1
+        else console.log(`${target.name}: ${check.local.slice(0, 7)} → ${check.remote.slice(0, 7)}${result.restartPending ? ' — restart needed (the supervisor does it; or restart by hand)' : ''}`)
+      }
+      const flag = await readRestartFlag(resolveDshHome())
+      if (flag.pending) console.log(`restart pending since ${flag.since ?? '?'}: ${flag.reason ?? ''}`)
+      return code
+    }
+    case 'serve': {
+      // Hand over to the supervisor entry (same args).
+      const { spawn } = await import('node:child_process')
+      const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'serve.js'), ...rest], { stdio: 'inherit' })
+      return await new Promise<number>(resolve => child.on('exit', c => resolve(c ?? 0)))
+    }
+    case 'install-agent': {
+      // install-agent [--harness dir] [--interval s]   write a launchd agent that runs the supervisor at login
+      const hi = rest.indexOf('--harness'); const harness = hi !== -1 ? rest[hi + 1] : (process.env.DSH_HARNESS ?? '/Users/andriistepikov/Documents/bonfire/dsh/deepseek-harness')
+      const ii = rest.indexOf('--interval'); const interval = ii !== -1 ? rest[ii + 1] : '60'
+      const home = process.env.HOME ?? ''
+      const label = 'dev.dsh.skill-presets.serve'
+      const plist = join(home, 'Library', 'LaunchAgents', `${label}.plist`)
+      const serveJs = join(dirname(fileURLToPath(import.meta.url)), 'serve.js')
+      const logDir = join(resolveDshHome(), 'logs')
+      await mkdir(logDir, { recursive: true })
+      const pathEnv = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array>
+    <string>${process.execPath}</string><string>${serveJs}</string>
+    <string>--harness</string><string>${harness}</string>
+    <string>--interval</string><string>${interval}</string>
+  </array>
+  <key>WorkingDirectory</key><string>${harness}</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>${pathEnv}</string>
+    <key>HOME</key><string>${home}</string>
+    <key>DSH_HOME</key><string>${resolveDshHome()}</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>${join(logDir, 'serve.out.log')}</string>
+  <key>StandardErrorPath</key><string>${join(logDir, 'serve.err.log')}</string>
+</dict></plist>
+`
+      await mkdir(dirname(plist), { recursive: true })
+      await writeFile(plist, xml, 'utf8')
+      console.log(`wrote ${plist}`)
+      console.log('NOT loaded — a second server on the same port would fail. When your terminal server is stopped, run:')
+      console.log(`  launchctl bootstrap gui/$(id -u) ${plist}     # start now and at every login`)
+      console.log(`  launchctl bootout gui/$(id -u)/${label}       # stop it`)
+      console.log(`logs: ${logDir}/serve.{out,err}.log`)
+      return 0
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -253,6 +323,9 @@ async function main(): Promise<number> {
         '  export <file> [preset…]              write a shareable bundle (presets, overlays, pinned lock, local skill bodies)',
         '  import <file> [--replace|--rename] [--dry-run]   plan and apply a bundle; collisions kept as ours by default',
         '  lint [ref] [--json]    provider-neutrality + routing quality of installed skills; exit 1 on errors',
+        '  sync [--dry-run] [root…]  pull + build + sweep every checkout whose origin/main is ahead',
+        '  serve [--harness d] [--interval s]   run the web server under the supervisor (auto-restart after a merge)',
+        '  install-agent [--harness d]          write a launchd agent for serve (not loaded; instructions printed)',
         '  doctor [--profile name] [--json]   is the running plugin the source? seams present? store sane?',
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',

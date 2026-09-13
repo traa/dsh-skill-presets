@@ -617,6 +617,15 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         h('div', { className: 'skp-sub' }, 'Curated, versioned skill presets per SDLC stage; practice guardrails; usage insight. Provider-neutral.'),
       ),
       h('div', { className: 'skp-tabs' }, ...tabs.map(([id, label]) => h('button', { key: id, className: `skp-tab${snap.tab === id ? ' on' : ''}`, onClick: () => controller.setTab(id) }, label))),
+      snap.sync?.restart.pending === true ? h('div', { className: 'skp-card', style: { borderColor: 'var(--dsw-alias-brand-primary)' } },
+        h('div', { className: 'skp-line' }, h('i', { className: 'skp-dot amber' }), h('span', null, h('strong', null, 'An update is built and waiting for a restart'), h('span', { className: 'skp-sub' }, ` — ${snap.sync.restart.reason ?? ''}${snap.sync.restart.since !== undefined ? ` · since ${new Date(snap.sync.restart.since).toLocaleTimeString()}` : ''}`))),
+        h('div', { className: 'skp-row' },
+          snap.sync.supervised
+            ? h('span', { className: 'skp-sub' }, snap.sync.restart.busy === true ? 'A session is mid-turn; the supervisor restarts as soon as it is idle.' : 'The supervisor restarts within a minute; or now:')
+            : h('span', { className: 'skp-sub' }, 'Not running under the supervisor — restart the server by hand this once, then start it with `dsh-skill-presets serve` so this is automatic.'),
+          snap.sync.supervised ? h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined, onClick: () => { void controller.restartNow() } }, 'Restart now') : null,
+        ),
+      ) : null,
       snap.doctor !== undefined && snap.doctor.worst !== 'ok' ? h('div', { className: 'skp-card', style: { borderColor: snap.doctor.worst === 'fail' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-warn-primary)' } },
         h('div', { className: 'skp-row' }, h('i', { className: `skp-dot ${snap.doctor.worst === 'fail' ? 'red' : 'amber'}` }), h('strong', null, snap.doctor.worst === 'fail' ? 'The running plugin is not healthy' : 'Some features are degraded'), h('span', { className: 'skp-sub' }, '— dsh-skill-presets doctor')),
         ...snap.doctor.findings.filter(f => f.severity !== 'ok').map(f => h('div', { key: f.id, className: 'skp-col', style: { gap: 2 } },
@@ -894,6 +903,7 @@ export function makePluginCard(React: ReactLike, controller: SettingsController,
         h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Workspace default'), h('strong', null, status.activePreset?.title ?? 'none')),
         h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Library'), h('span', null, `${status.lock.skills.length} skills · ${status.presets.length} presets · ${status.overlays.filter(o => o.enabled).length} overlays`)),
         h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Store'), h('span', { className: 'skp-mono' }, `${status.root}/skills`)),
+        snap.sync !== undefined ? h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Updates'), h('span', null, `${snap.sync.supervised ? 'automatic (supervised)' : 'pulled + built automatically; restart is manual'} · checks every ${snap.sync.syncEverySec} s`), h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.syncNow() } }, 'Check now')) : null,
         openSkills !== undefined ? h('div', { className: 'skp-row' }, h('button', { className: 'skp-btn small', onClick: openSkills }, 'Open Skills settings')) : null,
       ),
     )
