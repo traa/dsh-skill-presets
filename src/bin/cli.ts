@@ -17,6 +17,7 @@ import { DETECTORS, isMutatingCommand } from '../host/practices/detectors.ts'
 import { PRACTICE_INFO } from '../host/curated.ts'
 import type { PracticeId } from '../host/types.ts'
 import { runEvals } from '../host/evals.ts'
+import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from '../host/bundle.ts'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -159,6 +160,43 @@ async function main(): Promise<number> {
       console.log(`${total - failed}/${total} fixtures pass`)
       return failed > 0 ? 1 : 0
     }
+    case 'export': {
+      // export <file> [preset…]
+      const file = rest[0]
+      if (file === undefined) { console.error('usage: export <file.json> [preset…]'); return 2 }
+      await service.ensure()
+      const [presets, overlays, sources, lock] = await Promise.all([service.presets(), service.overlays(), service.sources(), service.library.lock()])
+      const ids = rest.slice(1).length > 0 ? rest.slice(1) : presets.map(p => p.id)
+      const bundle = await exportBundle({ presetIds: ids, presets, overlays, sources, lock, readLocal: dir => readLocalSkill(service.paths().library, dir) })
+      await writeFile(file, `${JSON.stringify(bundle, null, 2)}\n`, 'utf8')
+      console.log(`wrote ${file}: ${bundle.presets.length} preset(s), ${bundle.lock.length} pinned skill(s), ${Object.keys(bundle.localSkills).length} local skill(s)`)
+      return 0
+    }
+    case 'import': {
+      // import <file> [--replace|--rename] [--dry-run]
+      const file = rest[0]
+      if (file === undefined) { console.error('usage: import <file.json> [--replace|--rename] [--dry-run]'); return 2 }
+      await service.ensure()
+      const bundle = validateBundle(JSON.parse(await readFile(file, 'utf8')))
+      const [presets, sources, lock] = await Promise.all([service.presets(), service.sources(), service.library.lock()])
+      const onCollision = rest.includes('--replace') ? 'replace' : rest.includes('--rename') ? 'rename' : 'skip'
+      const plan = planImport(bundle, { presets, sources, lock, onCollision })
+      for (const p of plan.presets) console.log(`preset ${p.action.padEnd(7)} ${p.id}${p.from !== p.id ? ` (from ${p.from})` : ''}`)
+      for (const s of plan.newSources) console.log(`source  add     ${s.id} (disabled)`)
+      for (const t of plan.toInstall) console.log(`install         ${t.source}/${t.dir}${t.pinnedCommit !== undefined ? ` @${t.pinnedCommit.slice(0, 7)}` : ''}`)
+      for (const l of plan.localSkills) console.log(`local   ${l.action.padEnd(7)} ${l.dir}`)
+      for (const x of plan.problems) console.error(`problem         ${x}`)
+      if (plan.collisions.length > 0 && onCollision === 'skip') console.log(`collisions kept as ours: ${plan.collisions.join(', ')} (use --replace or --rename)`)
+      if (rest.includes('--dry-run') || plan.problems.length > 0) return plan.problems.length > 0 ? 1 : 0
+      const result = await applyImport(bundle, plan, {
+        savePreset: p => service.savePreset(p), saveSources: s => service.saveSources(s), libraryRoot: service.paths().library,
+        sync: (source, dirs) => service.library.sync(source, { dirs }), sources,
+      })
+      const local = (await service.sources()).find(s => s.id === 'local')
+      if (local !== undefined) await service.library.sync(local)
+      console.log(`written: ${result.written.join(', ') || '-'}; installed: ${result.installed.join(', ') || '-'}; skipped: ${result.skipped.join(', ') || '-'}`)
+      return 0
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -176,6 +214,8 @@ async function main(): Promise<number> {
         '  summary <usage.jsonl>  fold one session log',
         '  rollup                 rebuild usage-rollup.json',
         '  worktrees [cwd] [--dry-run|--clean]   list worktrees; remove merged+clean ones (and their branch)',
+        '  export <file> [preset…]              write a shareable bundle (presets, overlays, pinned lock, local skill bodies)',
+        '  import <file> [--replace|--rename] [--dry-run]   plan and apply a bundle; collisions kept as ours by default',
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',
         '  check <practice> [--cwd d] [--json] [--hook <dialect>]   replay one detector; exit 2 when red AND hard',

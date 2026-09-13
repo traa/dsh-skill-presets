@@ -7,6 +7,7 @@
     "version",
     "strictSkills",
     "autoCleanWorktrees",
+    "pruning",
     "instructionFiles",
     "protectedBranches",
     "practices"
@@ -20,6 +21,30 @@
     },
     "autoCleanWorktrees": {
       "type": "boolean"
+    },
+    "pruning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minSessions",
+        "maxLoadRate",
+        "minUnknown"
+      ],
+      "properties": {
+        "minSessions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxLoadRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "minUnknown": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     },
     "instructionFiles": {
       "type": "array",

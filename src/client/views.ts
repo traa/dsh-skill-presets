@@ -153,6 +153,10 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           h('div', { className: 'skp-bar' }, h('i', { style: { width: pct(coverage) } })),
         ) : null,
         missing.length > 0 ? h('div', { className: 'skp-msg error' }, `${missing.length} skill${missing.length === 1 ? '' : 's'} not installed`) : null,
+        ...(snap.pruning?.stale.filter(x => x.preset === preset.id) ?? []).map(x => h('div', { key: x.ref, className: 'skp-row' },
+          h('span', { className: 'skp-pill amber', title: `offered in ${x.offered} sessions, loaded in ${x.loaded}` }, `${x.name}: loaded ${pct(x.rate)} of ${x.offered} sessions`),
+          h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.pruneFromPreset(preset.id, x.ref) } }, 'remove from preset?'),
+        )),
         h('div', { className: 'skp-row' },
           h('button', { className: `skp-btn small${on ? '' : ' primary'}`, disabled: snap.busy !== undefined || on, onClick: () => { void controller.activate(preset.id) } }, on ? 'Default' : 'Make default'),
           h('button', { className: 'skp-btn small', onClick: () => controller.startEdit(preset) }, 'Edit'),
@@ -176,8 +180,23 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         active !== null ? h('button', { className: 'skp-btn small', onClick: () => { void controller.activate(null) } }, 'Clear default') : null,
         h('span', { className: 'skp-sub' }, `· ${Object.keys(status.active.sessions).length} session${Object.keys(status.active.sessions).length === 1 ? '' : 's'} with their own choice`),
         h('span', { style: { flex: 1 } }),
+        h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.exportBundle() }, title: 'Download every preset with overlays, pinned versions, and local skill bodies as one JSON file' }, 'Export all'),
+        h('label', { className: 'skp-btn small', title: 'Import a bundle; same-id presets are kept as ours unless you choose otherwise' }, 'Import…',
+          h('input', { type: 'file', accept: 'application/json,.json', style: { display: 'none' }, onChange: (e: { target: { files?: { 0?: { text(): Promise<string> } } } }) => {
+            const file = e.target.files?.[0]
+            if (file !== undefined) void file.text().then(text => controller.importBundle(text, 'rename'))
+          } })),
         h('button', { className: 'skp-btn small', onClick: () => controller.newPreset() }, '+ New preset'),
       ),
+      h('div', {
+        className: 'skp-sub', style: { border: '1px dashed var(--dsw-alias-border-l2)', borderRadius: 8, padding: '8px 10px' },
+        onDragOver: (e: { preventDefault(): void }) => e.preventDefault(),
+        onDrop: (e: { preventDefault(): void, dataTransfer?: { files?: { 0?: { text(): Promise<string> } } } }) => {
+          e.preventDefault()
+          const file = e.dataTransfer?.files?.[0]
+          if (file !== undefined) void file.text().then(text => controller.importBundle(text, 'rename'))
+        },
+      }, 'Drop a preset bundle here to import it (same-id presets are imported with an -imported suffix).'),
       h('div', { className: 'skp-card' },
         h('strong', null, 'Defaults per harness agent preset'),
         h('div', { className: 'skp-sub' }, 'A new session under this agent preset starts from the chosen skill preset; a session\'s own choice (header chip) still wins. Leave blank to inherit the workspace default.'),
@@ -439,14 +458,41 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           ),
         ),
         h('div', { className: 'skp-card' },
-          h('strong', null, 'Requested but unknown'),
-          h('div', { className: 'skp-sub' }, 'Names the model asked the `skill` tool for that were not in its catalog — the strongest signal of a missing skill.'),
+          h('div', { className: 'skp-row' },
+            h('strong', null, 'Requested but unknown'),
+            h('span', { style: { flex: 1 } }),
+            h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.searchMissingUpstream() } }, 'Search upstream'),
+          ),
+          h('div', { className: 'skp-sub' }, `Names the model asked the \`skill\` tool for that were not in its catalog — the strongest signal of a missing skill. Hints appear at ≥ ${snap.pruning?.thresholds.minUnknown ?? 3} requests.`),
           unknown.length === 0 ? h('div', { className: 'skp-sub' }, 'None.') : h('div', { className: 'skp-chips' }, ...unknown.map(([n, c]) => h('span', { key: n, className: 'skp-chip miss' }, `${n} ×${c}`))),
+          ...(snap.pruning?.missing ?? []).map(m => h('div', { key: m.name, className: 'skp-row' },
+            h('span', { className: 'skp-mono' }, m.name), h('span', { className: 'skp-sub' }, `×${m.count}`),
+            m.inLibrary !== undefined && snap.status?.activePreset !== undefined
+              ? h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined, onClick: () => { void controller.addToPreset(snap.status!.activePreset!.id, m.inLibrary!) } }, `add to ${snap.status.activePreset.title}?`)
+              : m.upstream !== undefined && m.upstream.length > 0
+                ? h('span', { className: 'skp-sub' }, `available upstream: ${m.upstream.map(u => `${u.source}/${u.dir}`).join(', ')} — install it from the Library tab`)
+                : h('span', { className: 'skp-sub' }, 'not in the library or upstream — write it as a local skill?'),
+          )),
         ),
         h('div', { className: 'skp-card' },
           h('strong', null, 'By provider / model'),
           h('div', { className: 'skp-sub' }, 'Data, not a dependency: see whether a preset lands differently under different models.'),
           ...models.map(([k, v]) => h('div', { key: k, className: 'skp-row' }, h('span', { className: 'skp-mono' }, k), h('span', { className: 'skp-sub' }, `${v.sessions} sessions · ${v.loads} loads`))),
+        ),
+      ),
+      h('div', { className: 'skp-card' },
+        h('strong', null, 'Promotable insights'),
+        h('div', { className: 'skp-sub' }, 'Knowledge the model keeps re-reading (workflow rules, conventions, preferences with confidence ≥ 2 or ≥ 40 reads). Promote one to a local skill the catalog names next to the task; the insight stays and links to it.'),
+        snap.insights === undefined || snap.insights.length === 0 ? h('div', { className: 'skp-sub' }, 'None qualify yet.') : h('table', { className: 'skp-table' },
+          h('thead', null, h('tr', null, h('th', null, 'Insight'), h('th', null, 'Kind'), h('th', null, 'Conf.'), h('th', null, 'Reads'), h('th', null, 'Skill'), h('th', null, ''))),
+          h('tbody', null, ...snap.insights.map(i => h('tr', { key: i.id, title: i.body.slice(0, 300) },
+            h('td', null, i.title, h('div', { className: 'skp-sub' }, `${i.domain} · ${i.scope}${i.project !== undefined ? ` ${i.project}` : ''}`)),
+            h('td', null, i.kind), h('td', null, String(i.confidence)), h('td', null, String(i.hits ?? 0)),
+            h('td', { className: 'skp-mono' }, i.promotedTo ?? i.skillName),
+            h('td', null, i.promotedTo !== undefined
+              ? h('button', { className: 'skp-btn small', onClick: () => { void controller.openSkill(`local/${i.promotedTo}`) } }, 'Open')
+              : h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined, onClick: () => { void controller.promoteInsight(i.id) } }, 'Promote')),
+          ))),
         ),
       ),
       snap.recent !== undefined && snap.recent.length > 0 ? h('div', { className: 'skp-col' },
@@ -579,6 +625,7 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
     const snap = useStoreHook(React, controller)
     const visible = props.useTabInfo !== undefined ? props.useTabInfo().tab.visible : true
     React.useEffect(() => visible ? controller.watch() : undefined, [visible])
+    React.useEffect(() => { if (snap.templates === undefined) void controller.loadTemplates() }, [])
     const card = snap.card
     const status = snap.status
     if (card === undefined || status === undefined) return h('div', { className: 'skp skp-side' }, h('div', { className: 'skp-sub' }, snap.error ?? 'Reading scorecard…'))
@@ -660,6 +707,17 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
         card.worktrees.list.filter(w => !w.primary && w.verdict.kind === 'removable').length > 1
           ? h('div', { className: 'skp-row' }, h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.cleanupWorktrees() } }, 'Remove all merged'))
           : null,
+      ) : null,
+      snap.templates !== undefined && snap.templates.length > 0 ? h('div', { className: 'skp-col' },
+        h('h3', null, 'SDLC teams'),
+        h('div', { className: 'skp-sub' }, snap.agentTeamsPresent === true
+          ? 'Attach a team whose conductor instructions follow the practice skills. Members inherit this session\'s provider.'
+          : 'Templates for dsh-agent-teams. Install that plugin to attach with one click.'),
+        ...snap.templates.map(t => h('div', { key: t.id, className: 'skp-skill-row', title: t.objective },
+          h('span', { className: `skp-dot${card.activePreset?.stage === t.stage ? ' green' : ''}` }),
+          h('span', { className: 'skp-skill-name' }, h('strong', null, t.name), h('span', { className: 'skp-sub' }, ` · ${t.members.length} members · ${STAGE_LABEL[t.stage] ?? t.stage}`)),
+          h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined || card.summary.overlays.includes('team-attached'), onClick: () => { void controller.attachTemplate(t.id) } }, 'Attach'),
+        )),
       ) : null,
       h('div', { className: 'skp-col' },
         h('h3', null, 'Experiment'),

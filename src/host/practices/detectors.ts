@@ -30,6 +30,8 @@ export interface SessionView {
   readonly facts?: GitFacts
   /** Whether `team_delegate` is visible to this agent (a team is attached). */
   readonly teamAttached: boolean
+  /** Whether the team's own instructions demand approval before the first delegation. Default true. */
+  readonly approvalRequired?: boolean
   /** Turn indices at which the user spoke (a new turn began). */
   readonly userTurns: readonly number[]
   readonly activeStage?: Stage
@@ -148,7 +150,8 @@ export function detectConductor(view: SessionView): PracticeResult {
   }
   // Approval rule: the first delegation must come in a turn AFTER the one in
   // which the conductor first spoke — i.e. the user had a chance to approve.
-  if (delegations.length > 0) {
+  // Applies unless the team's own instructions waive it.
+  if (delegations.length > 0 && view.approvalRequired !== false) {
     const first = delegations[0]
     const firstUserTurn = view.userTurns[0] ?? 1
     if (first.turn <= firstUserTurn) {

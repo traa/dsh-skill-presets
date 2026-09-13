@@ -235,6 +235,11 @@ export function validatePractices(raw: unknown, fallback: () => PracticesDoc): P
     version: 1,
     strictSkills: doc.strictSkills === true,
     autoCleanWorktrees: doc.autoCleanWorktrees !== false,
+    pruning: {
+      minSessions: typeof doc.pruning?.minSessions === 'number' ? doc.pruning.minSessions : base.pruning.minSessions,
+      maxLoadRate: typeof doc.pruning?.maxLoadRate === 'number' ? doc.pruning.maxLoadRate : base.pruning.maxLoadRate,
+      minUnknown: typeof doc.pruning?.minUnknown === 'number' ? doc.pruning.minUnknown : base.pruning.minUnknown,
+    },
     instructionFiles: Array.isArray(doc.instructionFiles) && doc.instructionFiles.every(f => typeof f === 'string')
       ? doc.instructionFiles
       : base.instructionFiles,

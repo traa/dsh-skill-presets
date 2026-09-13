@@ -131,6 +131,8 @@ export interface PracticesDoc {
   readonly protectedBranches: readonly string[]
   /** Remove merged, clean worktrees automatically (on session end and hourly). */
   readonly autoCleanWorktrees: boolean
+  /** Stale-skill / missing-skill hint thresholds. */
+  readonly pruning: { minSessions: number, maxLoadRate: number, minUnknown: number }
   readonly practices: readonly PracticeConfig[]
 }
 

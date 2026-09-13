@@ -79,6 +79,7 @@ export const CURATED_PRESETS: readonly Preset[] = [
       ref(SRC.matt, 'grill-me'),
       ref(SRC.matt, 'to-spec'),
       ref(SRC.local, 'sdlc-stage-handoff'),
+      ref(SRC.local, 'writing-skills-from-insights'),
     ]),
   preset('design', 'Design', 'design',
     'Shape the intent into spec.md and an implementation plan.md that names files, order, and the tests that prove it.',
@@ -172,6 +173,7 @@ export function defaultPractices(): PracticesDoc {
     version: 1,
     strictSkills: false,
     autoCleanWorktrees: true,
+    pruning: { minSessions: 20, maxLoadRate: 0.1, minUnknown: 3 },
     // Provider-neutral: any of these counts as "the project's instructions file".
     instructionFiles: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.agents/AGENTS.md', 'CONTRIBUTING.md'],
     protectedBranches: ['main', 'master', 'develop', 'trunk'],

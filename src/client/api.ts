@@ -47,7 +47,13 @@ export interface LockedSkill {
 export interface Lock { version: 1, sources: Record<string, { commit: string, fetchedAt: string }>, skills: LockedSkill[] }
 export interface PracticeConfig { id: string, mode: 'off' | 'advisory' | 'hard', params: Record<string, unknown> }
 export interface PracticesDoc {
-  version: 1, strictSkills: boolean, autoCleanWorktrees: boolean, instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
+  version: 1, strictSkills: boolean, autoCleanWorktrees: boolean, pruning: { minSessions: number, maxLoadRate: number, minUnknown: number },
+  instructionFiles: string[], protectedBranches: string[], practices: PracticeConfig[]
+}
+export interface PruningReport {
+  stale: { preset: string, ref: string, name: string, offered: number, loaded: number, rate: number }[]
+  missing: { name: string, count: number, inLibrary?: string, upstream?: { source: string, dir: string }[] }[]
+  thresholds: { minSessions: number, maxLoadRate: number, minUnknown: number }
 }
 export interface WorktreeRow {
   path: string, head: string, branch?: string, primary: boolean, locked?: string | true, prunable?: string, detached: boolean,
@@ -156,6 +162,8 @@ export interface Rollup {
   byModel: Record<string, { sessions: number, loads: number }>
   suggestions: { suggested: number, accepted: number, dismissed: number, acceptMsSum: number }
 }
+export interface InsightCandidate { id: string, domain: string, title: string, body: string, kind: string, confidence: number, hits?: number, scope: 'global' | 'project', project?: string, promotedTo?: string, skillName: string }
+export interface TeamTemplate { id: string, name: string, stage: string, objective: string, members: { id: string, name: string, responsibility: string }[], conductorInstructions: string }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
 export interface SkillDetail { ref: string, text?: string, files: { path: string, bytes: number }[], locked?: LockedSkill, usedBy: string[] }

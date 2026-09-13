@@ -5,13 +5,15 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type InsightCandidate, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
   rollup?: Rollup
   recent?: SessionSummary[]
   checks?: CheckReport[]
+  insights?: InsightCandidate[]
+  pruning?: PruningReport
   job?: JobState
   detail?: SkillDetail
   loading: boolean
@@ -51,11 +53,13 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
   async loadInsights(rebuild = false): Promise<void> {
     try {
-      const [rollup, recent] = await Promise.all([
+      const [rollup, recent, insights, pruning] = await Promise.all([
         rpc<Rollup>('usage/rollup', { rebuild }),
         rpc<SessionSummary[]>('usage/recent', { limit: 40 }),
+        rpc<InsightCandidate[]>('knowledge/candidates', {}).catch(() => [] as InsightCandidate[]),
+        rpc<PruningReport>('pruning/report', {}).catch(() => undefined),
       ])
-      this.set({ rollup, recent })
+      this.set({ rollup, recent, insights, ...(pruning !== undefined ? { pruning } : {}) })
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
@@ -209,6 +213,66 @@ export class SettingsController extends Store<SettingsSnapshot> {
     })
   }
 
+  async exportBundle(): Promise<void> {
+    await this.action('export', async () => {
+      const bundle = await rpc<{ presets: { id: string }[] }>('bundle/export', {})
+      const text = JSON.stringify(bundle, null, 2)
+      if (typeof document !== 'undefined' && typeof URL !== 'undefined' && typeof Blob !== 'undefined') {
+        const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `skill-presets-${new Date().toISOString().slice(0, 10)}.json`
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+      return `Exported ${bundle.presets.length} preset(s).`
+    })
+  }
+
+  async importBundle(text: string, onCollision: 'skip' | 'replace' | 'rename' = 'skip'): Promise<void> {
+    await this.action('import', async () => {
+      let bundle: unknown
+      try { bundle = JSON.parse(text) } catch { throw new Error('that file is not JSON') }
+      const out = await rpc<{ ok: boolean, plan: { presets: { id: string, action: string }[], toInstall: unknown[], problems: string[], collisions: string[] }, result?: { written: string[], installed: string[], skipped: string[] } }>('bundle/apply', { bundle, onCollision })
+      if (!out.ok) throw new Error(`import refused: ${out.plan.problems.join('; ')}`)
+      const r = out.result!
+      return `Imported: ${r.written.join(', ') || 'nothing new'}${r.installed.length > 0 ? `; installed ${r.installed.length} skill(s)` : ''}${r.skipped.length > 0 ? `; kept ours: ${r.skipped.join(', ')}` : ''}.`
+    })
+  }
+
+  async pruneFromPreset(preset: string, ref: string): Promise<void> {
+    await this.action('prune', async () => {
+      await rpc('pruning/remove', { preset, ref })
+      await this.loadInsights()
+      return `Removed ${ref.split('/').pop()} from "${preset}". It stays in the library.`
+    })
+  }
+
+  async addToPreset(preset: string, ref: string): Promise<void> {
+    await this.action('prune', async () => {
+      await rpc('pruning/add', { preset, ref })
+      await this.loadInsights()
+      return `Added ${ref.split('/').pop()} to "${preset}".`
+    })
+  }
+
+  async searchMissingUpstream(): Promise<void> {
+    await this.action('search', async () => {
+      const pruning = await rpc<PruningReport>('pruning/report', { searchUpstream: true })
+      this.set({ pruning })
+      return `Searched ${pruning.missing.filter(m => m.upstream !== undefined).length} name(s) upstream.`
+    })
+  }
+
+  async promoteInsight(id: string, name?: string): Promise<void> {
+    await this.action('promote', async () => {
+      const out = await rpc<{ ok: boolean, ref: string, name: string }>('knowledge/promote', { insightId: id, ...(name !== undefined ? { name } : {}) })
+      await this.loadInsights()
+      await this.openSkill(out.ref)
+      return `Promoted to local skill "${out.name}". Edit the body into a checklist, then add it to a preset.`
+    })
+  }
+
   async generateHooks(): Promise<void> {
     await this.action('hooks', async () => {
       const out = await rpc<{ ok: boolean, files: string[] }>('hooks/generate', {})
@@ -226,6 +290,8 @@ export class SettingsController extends Store<SettingsSnapshot> {
 
 export interface ScorecardSnapshot {
   card?: Scorecard
+  templates?: TeamTemplate[]
+  agentTeamsPresent?: boolean
   status?: Status
   loading: boolean
   error?: string
@@ -337,6 +403,26 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
       const out = await rpc<{ ok: boolean, message?: string, experiment?: { child: string } }>('experiments/fork', { sessionId: this.sessionId, preset })
       await this.refresh()
       this.set({ busy: undefined, ...(out.ok ? { notice: `Forked as ${out.experiment?.child.slice(0, 8)} under ${preset ?? 'no preset'}. Open it from the session list to run the same task.` } : { error: out.message }) })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async loadTemplates(): Promise<void> {
+    try {
+      const out = await rpc<{ templates: TeamTemplate[], agentTeamsPresent: boolean }>('teams/templates', {})
+      this.set({ templates: out.templates, agentTeamsPresent: out.agentTeamsPresent })
+    } catch (error) {
+      this.set({ error: (error as Error).message })
+    }
+  }
+
+  async attachTemplate(templateId: string): Promise<void> {
+    this.set({ busy: 'team', error: undefined })
+    try {
+      const out = await rpc<{ ok: boolean, message?: string, teamName?: string }>('teams/attach-template', { sessionId: this.sessionId, templateId })
+      await this.refresh(true)
+      this.set({ busy: undefined, ...(out.ok ? { notice: `Team "${out.teamName}" attached. The conductor protocol overlay applies on the model's next step.` } : { error: out.message }) })
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
     }

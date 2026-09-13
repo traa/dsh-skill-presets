@@ -19,6 +19,12 @@ import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
 import { Experiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
+import { TeamReader, type AgentTeamsLike } from './teams.ts'
+import { loadTemplates, toBlueprintInput } from './templates.ts'
+import { KnowledgeBridge } from './knowledge.ts'
+import { pruningReport } from './pruning.ts'
+import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle } from './bundle.ts'
+import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { mkdir, writeFile } from 'node:fs/promises'
@@ -104,6 +110,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     log: warn,
   })
 
+  /** The registry's invalidate control, set when the provider registers. */
+  let invalidate: (() => void) | undefined
+
+  // ----------------------------------------------------------------- teams --
+  // Service first (dsh-agent-teams ≥ the ctx.agentTeams PR), tool visibility else.
+  const teams = new TeamReader(() => ctx.get('agentTeams') as AgentTeamsLike | undefined, agent => teamAttachedFor(ctx, agent))
+  ctx.inject(['agentTeams'], (teamsCtx) => {
+    const service = (teamsCtx as unknown as { agentTeams: AgentTeamsLike }).agentTeams
+    teamsCtx.effect(() => service.onAttachmentChange((sessionId) => {
+      teams.invalidate(sessionId)
+      invalidate?.() // the team-attached overlay may have flipped
+    }), 'skill-presets: attachment listener')
+  })
+
   // ---------------------------------------------------------------- strict --
   // With `strictSkills`, the session's inherited catalog is narrowed to the
   // resolved set through `agent.ctx.skills.restrict()` when the harness has it.
@@ -122,13 +142,12 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Per-agent overlay conditions are cached so `list()` stays cheap, and a
   // flip calls `invalidate()` so the catalog is republished on the next step.
   const overlayState = new Map<string, string>()
-  let invalidate: (() => void) | undefined
   const provider: SkillProviderLike = createProvider({
     setFor: async (scope, cwd) => {
       try {
         const agent = scope as AgentLike | undefined
         const sessionId = agent?.session?.id
-        const teamAttached = teamAttachedFor(ctx, scope)
+        const teamAttached = sessionId !== undefined ? (await teams.view(sessionId, scope)).attached : teamAttachedFor(ctx, scope)
         const facts = sessionId !== undefined ? tracker.results(sessionId)?.facts : undefined
         let inGitRepo = facts?.inRepo === true
         if (facts === undefined && sessionId !== undefined && cwd !== undefined) {
@@ -231,8 +250,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     try {
       const agent = payload.agent
       const sessionId = agent.session.id
-      const teamAttached = teamAttachedFor(ctx, agent)
-      await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset)
+      const team = await teams.view(sessionId, agent)
+      const teamAttached = team.attached
+      await tracker.onPreStep(sessionId, payload.turn, teamAttached, agent.session.header.cwd, agent.session.header.agentPreset, team.approvalRequired)
       const facts = tracker.results(sessionId)?.facts
       const set = await service.setFor({ teamAttached, inGitRepo: facts?.inRepo === true }, sessionOf(agent))
       await applyStrict(agent, set.skills.map(s => s.name))
@@ -375,7 +395,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const refreshPrompt = async (agent: AgentLike): Promise<void> => {
       const sessionId = agent.session.id
       try {
-        const teamAttached = teamAttachedFor(ctx, agent)
+        const teamAttached = (await teams.view(sessionId, agent)).attached
         const score = tracker.results(sessionId)
         const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true }, sessionOf(agent))
         const preset = set.preset
@@ -535,6 +555,131 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- bundles: export / import presets across workbenches
+  rpc.handle('bundle/export', async (args) => {
+    const ids = Array.isArray(args.ids) ? (args.ids as unknown[]).filter((x): x is string => typeof x === 'string') : (await service.presets()).map(p => p.id)
+    const [presets, overlays, sources, lock] = await Promise.all([service.presets(), service.overlays(), service.sources(), service.library.lock()])
+    return await exportBundle({ presetIds: ids, presets, overlays, sources, lock, readLocal: dir => readLocalSkill(service.paths().library, dir) })
+  })
+  rpc.handle('bundle/plan', async (args) => {
+    const bundle = validateBundle(args.bundle)
+    const [presets, sources, lock] = await Promise.all([service.presets(), service.sources(), service.library.lock()])
+    const onCollision = args.onCollision === 'replace' || args.onCollision === 'rename' ? args.onCollision : 'skip'
+    return planImport(bundle, { presets, sources, lock, onCollision })
+  })
+  rpc.handle('bundle/apply', async (args) => {
+    const bundle = validateBundle(args.bundle)
+    const [presets, sources, lock] = await Promise.all([service.presets(), service.sources(), service.library.lock()])
+    const onCollision = args.onCollision === 'replace' || args.onCollision === 'rename' ? args.onCollision : 'skip'
+    const plan = planImport(bundle, { presets, sources, lock, onCollision })
+    if (plan.problems.length > 0) return { ok: false, plan }
+    const result = await applyImport(bundle, plan, {
+      savePreset: p => service.savePreset(p),
+      saveSources: s => service.saveSources(s),
+      libraryRoot: service.paths().library,
+      sync: (source, dirs) => service.library.sync(source, { dirs }),
+      sources,
+    })
+    const local = (await service.sources()).find(s => s.id === 'local')
+    if (local !== undefined && result.written.some(w => w.startsWith('local/'))) await service.library.sync(local)
+    return { ok: true, plan, result }
+  })
+  // ---- pruning: stale skills per preset, missing skills the model asked for
+  rpc.handle('pruning/report', async (args) => {
+    const [presets, sessions, rollup, lock, doc] = await Promise.all([
+      service.presets(), telemetry.recentSessions(1000), telemetry.rollup(), service.library.lock(), service.practices(),
+    ])
+    const installed = new Map(lock.skills.filter(s => s.orphaned === undefined).map(s => [s.name, `${s.source}/${s.dir}`]))
+    const inPresets = new Set<string>()
+    for (const p of presets) for (const e of p.skills) inPresets.add(e.as ?? lock.skills.find(s => `${s.source}/${s.dir}` === e.ref)?.name ?? e.ref.split('/').pop()!)
+    // Optional upstream lookup for missing names (network; only when asked).
+    let discovered: { source: string, skills: ReturnType<typeof discoverSkills> }[] | undefined
+    if (args.searchUpstream === true) {
+      discovered = []
+      const gh = new GithubClient()
+      for (const source of (await service.sources()).filter(s => s.kind === 'github' && s.enabled && s.repo !== undefined)) {
+        try {
+          const tree = await gh.tree(source.repo!, source.ref)
+          discovered.push({ source: source.id, skills: discoverSkills(tree.entries, source.paths ?? ['skills']) })
+        } catch { /* offline: no upstream hints */ }
+      }
+    }
+    return pruningReport({ presets, sessions, rollup, installed, inPresets, ...(discovered !== undefined ? { discovered } : {}), thresholds: doc.pruning })
+  })
+  rpc.handle('pruning/remove', async (args) => {
+    const presetId = str(args, 'preset')
+    const ref = str(args, 'ref')
+    const preset = (await service.presets()).find(p => p.id === presetId)
+    if (preset === undefined) throw new Error(`preset "${presetId}" does not exist`)
+    await service.savePreset({ ...preset, skills: preset.skills.filter(s => s.ref !== ref) })
+    return { ok: true }
+  })
+  rpc.handle('pruning/add', async (args) => {
+    // Add an installed skill (by ref) to a preset — the "add x?" one-click.
+    const presetId = str(args, 'preset')
+    const ref = str(args, 'ref')
+    const preset = (await service.presets()).find(p => p.id === presetId)
+    if (preset === undefined) throw new Error(`preset "${presetId}" does not exist`)
+    if (preset.skills.some(s => s.ref === ref)) return { ok: true, already: true }
+    await service.savePreset({ ...preset, skills: [...preset.skills, { ref }] })
+    return { ok: true }
+  })
+  // ---- knowledge → skill (reads dsh-knowledge's stores read-only)
+  const knowledge = new KnowledgeBridge(() => service.paths())
+  rpc.handle('knowledge/candidates', async args => await knowledge.candidates({
+    ...(typeof args.minConfidence === 'number' ? { minConfidence: args.minConfidence } : {}),
+    ...(typeof args.minHits === 'number' ? { minHits: args.minHits } : {}),
+  }))
+  rpc.handle('knowledge/promote', async (args) => {
+    const out = await knowledge.promote(str(args, 'insightId'), { ...(optStr(args, 'name') !== undefined ? { name: optStr(args, 'name') } : {}), ...(args.force === true ? { force: true } : {}) })
+    const local = (await service.sources()).find(s => s.id === 'local')
+    if (local !== undefined) await service.library.sync(local, { dirs: [out.name] })
+    // Record the reverse link in the lock.
+    const lock = await service.library.lock()
+    const entry = lock.skills.find(s => s.source === 'local' && s.dir === out.name)
+    if (entry !== undefined) {
+      const { writeJson } = await import('./store.ts')
+      await writeJson(service.paths().lock, { ...lock, skills: lock.skills.map(s => s === entry ? { ...s, promotedFrom: str(args, 'insightId') } : s) })
+    }
+    return { ok: true, ...out, ref: `local/${out.name}` }
+  })
+  // ---- SDLC team templates → dsh-agent-teams (feature-detected via its HTTP RPC)
+  const agentTeamsRpc = async (method: string, body: unknown): Promise<unknown> => {
+    const webServer = ctx.get('webServer') as { port?: number, address?: () => { port?: number } } | undefined
+    const harnessRef = (globalThis as { harness?: { call?(method: string, args: unknown): Promise<unknown> } }).harness
+    // Same-process first: the flat transport agent-teams also binds.
+    if (typeof harnessRef?.call === 'function') return await harnessRef.call(`agent-teams/${method}`, body)
+    const port = webServer?.port ?? webServer?.address?.().port
+    if (port === undefined) throw new Error('dsh-agent-teams RPC is not reachable from here; attach the team from the Agent Teams panel')
+    const response = await fetch(`http://127.0.0.1:${port}/plugins/dsh-agent-teams/rpc/${method}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const text = await response.text()
+    const parsed = text.length > 0 ? JSON.parse(text) as { error?: string } : {}
+    if (!response.ok || typeof parsed.error === 'string') throw new Error(parsed.error ?? `agent-teams ${method} failed (${response.status})`)
+    return parsed
+  }
+  rpc.handle('teams/templates', async () => {
+    const { templates, problems } = await loadTemplates(join(service.paths().root, 'teams', 'templates'))
+    return { templates, problems, agentTeamsPresent: ctx.get('agentTeams') !== undefined }
+  })
+  rpc.handle('teams/attach-template', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const templateId = str(args, 'templateId')
+    const { templates } = await loadTemplates(join(service.paths().root, 'teams', 'templates'))
+    const template = templates.find(t => t.id === templateId)
+    if (template === undefined) throw new Error(`unknown template ${templateId}`)
+    if (ctx.get('agentTeams') === undefined && ctx.get('webServer') === undefined) {
+      return { ok: false, message: 'dsh-agent-teams is not composed; install it to attach teams' }
+    }
+    try {
+      const saved = await agentTeamsRpc('teams.save', { sessionId, team: toBlueprintInput(template) }) as { id: string, name: string }
+      await agentTeamsRpc('mode.attach', { sessionId, teamId: saved.id })
+      teams.invalidate(sessionId)
+      invalidate?.()
+      return { ok: true, teamId: saved.id, teamName: saved.name }
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'attach failed' }
+    }
   })
   // ---- evals: save this session as a fixture; run the workbench set
   rpc.handle('evals/save', async (args) => {
