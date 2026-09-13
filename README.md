@@ -121,6 +121,53 @@ fixture** in the sidebar records the current session. Change a detector, a
 stage rule, or a summary fold and the fixtures fail first — the playbook's
 "re-run the evals whenever a skill or hook changes", made concrete.
 
+## Teams
+
+**Attachment through a service.** When dsh-agent-teams publishes
+`ctx.agentTeams` ([traa/dsh-agent-teams#7](https://github.com/traa/dsh-agent-teams/pull/7))
+the plugin reads attachment there and re-publishes the catalog on
+`onAttachmentChange`; without it, `team_delegate` visibility remains the seam.
+The **conductor** practice now reads the team's own `conductorInstructions`:
+a team that says "delegate immediately" is not flagged for skipping the
+approval turn.
+
+**SDLC team templates** (`templates/teams/`, plus `<workbench>/teams/templates/`):
+`sdlc-build-team` (implementer · tester · reviewer→implementer) and
+`sdlc-review-board` (plan conformance · security · performance), whose
+conductor instructions name `conductor-protocol`, `worktree-first`, `pr-always`.
+Members inherit the session's provider. **Attach** from the session's Skills tab
+(goes through agent-teams' own `teams.save` + `mode.attach`).
+
+## Knowledge → skill
+
+The Insights tab lists **promotable insights** from dsh-knowledge's stores
+(read-only): `workflow` / `convention` / `preference` with confidence ≥ 2 **or**
+≥ 40 reads, not retired or superseded. **Promote** writes
+`library/local/<kebab-title>/SKILL.md` from a deterministic template — the
+insight *is* the body, with a back-link — re-indexes local, records
+`promotedFrom` in the lock and `promotions.json`, and opens the drawer so you
+turn the prose into a checklist. The insight stays in knowledge. Local skill
+`writing-skills-from-insights` teaches the model the same move.
+
+## Pruning hints
+
+Stage cards show **"remove from preset?"** for a skill offered in ≥ 20 sessions
+of that preset with a load rate ≤ 10 % (thresholds in `practices.json`);
+removal is from the preset, never the library. Insights shows **"add to
+‹preset›?"** for a name the model asked the `skill` tool for ≥ 3 times that no
+preset exposes — one click when it is in the library, an upstream pointer after
+**Search upstream**, or "write it as a local skill?" otherwise.
+
+## Export / import
+
+**Export all** downloads one JSON bundle: presets, every overlay, the sources
+their skills come from, the exact lock entries (commit + digest), and the
+bodies of referenced local skills. **Import…** or drop a bundle on the Stages
+tab: same-id presets are imported with an `-imported` suffix; missing sources
+are added *disabled*; missing skills are installed at the pinned commit; local
+skills are written first so refs resolve. CLI: `export <file> [preset…]`,
+`import <file> [--replace|--rename] [--dry-run]`.
+
 ## How the model sees exactly one set
 
 The plugin registers one `SkillProvider` into the host `ctx.skills` registry.
@@ -277,6 +324,7 @@ dsh-skill-presets status | install [source…] | update [source…] | check-upda
                   | hooks generate [dir]
                   | check <practice> [--cwd d] [--json] [--hook <dialect>]
                   | eval [dir] [--update] [--only name]
+                  | export <file> [preset…] | import <file> [--replace|--rename] [--dry-run]
 ```
 
 ## Acceptance checklist
@@ -298,9 +346,8 @@ Phase 2 — shipped: per-session presets, stage suggestions, plan drift,
 experiments (see above).
 Phase 3 — shipped: worktree lifecycle, strict catalog (in-tree seam in
 traa/deepseek-harness#1), hooks export, replay evals.
-Phase 4 — `dsh-agent-teams` publishing an `agentTeams` service + SDLC team
-templates, promote a `dsh-knowledge` insight to a local skill, stale-skill
-pruning, preset export/import.
+Phase 4 — shipped: `ctx.agentTeams` consumer, SDLC team templates, insight →
+skill, pruning hints, export/import.
 
 ## Development
 

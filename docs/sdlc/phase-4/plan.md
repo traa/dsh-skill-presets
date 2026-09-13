@@ -44,6 +44,15 @@ target on the Stages tab. Tests: round-trip, collision report.
 
 ## Task 6 — Docs, PR, cleanup via `worktrees --clean`.
 
+## Departures (recorded during execution)
+- Task 2: the attach button lives in the SESSION's Skills tab, not the Stages tab —
+  agent-teams' RPC needs a live session id (`rpc.requireAgent`), which the
+  root-scoped settings page does not have. Reached over its HTTP prefix on the same
+  web server; `harness.call` first when present.
+- Task 3: candidates also qualify on reads (≥ 40 hits) because no insight in the
+  real store had confidence ≥ 2 yet; a `gotcha` is excluded by default (single facts).
+- Task 4: `pruning/report` only touches the network when `searchUpstream` is set.
+
 ## Riskiest step
 Task 2's cross-plugin RPC: agent-teams' handlers require an agent (`rpc.requireAgent`);
 attaching from our page needs the session id passed as agent-teams expects. Verify its
