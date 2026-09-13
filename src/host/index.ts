@@ -624,8 +624,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
   // ---- doctor: is the running plugin the source, and are its seams present?
   rpc.handle('doctor', async () => {
+    const foundation = await service.foundation()
     const results = await probe({
       paths: service.paths(),
+      foundation: { updatable: foundation.updatable, customized: foundation.customized, added: foundation.added },
       host: {
         startedAt,
         ...([...strictSupport.values()].some(Boolean) ? { restrictSeam: true } : strictSupport.size > 0 ? { restrictSeam: false } : {}),
@@ -827,6 +829,17 @@ export function apply(ctx: Context, config: Config = {}): void {
       tracker.invalidateWorktrees(sessionId)
     }
     return { ok: true, result }
+  })
+  // ---- foundation: adopt curated presets/overlays that moved on since seeding
+  rpc.handle('foundation/report', async () => await service.foundation())
+  rpc.handle('foundation/adopt', async (args) => {
+    const ids = Array.isArray(args.ids) ? (args.ids as unknown[]).filter((x): x is string => typeof x === 'string') : undefined
+    const applied = await service.adoptFoundation(ids)
+    // Adopting adds skill refs to presets/overlays, so the catalog the model
+    // sees is stale until it is republished — otherwise the newly adopted
+    // skills are invisible until the next restart.
+    invalidate?.()
+    return { ok: true, applied }
   })
   rpc.handle('presets/clear-session', async (args) => { await service.clearSession(str(args, 'sessionId')); return { ok: true } })
   rpc.handle('overlays/save', async (args) => { await service.saveOverlays(args.overlays as Overlay[]); return { ok: true } })

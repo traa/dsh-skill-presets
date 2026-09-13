@@ -235,6 +235,32 @@ async function main(): Promise<number> {
       console.log(`${lint.counts.error} error(s), ${lint.counts.warn} warning(s), ${lint.counts.info} note(s)`)
       return lint.counts.error > 0 ? 1 : 0
     }
+    case 'foundation': {
+      // foundation [--adopt] [--json] [id…]
+      await service.ensure()
+      const ids = rest.filter(a => !a.startsWith('--'))
+      if (rest.includes('--adopt')) {
+        const applied = await service.adoptFoundation(ids.length > 0 ? ids : undefined)
+        if (applied.length === 0) { console.log('nothing to adopt; the curated foundation is already current'); return 0 }
+        for (const a of applied) console.log(`${a.kind.padEnd(8)} ${a.id}${a.added.length > 0 ? ` — adds ${a.added.join(', ')}` : ''}`)
+        console.log('Adopted. New skills are offered on the next agent step; no restart needed.')
+        return 0
+      }
+      const report = await service.foundation()
+      if (rest.includes('--json')) { console.log(JSON.stringify(report, null, 2)); return 0 }
+      // Only what adopting would actually change: a customized entry that
+      // lacks no curated skill is the user's business, not a pending update.
+      const pending = report.diffs.filter(d => d.status === 'new' || d.missingSkills.length > 0)
+      for (const d of pending) {
+        const refs = d.missingSkills.length > 0 ? ` — adds ${d.missingSkills.join(', ')}` : ''
+        const fields = d.changedFields.length > 0 ? ` (differs: ${d.changedFields.join(', ')})` : ''
+        console.log(`${d.status.padEnd(10)} ${d.kind.padEnd(8)} ${d.id}${refs}${fields}`)
+      }
+      console.log(pending.length === 0
+        ? 'curated presets and overlays are current'
+        : `${report.updatable} updatable, ${report.added} new, ${report.customized} customized — adopt with \`dsh-skill-presets foundation --adopt\``)
+      return 0
+    }
     case 'sync': {
       // sync [--dry-run] [root…]   pull + install + build + sweep, per checkout
       const roots = rest.filter(a => !a.startsWith('--'))
@@ -291,6 +317,7 @@ async function main(): Promise<number> {
         '  strict-preset <base> [id] [--skill-preset <id>]   copy a shipped agent preset into ~/.dsh/.agent-presets without local skill discovery',
         '  lint [ref] [--json]    provider-neutrality + routing quality of installed skills; exit 1 on errors',
         '  sync [--dry-run] [root…]   after a merge: pull --ff-only + npm ci + build + sweep merged worktrees',
+        '  foundation [--adopt] [--json] [id…]   curated presets/overlays that moved on since your store was seeded; adopting merges',
         '  doctor [--profile name] [--json]   is the running plugin the source? seams present? store sane?',
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',

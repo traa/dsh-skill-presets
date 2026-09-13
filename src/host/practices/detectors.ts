@@ -45,6 +45,18 @@ export interface SessionView {
   readonly worktrees?: { removable: number, attention: string[], stale: number, symlinked: number, total: number }
 }
 
+/**
+ * Evidence is rendered into the model's own system prompt, so anything
+ * interpolated from a tool call must be bounded. A `bash` target is the ENTIRE
+ * command — a 5000-character heredoc once landed verbatim in an evidence line
+ * and flooded the context window. Collapsing whitespace also keeps a
+ * multi-line command on one evidence line.
+ */
+export function short(text: string, max = 120): string {
+  const flat = text.replace(/\s+/gu, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
+
 const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
 const BASH_TOOLS = new Set(['bash', 'Bash', 'shell', 'terminal'])
 
@@ -106,7 +118,7 @@ export function detectWorktree(view: SessionView): PracticeResult {
     'red',
     [
       `${mutating.length} file mutation${mutating.length === 1 ? '' : 's'} on protected branch ${facts.branch ?? '(detached)'} in the primary checkout`,
-      `first: ${mutating[0].name}${mutating[0].target !== undefined ? ` ${mutating[0].target}` : ''}`,
+      `first: ${mutating[0].name}${mutating[0].target !== undefined ? ` ${short(mutating[0].target)}` : ''}`,
     ],
     mutating[0].t,
   )
@@ -118,7 +130,7 @@ export function detectPullRequest(view: SessionView): PracticeResult {
   const url = view.calls.map(call => findPrUrl(call.resultHead)).find((u): u is string => u !== undefined)
     ?? (created !== undefined ? findPrUrl(created.resultHead) : undefined)
   if (facts?.pr !== undefined) return result('pull-request', 'green', [`PR ${facts.pr.state.toLowerCase()}: ${facts.pr.url}`])
-  if (url !== undefined) return result('pull-request', 'green', [`PR opened: ${url}`])
+  if (url !== undefined) return result('pull-request', 'green', [`PR opened: ${short(url)}`])
   if (created !== undefined) return result('pull-request', 'green', ['PR creation command ran'])
   const mutating = view.calls.some(isMutatingCall)
   if (!mutating) return result('pull-request', 'n/a', ['no file mutations yet'])
@@ -145,7 +157,7 @@ export function detectConductor(view: SessionView): PracticeResult {
   const evidence: string[] = []
   let firstViolation: string | undefined
   if (selfEdits.length > 0) {
-    evidence.push(`conductor mutated files itself ${selfEdits.length}×: ${selfEdits.slice(0, 3).map(c => `${c.name}${c.target !== undefined ? ` ${c.target}` : ''}`).join(', ')}`)
+    evidence.push(`conductor mutated files itself ${selfEdits.length}×: ${selfEdits.slice(0, 3).map(c => `${c.name}${c.target !== undefined ? ` ${short(c.target, 60)}` : ''}`).join(', ')}`)
     firstViolation = selfEdits[0].t
   }
   // Approval rule: the first delegation must come in a turn AFTER the one in
@@ -199,7 +211,7 @@ export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   if (facts === undefined || !facts.inRepo) return result('plan-before-code', 'n/a', ['not inside a git repository'])
   const hasPlan = facts.artifacts.some(path => path.endsWith('plan.md'))
   if (hasPlan) return result('plan-before-code', 'green', ['plan.md present before edits'])
-  return result('plan-before-code', 'red', [`edited ${first.target ?? 'a file'} with no plan.md in the repository`], first.t)
+  return result('plan-before-code', 'red', [`edited ${first.target !== undefined ? short(first.target) : 'a file'} with no plan.md in the repository`], first.t)
 }
 
 export function detectPlanDrift(view: SessionView): PracticeResult {

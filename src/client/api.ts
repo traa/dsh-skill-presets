@@ -179,6 +179,8 @@ export interface Placement { preset: string, title: string, stage: string, score
 export interface OrphanSkill { ref: string, name: string, placements: Placement[] }
 export interface StrictPresets { shipped: string[], strict: { id: string, name?: string }[] }
 export interface DoctorReport { findings: { id: string, severity: 'ok' | 'warn' | 'fail', message: string, fix?: string }[], worst: 'ok' | 'warn' | 'fail', probedAt: string }
+export interface FoundationDiff { kind: 'preset' | 'overlay', id: string, title: string, status: 'current' | 'updatable' | 'customized' | 'new' | 'local', missingSkills: string[], extraSkills: string[], changedFields: string[] }
+export interface FoundationReport { diffs: FoundationDiff[], updatable: number, customized: number, added: number }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
 export interface SkillDetail { ref: string, text?: string, files: { path: string, bytes: number }[], locked?: LockedSkill, usedBy: string[] }
