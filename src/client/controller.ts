@@ -349,10 +349,38 @@ export interface ScorecardSnapshot {
   loading: boolean
   error?: string
   notice?: string
+  /**
+   * A SCOPE confirmation — which rung a preset switch was written to — as
+   * opposed to a success event.
+   *
+   * Kept apart from `notice` because the two deserve different weight. A
+   * notice reports that something HAPPENED ("Team X attached", "Saved as an
+   * eval fixture at …") and earns the green `.skp-msg.ok` paragraph. This one
+   * only restates the scope of the click the user just made; rendered in that
+   * same green body text it read as a large success announcement out of
+   * keeping with the rest of the panel. It renders as a neutral pill at the
+   * top of the popover instead, with the full sentence on hover.
+   */
+  scopeNote?: { label: string, detail: string }
   busy?: string
   popover: boolean
   compare?: CompareCard[]
   revision: number
+}
+
+/**
+ * Pill wording per activation scope: a two-word label, the full sentence on
+ * hover.
+ *
+ * A pill has room for a label, not a sentence, so the label carries the scope
+ * (the thing the user needs at a glance) and `detail` keeps what the green
+ * paragraph used to say — including the "next step" caveat, which is
+ * information, not decoration.
+ */
+const SCOPE_NOTE: Record<ActivateScope, { label: string, detail: string }> = {
+  'session': { label: 'session only', detail: 'This session only. Catalog updates on the model\'s next step.' },
+  'default': { label: 'workspace default', detail: 'Workspace default updated. Catalog updates on the model\'s next step.' },
+  'agent-preset': { label: 'agent-preset default', detail: 'Agent-preset default updated. Catalog updates on the model\'s next step.' },
 }
 
 /** One per session; polls while a view says it is visible. */
@@ -412,7 +440,9 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
     try {
       await rpc('presets/activate', { id, sessionId: this.sessionId, scope })
       await this.refresh(true)
-      this.set({ busy: undefined, popover: false, notice: scope === 'session' ? 'This session only. Catalog updates on the model\'s next step.' : scope === 'default' ? 'Workspace default updated.' : 'Agent-preset default updated.' })
+      // All three answer "which rung did that write to?", so all three are
+      // scope confirmations rather than success events — see `scopeNote`.
+      this.set({ busy: undefined, popover: false, notice: undefined, scopeNote: SCOPE_NOTE[scope] })
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
     }
@@ -424,7 +454,10 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
     try {
       await rpc('presets/clear-session', { sessionId: this.sessionId })
       await this.refresh(true)
-      this.set({ busy: undefined, popover: false })
+      // This is the one action that REVOKES a session scope, so leaving the
+      // previous "session only" pill up would state the opposite of what just
+      // happened.
+      this.set({ busy: undefined, popover: false, scopeNote: undefined })
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
     }

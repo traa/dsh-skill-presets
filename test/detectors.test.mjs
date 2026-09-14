@@ -2,13 +2,20 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { detectWorktree, detectPullRequest, detectConductor, detectArtifactChain, detectPlanBeforeCode, detectPlanDrift, detectWorktreeHygiene, isMutatingCommand, findPrUrl, worst, evaluate } from '../lib/host/practices/detectors.js'
 import * as detectors from '../lib/host/practices/detectors.js'
-import { workRootOf, currentWorkRoot } from '../lib/host/practices/workroot.js'
+import { workRootOf, currentWorkRoot, attributedWorkRoot } from '../lib/host/practices/workroot.js'
 import { changesWorktrees } from '../lib/host/practices/worktrees.js'
 
-const base = { calls: [], teamAttached: false, userTurns: [1], protectedBranches: ['main', 'master'], ended: false }
+// A real session always has BOTH a cwd and a repository top level: the facts
+// were read from a directory, and `edit src/x.ts` resolves against one. The
+// fixture carries them so the worktree practice can answer its question —
+// "did this mutation land in THIS checkout?" — as it does in a live session.
+// Same directory for both, which is the ordinary case: the agent is working
+// where the session started.
+const REPO = '/repo'
+const base = { calls: [], teamAttached: false, userTurns: [1], protectedBranches: ['main', 'master'], ended: false, cwd: REPO }
 const edit = (t = 't1', turn = 1, target = 'src/x.ts') => ({ t, turn, name: 'edit', target, isError: false })
 const bash = (command, resultHead, turn = 1) => ({ t: 't', turn, name: 'bash', target: command, isError: false, resultHead })
-const facts = (over = {}) => ({ inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ahead: 0, hasUpstream: true, dirty: false, ghAvailable: true, artifacts: [], instructionFiles: [], readAt: 'r', ...over })
+const facts = (over = {}) => ({ inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ahead: 0, hasUpstream: true, dirty: false, ghAvailable: true, topLevel: REPO, artifacts: [], instructionFiles: [], readAt: 'r', ...over })
 
 test('worktree: n/a before mutations; red on protected branch in primary checkout; green in a worktree or on a feature branch', () => {
   assert.equal(detectWorktree({ ...base, facts: facts() }).status, 'n/a')
@@ -59,11 +66,14 @@ test('conductor: n/a without a team; red on self-edits or delegation before appr
 })
 
 test('artifact-chain and plan-before-code follow the active stage', () => {
-  assert.equal(detectArtifactChain({ ...base, facts: facts({ artifacts: ['docs/sdlc/x/intent.md'] }), activeStage: 'design' }).status, 'green')
-  const red = detectArtifactChain({ ...base, facts: facts(), activeStage: 'build' })
-  assert.equal(red.status, 'red'); assert.match(red.evidence[1], /expects plan.md/)
-  assert.equal(detectArtifactChain({ ...base, facts: facts({ artifacts: ['plan.md'] }), activeStage: 'build' }).status, 'green')
-  assert.equal(detectArtifactChain({ ...base, facts: facts({ inRepo: false }) }).status, 'n/a')
+  // An attributed root: a real call named an absolute path, so the repo under
+  // judgement is demonstrably the one being worked in (see RULE A below).
+  const at = [{ t: 'a1', turn: 1, name: 'edit', target: '/wt/src/x.ts', isError: false }]
+  assert.equal(detectArtifactChain({ ...base, calls: at, facts: facts({ artifacts: ['docs/sdlc/x/intent.md'] }), activeStage: 'design' }).status, 'green')
+  const red = detectArtifactChain({ ...base, calls: at, facts: facts({ artifacts: ['docs/sdlc/x/intent.md'] }), activeStage: 'build' })
+  assert.equal(red.status, 'red'); assert.match(red.evidence.join(' | '), /plan\.md/)
+  assert.equal(detectArtifactChain({ ...base, calls: at, facts: facts({ artifacts: ['plan.md'] }), activeStage: 'build' }).status, 'green')
+  assert.equal(detectArtifactChain({ ...base, calls: at, facts: facts({ inRepo: false }) }).status, 'n/a')
   assert.equal(detectPlanBeforeCode({ ...base, calls: [edit()], facts: facts(), activeStage: 'design' }).status, 'n/a')
   assert.equal(detectPlanBeforeCode({ ...base, calls: [edit()], facts: facts(), activeStage: 'build' }).status, 'red')
   assert.equal(detectPlanBeforeCode({ ...base, calls: [edit()], facts: facts({ artifacts: ['docs/sdlc/a/plan.md'] }), activeStage: 'build' }).status, 'green')
@@ -156,6 +166,63 @@ test('work root: a cd or -C target has the same precedence as a write path — t
   assert.equal(currentWorkRoot([editCall, dashC], '/primary'), '/wt-c')
 })
 
+// A mutation may only be named as evidence about a checkout when it provably
+// landed IN that checkout: absolute and under the root, or relative and
+// resolving under it from the session cwd. PR #11 closed the "named no path"
+// hole; this closes the "named a path somewhere else" one.
+test('worktree: only mutations that provably landed in this checkout are counted as evidence', () => {
+  // (a) RELATIVE target, session cwd inside the repo: resolves to
+  // /repo/src/x.ts, so it IS this checkout and the red case still fires.
+  const rel = detectWorktree({ ...base, calls: [edit('t1', 1, 'src/x.ts')], facts: facts() })
+  assert.equal(rel.status, 'red', rel.evidence.join(' | '))
+  assert.match(rel.evidence[0], /1 file mutation on protected branch main in the primary checkout/)
+
+  // (b) ABSOLUTE target under the root: the plainest red there is.
+  const abs = detectWorktree({ ...base, calls: [edit('t1', 1, `${REPO}/src/x.ts`)], facts: facts() })
+  assert.equal(abs.status, 'red', abs.evidence.join(' | '))
+  assert.match(abs.evidence[0], /1 file mutation on protected branch main in the primary checkout/)
+
+  // (c) ABSOLUTE target OUTSIDE the root: nothing ties it to this checkout, so
+  // the practice must not name it — and must not claim the location either.
+  const outside = detectWorktree({ ...base, calls: [edit('t1', 1, '/other/repo/src/x.ts')], facts: facts() })
+  assert.notEqual(outside.status, 'red', outside.evidence.join(' | '))
+  assert.deepEqual(outside.evidence.filter(e => /primary checkout/.test(e)), [])
+  assert.match(outside.evidence.join(' | '), /cannot be placed/)
+
+  // A relative target whose session cwd sits OUTSIDE the attributed root is
+  // the PR #11 hole itself: it named a path, but not one in this checkout.
+  const elsewhere = detectWorktree({ ...base, cwd: '/other/repo', calls: [edit('t1', 1, 'src/x.ts')], facts: facts() })
+  assert.notEqual(elsewhere.status, 'red', elsewhere.evidence.join(' | '))
+  assert.deepEqual(elsewhere.evidence.filter(e => /primary checkout/.test(e)), [])
+
+  // Mixed: the in-checkout mutation still convicts, and the count is of TIED
+  // mutations only — the unplaceable one is declared, not silently folded in.
+  const mixed = detectWorktree({ ...base, calls: [edit('t1', 1, `${REPO}/src/x.ts`), edit('t2', 1, '/other/repo/y.ts')], facts: facts() })
+  assert.equal(mixed.status, 'red')
+  assert.match(mixed.evidence[0], /^1 file mutation on protected branch main/)
+  assert.match(mixed.evidence.join(' | '), /1 further mutation could not be placed/)
+
+  // The same containment rule guards the GREEN verdicts, which name this
+  // checkout just as loudly: a write outside a linked worktree is not evidence
+  // that the work happened safely inside it.
+  const falseGreen = detectWorktree({ ...base, calls: [edit('t1', 1, '/other/repo/y.ts')], facts: facts({ isWorktree: true }) })
+  assert.notEqual(falseGreen.status, 'green', falseGreen.evidence.join(' | '))
+})
+
+test('worktree: a symlinked checkout is still this checkout (git resolves the top level, tool paths do not)', () => {
+  // macOS /tmp → /private/tmp: `git rev-parse --show-toplevel` answers the
+  // realpath while every tool call carries the symlinked spelling. Comparing
+  // them literally turned a genuine red into "cannot be placed".
+  const r = detectWorktree({
+    ...base,
+    cwd: '/var/folders/x/repo',
+    calls: [edit('t1', 1, '/var/folders/x/repo/src/a.ts')],
+    facts: facts({ topLevel: '/private/var/folders/x/repo', topLevelAlias: '/var/folders/x/repo' }),
+  })
+  assert.equal(r.status, 'red', r.evidence.join(' | '))
+  assert.match(r.evidence[0], /primary checkout/)
+})
+
 test('worktree: with no attributable path the practice reports n/a or amber with a reason, never the primary checkout', () => {
   // A mutating call that names no path at all: nothing ties it to facts read
   // from the session cwd, so the location is unknown, not "primary checkout".
@@ -224,6 +291,96 @@ test('worktree-hygiene: a scan taken before a sweep may not keep claiming a merg
   // A call that does not touch worktrees must not suppress the finding.
   assert.equal(changesWorktrees('git status'), false)
   assert.equal(detectWorktreeHygiene(sweptView('git status')).evidence[0], '1 merged worktree still present')
+})
+
+// --- RULE A: never judge a repo nobody worked in.
+// The work root is ATTRIBUTED when some call named where it worked, and merely
+// ASSUMED when it fell back to the session cwd. The tracker derives that with
+// `attributedWorkRoot(calls, cwd)` and passes `view.workRootAssumed` to the
+// detector — the same shape PR #10 gave the worktree practice. The invariant
+// spans both halves, so the factory composes them exactly as the tracker does
+// rather than hand-setting the flag.
+const CWD = '/session-cwd'
+const attributed = [{ t: 'a1', turn: 1, name: 'edit', target: '/wt/src/x.ts', isError: false }]
+const chain = (activeStage, artifacts, calls = attributed) => detectArtifactChain({
+  ...base,
+  calls,
+  facts: facts({ artifacts, topLevel: CWD }),
+  activeStage,
+  ...(attributedWorkRoot(calls, CWD) === undefined ? { workRootAssumed: true } : {}),
+})
+
+test('artifact-chain: with no call naming a path the root is only assumed, so the practice is n/a, never red', () => {
+  // Artifacts are non-empty and the stage requirement is UNMET: under an
+  // attributed root this is the red case, so only the assumed root can spare it.
+  for (const [label, calls] of [['no calls at all', []], ['a call that names no path', [bash('npm install left-pad')]]]) {
+    assert.equal(attributedWorkRoot(calls, CWD), undefined, `${label}: no call attributes a root`)
+    const r = chain('build', ['docs/sdlc/phase-2/intent.md'], calls)
+    assert.equal(r.status, 'n/a', `${label}: ${r.status} — ${r.evidence.join(' | ')}`)
+    assert.match(r.evidence.join(' | '), /named a path/i, label)
+  }
+})
+
+test('artifact-chain: an assumed root is not judged even when the stage requirement would be met', () => {
+  assert.equal(chain('build', ['docs/sdlc/phase-2/plan.md'], []).status, 'n/a')
+})
+
+test('artifact-chain: once a call attributes the root, the normal stage rules apply again', () => {
+  assert.equal(attributedWorkRoot(attributed, CWD), '/wt/src')
+  assert.equal(chain('build', ['docs/sdlc/phase-2/plan.md']).status, 'green')
+  assert.equal(chain('build', ['docs/sdlc/phase-2/intent.md']).status, 'red')
+})
+
+// --- RULE B: a change that was never planned is not a broken chain.
+// Red is reserved for a chain that was STARTED AND DROPPED, never for a session
+// that simply never had a planned phase.
+const notRed = (r, label) => {
+  assert.ok(['n/a', 'amber'].includes(r.status), `${label}: status was ${r.status} — ${r.evidence.join(' | ')}`)
+  assert.ok(r.evidence.length > 0 && r.evidence[0].length > 0, `${label}: states a reason`)
+}
+
+test('artifact-chain: a Build or Test session with no artifacts at all was never a planned phase, so it is not red', () => {
+  for (const stage of ['build', 'test']) {
+    const r = chain(stage, [])
+    notRed(r, stage)
+    assert.match(r.evidence.join(' | '), /planned/i, `${stage}: says this was never a planned phase`)
+  }
+})
+
+test('artifact-chain: a Build or Test chain holding intent.md but no plan.md was started and dropped, so it is red', () => {
+  for (const stage of ['build', 'test']) {
+    const r = chain(stage, ['docs/sdlc/phase-2/intent.md'])
+    assert.equal(r.status, 'red', `${stage}: ${r.evidence.join(' | ')}`)
+    assert.match(r.evidence.join(' | '), /plan\.md/, stage)
+  }
+})
+
+test('artifact-chain: plan.md satisfies Build whether it sits under docs/sdlc or at the repo root', () => {
+  assert.equal(chain('build', ['docs/sdlc/phase-2/plan.md']).status, 'green')
+  assert.equal(chain('build', ['plan.md']).status, 'green')
+  assert.equal(chain('build', ['docs/sdlc/phase-2/intent.md', 'docs/sdlc/phase-2/plan.md']).status, 'green')
+})
+
+test('artifact-chain: Design is green on intent.md and not red when nothing was started', () => {
+  assert.equal(chain('design', ['docs/sdlc/phase-2/intent.md']).status, 'green')
+  assert.equal(chain('design', ['intent.md']).status, 'green')
+  notRed(chain('design', []), 'design with no artifacts')
+})
+
+// Design holding a LATER artifact but not intent.md: by the same
+// started-and-dropped principle this is the dropped case, so it is pinned red.
+test('artifact-chain: Design holding spec.md but no intent.md is a dropped chain, so it is red', () => {
+  const r = chain('design', ['docs/sdlc/phase-2/spec.md'])
+  assert.equal(r.status, 'red', `design/spec-only: ${r.evidence.join(' | ')}`)
+  assert.match(r.evidence.join(' | '), /intent\.md/)
+})
+
+test('artifact-chain: a stage with no artifact requirement is never red on this ground', () => {
+  for (const stage of ['plan', 'deploy', 'maintain', 'cross']) {
+    notRed(chain(stage, []), `${stage} with no artifacts`)
+    const withSome = chain(stage, ['docs/sdlc/phase-2/intent.md'])
+    assert.notEqual(withSome.status, 'red', `${stage} with an artifact: ${withSome.evidence.join(' | ')}`)
+  }
 })
 
 test('evaluate and worst', () => {

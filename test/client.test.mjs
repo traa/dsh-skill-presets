@@ -199,3 +199,193 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))
 })
+
+/** Flatten a rendered tree into document order. */
+function flatten(tree, out = []) {
+  if (tree === null || typeof tree !== 'object') return out
+  if (Array.isArray(tree)) { for (const t of tree) flatten(t, out); return out }
+  out.push(tree)
+  for (const c of tree.children ?? []) flatten(c, out)
+  return out
+}
+
+/** The first clickable node whose rendered text equals `label`. */
+function clickable(tree, label) {
+  return flatten(tree).find(n => typeof n.props?.onClick === 'function' && text(n).join('').trim() === label)
+}
+
+/** Every node in a rendered tree whose className contains `cls`. */
+function nodesWithClass(tree, cls, out = []) {
+  if (tree === null || typeof tree !== 'object') return out
+  if (Array.isArray(tree)) { for (const t of tree) nodesWithClass(t, cls, out); return out }
+  const className = tree.props?.className
+  if (typeof className === 'string' && className.split(/\s+/).includes(cls)) out.push(tree)
+  for (const c of tree.children ?? []) nodesWithClass(c, cls, out)
+  return out
+}
+
+/** A scorecard/status pair with a mix of applicable and n/a practices. */
+function mixedFixture() {
+  const activePreset = { id: 'build', title: 'Build', stage: 'build', summary: 's', color: '#0f0', skills: [], createdAt: 'a', updatedAt: 'b' }
+  const scorecard = {
+    sessionId: 's-4', live: true,
+    active: { version: 2, default: 'build', byAgentPreset: {}, sessions: {}, since: 'x', by: 'ui' },
+    activePreset, activeSource: 'session',
+    stageGuess: { stage: 'build', confidence: 0.9, why: ['plan.md present'] },
+    experiments: [], strict: { enabled: false, seam: false, applied: false }, loadTrace: [], overlays: [],
+    offered: [], unresolved: [],
+    practices: [
+      { id: 'worktree', status: 'red', evidence: ['2 file mutations on protected branch main in the primary checkout'] },
+      { id: 'plan-before-code', status: 'n/a', evidence: ['applies in the Build stage'] },
+      { id: 'conductor', status: 'n/a', evidence: ['no team attached'] },
+    ],
+    worst: 'red',
+    facts: { inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ghAvailable: true, artifacts: [], instructionFiles: [] },
+    summary: { sessionId: 's-4', preset: 'build', overlays: [], offered: [], loaded: {}, unknown: [], practices: [], denied: 0, drift: [], suggestions: [], switches: [], loads: [] },
+  }
+  const status = {
+    root: '/wb', storeReady: true, active: scorecard.active, activePreset, presets: [activePreset], overlays: [], sources: [],
+    lock: { version: 1, sources: {}, skills: [] }, practices: { version: 1, strictSkills: false, instructionFiles: [], protectedBranches: ['main'], practices: [] },
+    practiceInfo: {
+      'worktree': { title: 'Work in a worktree', summary: '', skill: 'worktree-first' },
+      'plan-before-code': { title: 'Plan before code', summary: '', skill: 'executing-plans' },
+      'conductor': { title: 'Conductor protocol', summary: '', skill: 'teams' },
+    },
+    stages: [], resolution: { skills: [], unresolved: [], collisions: [] }, notes: [], foundationInstalled: true,
+  }
+  return { scorecard, status }
+}
+
+test('practices that do not apply are replaced by one muted "+N not applicable" line carrying their reasons', async () => {
+  const { mod, React } = await load()
+  const { ctx, registrations } = fakeCtx()
+  const { scorecard, status } = mixedFixture()
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
+  mod.apply(ctx)
+  const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
+  const props = { sessionId: 's-4', useTabInfo: () => ({ tab: { visible: true } }) }
+  render(React, React.createElement(Body, props))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  const tree = render(React, React.createElement(Body, props))
+  const words = text(tree).join(' ')
+  // The applicable practice still renders in full, with its evidence.
+  assert.match(words, /Work in a worktree/)
+  assert.match(words, /protected branch main/)
+  // The n/a rows are gone from the list.
+  assert.doesNotMatch(words, /Plan before code: n\/a/)
+  assert.doesNotMatch(words, /applies in the Build stage/)
+  assert.doesNotMatch(words, /no team attached/)
+  // …replaced by exactly one muted summary line.
+  const na = nodesWithClass(tree, 'skp-na')
+  assert.equal(na.length, 1)
+  assert.equal(text(na[0]).join(''), '+2 not applicable in this stage')
+  // Nothing is unreachable: titles AND reasons live in the hover text.
+  assert.match(na[0].props.title, /Plan before code: applies in the Build stage/)
+  assert.match(na[0].props.title, /Conductor protocol: no team attached/)
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 5))
+})
+
+test('when every practice is n/a the muted line stands alone rather than an empty section', async () => {
+  const { mod, React } = await load()
+  const { ctx, registrations } = fakeCtx()
+  const { scorecard, status } = mixedFixture()
+  scorecard.practices = scorecard.practices.map(p => ({ ...p, status: 'n/a' }))
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
+  mod.apply(ctx)
+  const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
+  const props = { sessionId: 's-5', useTabInfo: () => ({ tab: { visible: true } }) }
+  render(React, React.createElement(Body, props))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  const tree = render(React, React.createElement(Body, props))
+  const na = nodesWithClass(tree, 'skp-na')
+  assert.equal(na.length, 1)
+  assert.equal(text(na[0]).join(''), '+3 not applicable in this stage')
+  // The section still has its heading, so it cannot read as a broken empty block.
+  assert.match(text(tree).join(' '), /Practices/)
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 5))
+})
+
+test('the popover hides n/a practices and shows the session scope as a neutral pill at the top, not a green paragraph', async () => {
+  const { mod, React } = await load()
+  const { ctx, registrations } = fakeCtx()
+  const { scorecard, status } = mixedFixture()
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
+  mod.apply(ctx)
+  const Chip = registrations.find(r => r.options.name === 'conversation.session.header.utilities').component
+  const props = { sessionId: 's-4' }
+  render(React, React.createElement(Chip, props))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  // Open the popover by clicking the chip, exactly as a user does.
+  const closed = render(React, React.createElement(Chip, props))
+  flatten(closed).find(n => (n.props?.className ?? '').startsWith('skp-hchip')).props.onClick()
+  // Click the preset row: this is the real `activate(id, 'session')` path.
+  const open = render(React, React.createElement(Chip, props))
+  const row = flatten(open).find(n => (n.props?.className ?? '').startsWith('skp-pop-item') && text(n).join('').includes('Build'))
+  assert.ok(row, 'the popover lists the Build preset')
+  row.props.onClick()
+  await new Promise(r => setTimeout(r, 30))
+  // Activating closes the popover; reopen it to read what the switch left.
+  const afterActivate = render(React, React.createElement(Chip, props))
+  flatten(afterActivate).find(n => (n.props?.className ?? '').startsWith('skp-hchip')).props.onClick()
+  const tree = render(React, React.createElement(Chip, props))
+  const words = text(tree).join(' ')
+
+  // FIX 2 in the popover: the n/a rows are gone, the summary line is present.
+  assert.match(words, /Work in a worktree: red/)
+  assert.doesNotMatch(words, /Plan before code: n\/a/)
+  const na = nodesWithClass(tree, 'skp-na')
+  assert.equal(na.length, 1)
+  assert.equal(text(na[0]).join(''), '+2 not applicable in this stage')
+  assert.match(na[0].props.title, /Conductor protocol: no team attached/)
+
+  // FIX 3: the scope confirmation is a NEUTRAL pill (no green/amber/red
+  // variant), and it sits at the top of the popover, not at the bottom.
+  const pop = nodesWithClass(tree, 'skp-pop')[0]
+  const pill = nodesWithClass(pop, 'skp-pill').find(n => text(n).join('') === 'session only')
+  assert.ok(pill, 'a "session only" pill renders')
+  assert.equal(pill.props.className, 'skp-pill', 'neutral variant: no green')
+  assert.match(pill.props.title, /This session only\. Catalog updates on the model's next step\./)
+  // It is no longer a green .skp-msg.ok paragraph anywhere in the popover.
+  assert.deepEqual(nodesWithClass(pop, 'ok').map(n => text(n).join('')), [])
+  // Top, not bottom: the pill precedes the practice list in document order.
+  const flat = []
+  const walk = (n) => { if (n && typeof n === 'object') { if (Array.isArray(n)) n.forEach(walk); else { flat.push(n); (n.children ?? []).forEach(walk) } } }
+  walk(pop)
+  assert.ok(flat.indexOf(pill) < flat.indexOf(na[0]), 'pill renders above the practice list')
+})
+
+test('a genuine success notice still renders as the green paragraph it always was', async () => {
+  const { mod, React } = await load()
+  const { ctx, registrations } = fakeCtx()
+  const { scorecard, status } = mixedFixture()
+  globalThis.fetch = async (url) => ({
+    ok: true, status: 200,
+    text: async () => JSON.stringify(
+      url.endsWith('/scorecard') ? scorecard
+        : url.endsWith('/evals/save') ? { ok: true, dir: '/wb/skills/evals/s-6' }
+          : status,
+    ),
+  })
+  mod.apply(ctx)
+  const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
+  const props = { sessionId: 's-6', useTabInfo: () => ({ tab: { visible: true } }) }
+  render(React, React.createElement(Body, props))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  // "Save as fixture" reports that something HAPPENED — the class of notice
+  // that legitimately keeps the green paragraph.
+  const before = render(React, React.createElement(Body, props))
+  clickable(before, 'Save as fixture').props.onClick()
+  await new Promise(r => setTimeout(r, 30))
+  const tree = render(React, React.createElement(Body, props))
+  const ok = nodesWithClass(tree, 'skp-msg').filter(n => (n.props.className ?? '').includes('ok'))
+  assert.equal(ok.length, 1, 'the success notice keeps the green paragraph')
+  assert.match(text(ok[0]).join(''), /Saved as an eval fixture at \/wb\/skills\/evals\/s-6/)
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 5))
+})

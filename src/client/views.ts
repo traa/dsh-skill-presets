@@ -109,6 +109,9 @@ export const CSS = `
 .skp-tick { width: 10px; height: 10px; border-radius: 2px; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); }
 .skp-tick.hit { background: var(--dsw-alias-state-success-primary); border-color: transparent; }
 .skp-ev { font-size: 11px; color: var(--dsw-alias-label-secondary); line-height: 1.4; margin-left: 16px; }
+/* The "+N not applicable" summary: present but deliberately quiet, and
+   cursor:help advertises that the hidden titles/reasons are on hover. */
+.skp-na { font-size: 11px; color: var(--dsw-alias-label-secondary); opacity: .75; cursor: help; }
 .skp-rate { display: flex; gap: 6px; }
 .skp-graph { position: relative; height: 240px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
 .skp-node { position: absolute; transform: translate(-50%, -50%); font-size: 11px; padding: 2px 7px; border-radius: 8px; background: var(--dsw-alias-bg-base);
@@ -141,6 +144,33 @@ function delta(v: number | undefined, kind: 'pct' | 'num'): string {
 function deltaClass(v: number | undefined, higherIsBetter = true): string {
   if (v === undefined || Math.abs(v) < 1e-9) return ''
   return (v > 0) === higherIsBetter ? 'green' : 'red'
+}
+
+/**
+ * Split practices into the ones that APPLY and a summary of the ones that do
+ * not.
+ *
+ * An `n/a` row ("Plan before code: n/a — applies in the Build stage") is a
+ * statement that the panel has nothing to say, and a list of them buries the
+ * two rows that do carry a verdict. They are not deleted, though: the count
+ * stays visible and `title` carries every hidden title and reason, so nothing
+ * becomes unreachable — the information moves to hover instead of occupying a
+ * line each.
+ *
+ * @param practices - the scorecard's results, in display order.
+ * @param titleOf - practice id → human title, for the hover text.
+ */
+function splitApplicable<T extends { id: string, status: string, evidence: readonly string[] }>(
+  practices: readonly T[],
+  titleOf: (id: string) => string,
+): { shown: T[], hiddenCount: number, hiddenTitle: string } {
+  const shown = practices.filter(p => p.status !== 'n/a')
+  const hidden = practices.filter(p => p.status === 'n/a')
+  return {
+    shown,
+    hiddenCount: hidden.length,
+    hiddenTitle: hidden.map(p => `${titleOf(p.id)}: ${p.evidence[0] ?? 'does not apply'}`).join('\n'),
+  }
 }
 
 // ---------------------------------------------------------------- Settings --
@@ -775,6 +805,10 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
         suggestion !== undefined ? h('span', { className: 'skp-sub' }, `→ ${STAGE_LABEL[suggestion.to] ?? suggestion.to}?`) : null,
       ),
       snap.popover && status !== undefined ? h('div', { className: 'skp-pop', ref: popRef },
+        // A scope confirmation, not a success event: a neutral pill at the TOP
+        // (where the scope question was asked), never the green paragraph the
+        // genuine "Adopted …"/"Wrote …" notices below still use.
+        snap.scopeNote !== undefined ? h('div', { className: 'skp-row' }, h('span', { className: 'skp-pill', title: snap.scopeNote.detail }, snap.scopeNote.label)) : null,
         suggestion !== undefined ? h('div', { className: 'skp-card', style: { padding: '8px 10px' } },
           h('div', { className: 'skp-pop-t' }, `Artifacts say ${STAGE_LABEL[suggestion.to] ?? suggestion.to} — switch?`),
           h('div', { className: 'skp-pop-s' }, suggestion.why.join(' · ')),
@@ -815,7 +849,13 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
         card !== undefined ? h('div', { className: 'skp-col', style: { borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 8 } },
           h('div', { className: 'skp-pop-s' }, `Detected stage: ${STAGE_LABEL[card.stageGuess.stage] ?? card.stageGuess.stage} (${Math.round(card.stageGuess.confidence * 100)}%) — ${card.stageGuess.why[0] ?? ''}`),
           card.overlays.length > 0 ? h('div', { className: 'skp-pop-s' }, `Overlays: ${card.overlays.join(', ')}`) : null,
-          ...card.practices.map(p => h('div', { key: p.id, className: 'skp-line' }, h('i', { className: `skp-dot ${p.status}` }), h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.status}${p.evidence[0] !== undefined ? ` — ${p.evidence[0]}` : ''}`))),
+          ...(() => {
+            const { shown, hiddenCount, hiddenTitle } = splitApplicable(card.practices, id => status.practiceInfo[id]?.title ?? id)
+            return [
+              ...shown.map(p => h('div', { key: p.id, className: 'skp-line' }, h('i', { className: `skp-dot ${p.status}` }), h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.status}${p.evidence[0] !== undefined ? ` — ${p.evidence[0]}` : ''}`))),
+              hiddenCount > 0 ? h('div', { key: 'skp-na', className: 'skp-pop-s skp-na', title: hiddenTitle }, `+${hiddenCount} not applicable in this stage`) : null,
+            ]
+          })(),
         ) : null,
         snap.notice !== undefined ? h('div', { className: 'skp-msg ok' }, snap.notice) : null,
         snap.error !== undefined ? h('div', { className: 'skp-msg error' }, snap.error) : null,
@@ -872,10 +912,16 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
       ),
       h('div', { className: 'skp-col' },
         h('h3', null, 'Practices'),
-        ...card.practices.map(p => h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
-          h('div', { className: 'skp-line' }, h('i', { className: `skp-dot ${p.status}` }), h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: `skp-pill ${p.status}` }, p.status))),
-          ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
-        )),
+        ...(() => {
+          const { shown, hiddenCount, hiddenTitle } = splitApplicable(card.practices, id => status.practiceInfo[id]?.title ?? id)
+          return [
+            ...shown.map(p => h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
+              h('div', { className: 'skp-line' }, h('i', { className: `skp-dot ${p.status}` }), h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: `skp-pill ${p.status}` }, p.status))),
+              ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
+            )),
+            hiddenCount > 0 ? h('div', { key: 'skp-na', className: 'skp-na', title: hiddenTitle }, `+${hiddenCount} not applicable in this stage`) : null,
+          ]
+        })(),
       ),
       snap.peers !== undefined && snap.peers.peerCount > 0 ? h('div', { className: 'skp-col' },
         h('h3', null, `This session vs your last ${snap.peers.peerCount} under ${card.activePreset?.title ?? 'no preset'}`),
