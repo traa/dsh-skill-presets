@@ -15,7 +15,11 @@ import type { Stage } from './types.ts'
 
 export interface StageGuess {
   readonly stage: Stage
-  /** 0..1; suggestions fire at ≥ 0.7. */
+  /**
+   * 0..1 certainty in the GUESS — never progress through the stage. Suggestions
+   * fire at ≥ `SUGGEST_AT`; anything at or below 0.5 is a fallback reached
+   * because nothing matched, so renderers must not present it as a finding.
+   */
   readonly confidence: number
   readonly why: readonly string[]
 }
@@ -28,7 +32,11 @@ const has = (facts: GitFacts, file: string): boolean => facts.artifacts.some(a =
  * @param recent - the last few observed calls (newest last).
  */
 export function detectStage(facts: GitFacts | undefined, recent: readonly ObservedCall[] = []): StageGuess {
-  if (facts === undefined || !facts.inRepo) return { stage: 'plan', confidence: 0.2, why: ['no repository facts'] }
+  // The two fallbacks below describe the DETECTOR's own position ("I have
+  // nothing to go on"), never the repository's. A `why` that reads as a
+  // complaint about the workspace is a defect: the user did nothing wrong by
+  // starting outside a repo or before the first artifact exists.
+  if (facts === undefined || !facts.inRepo) return { stage: 'plan', confidence: 0.2, why: ['no repository read yet; defaulting to Plan'] }
   // Only SHELL commands count, and only when the deploy verb is the command
   // itself — not a word inside a commit message, a grep, or a branch name.
   const shell = recent.filter(c => ['bash', 'Bash', 'shell'].includes(c.name)).map(c => c.target ?? '')
@@ -49,7 +57,7 @@ export function detectStage(facts: GitFacts | undefined, recent: readonly Observ
   if (has(facts, 'spec.md') || has(facts, 'intent.md')) {
     return { stage: 'design', confidence: has(facts, 'spec.md') ? 0.8 : 0.7, why: [has(facts, 'spec.md') ? 'spec.md present, no plan.md' : 'intent.md present, no spec.md'] }
   }
-  return { stage: 'plan', confidence: 0.5, why: ['no stage artifacts'] }
+  return { stage: 'plan', confidence: 0.5, why: ['nothing observed yet; defaulting to Plan'] }
 }
 
 /** Dismissal memory per workspace, keyed by `<from>→<to>`. */
