@@ -21,6 +21,11 @@ function fakeReact() {
       return [state.cells[i], (next) => { state.cells[i] = next }]
     },
     useEffect(effect) { state.effects.push(effect) },
+    useRef(initial) {
+      const i = state.i++
+      if (!(i in state.cells)) state.cells[i] = { current: initial }
+      return state.cells[i]
+    },
     Fragment: 'Fragment',
     __render(component, props = {}) {
       state.i = 0
