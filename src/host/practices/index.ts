@@ -11,7 +11,7 @@
 import { evaluate, isMutatingCall, worst, type ObservedCall, type SessionView } from './detectors.ts'
 import { readGitFacts, type GitFacts, type Runner } from './git.ts'
 import { coveredByPlan, isPlanArtifact, planPaths } from './plan.ts'
-import { currentWorkRoot } from './workroot.ts'
+import { attributedWorkRoot, currentWorkRoot } from './workroot.ts'
 import { changesWorktrees, classify, scanWorktrees, worktreeAddPath, type WorktreeInfo } from './worktrees.ts'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -255,6 +255,9 @@ export class PracticeTracker {
       planUpdated: state.planUpdated,
       ...(state.worktrees !== undefined ? { worktrees: summarizeWorktrees(state.worktrees.list, state.worktrees.defaultBranch, Number(doc.practices.find(p => p.id === 'worktree-hygiene')?.params.staleDays ?? 14)) } : {}),
       ...(state.worktreesStale ? { worktreesStale: true } : {}),
+      // No call ever named a path, so `facts` describe whichever repository
+      // the session started in — not evidence about the work being done.
+      ...(attributedWorkRoot(state.calls, state.cwd) === undefined ? { workRootAssumed: true } : {}),
     }
     const stage = await this.deps.activeStage(state.sessionId, state.agentPreset)
     const results = evaluate({ ...view, ...(stage !== undefined ? { activeStage: stage } : {}) }, enabled)

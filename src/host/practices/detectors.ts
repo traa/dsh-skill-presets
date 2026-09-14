@@ -48,6 +48,15 @@ export interface SessionView {
    * The summary above is then last-minute-old and must not be asserted as fact.
    */
   readonly worktreesStale?: boolean
+  /**
+   * `facts` describe a directory NO tool call ever named: the work root fell
+   * back to the session cwd. That cwd is fixed at session creation and is
+   * routinely a DIFFERENT repository from the one being worked in, so a
+   * verdict about its contents is a guess wearing a uniform. Set by the
+   * tracker from `attributedWorkRoot`; detectors that name a repository in
+   * their verdict must degrade instead of asserting one.
+   */
+  readonly workRootAssumed?: boolean
 }
 
 /**
@@ -65,18 +74,61 @@ export function short(text: string, max = 120): string {
 const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
 const BASH_TOOLS = new Set(['bash', 'Bash', 'shell', 'terminal'])
 
+/**
+ * Redirection targets that are not files: a file descriptor (`2>&1`, `>&2`)
+ * and the discard/console devices. Writing to any of these creates nothing, so
+ * a command carrying only these redirections has written nothing.
+ */
+const NON_FILE_REDIRECT = /^(?:&\s*\d+|&-|\/dev\/(?:null|stderr|stdout|tty|fd\/\d+))$/u
+
+/**
+ * A redirection operator and the token it targets. The leading class rejects a
+ * `<` (input) and a `>` already consumed by `>>`, and the optional `\d+|&`
+ * absorbs the SOURCE descriptor of `2>`/`&>` so it is not mistaken for the
+ * target. The `&\s*\d+` branch of the target keeps the `&` of `>&2`, which is
+ * what tells a descriptor apart from a file called `2`.
+ */
+const REDIRECT = /(?:^|[^<>&\d])(?:\d+|&)?>{1,2}\s*(&\s*\d+|&-|"[^"]*"|'[^']*'|[^\s;&|<>]+)/gu
+
+/**
+ * Whether a command redirects output into a REAL FILE — the only redirection
+ * that mutates anything.
+ *
+ * `2>/dev/null` is the common shape of a careful READ (`ls -la 2>/dev/null`,
+ * `npm run build > /dev/null`), and counting it as a write made the conductor
+ * practice report "conductor mutated files itself 1×: bash ls …" for a
+ * directory listing and the worktree practice count it as a file mutation on a
+ * protected branch. A file-descriptor target (`2>&1`, `>&2`) and a discard
+ * device write nothing; `echo x > file.txt`, `cmd >> log.txt` and
+ * `cmd 2> errors.log` still do.
+ *
+ * Quoted spans are blanked first so a `>` inside a commit message is not read
+ * as an operator, and heredoc bodies are already dropped by `shellSegments`.
+ */
+export function redirectsToFile(command: string): boolean {
+  const bare = command.replace(/"[^"]*"|'[^']*'/gu, q => ' '.repeat(q.length))
+  for (const match of bare.matchAll(REDIRECT)) {
+    const target = match[1].replace(/["']/gu, '')
+    if (target.length > 0 && !NON_FILE_REDIRECT.test(target)) return true
+  }
+  return false
+}
+
 /** Whether a bash command plausibly mutates the working tree or repository. */
 export function isMutatingCommand(command: string | undefined): boolean {
   if (command === undefined) return false
   const c = command.trim()
   if (c.length === 0) return false
-  // Output redirection mutates regardless of the command in front of it.
-  if (/(?:^|[^<>])>{1,2}\s*[^&\s]/u.test(c)) return true
+  // Output redirection mutates regardless of the command in front of it —
+  // but only when it lands in a file.
+  if (redirectsToFile(c)) return true
   // Read-only prefixes.
   if (/^(?:git\s+(?:status|log|diff|show|branch(?:\s+--show-current|\s+-a|\s+-r|\s*$)|rev-parse|remote\s+-v|worktree\s+list)|ls|cat|head|tail|grep|rg|find|pwd|echo|which|node\s+-e|npm\s+(?:test|run\s+\w+|ls)|pnpm\s+(?:test|run\s+\w+))\b/u.test(c)) {
     return false
   }
-  return /(?:^|[;&|]\s*)(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|>\s*\S|>>\s*\S|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u.test(c)
+  // No `>`/`>>` alternative here: redirection is decided once, above, by
+  // `redirectsToFile`. Repeating it raw would re-admit `cmd; ls 2>/dev/null`.
+  return /(?:^|[;&|]\s*)(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u.test(c)
 }
 
 /**
@@ -215,8 +267,10 @@ export function isVcsPlumbing(target: string | undefined): boolean {
   if (segments.length === 0) return false
   let sawVcs = false
   for (const segment of segments) {
-    // A redirection writes a file whatever sits in front of it.
-    if (/(?:^|[^0-9<>&])>{1,2}\s*[^&\s]/u.test(segment)) return false
+    // A redirection writes a file whatever sits in front of it — same rule as
+    // `isMutatingCommand`, so `git log 2>/dev/null` stays plumbing while
+    // `git log > out.txt` does not.
+    if (redirectsToFile(segment)) return false
     const lead = tokens(segment)[0]?.split('/').pop()
     if (lead === 'cd' || lead === 'set') continue
     const parts = vcsParts(segment)
@@ -263,12 +317,55 @@ function result(id: PracticeId, status: PracticeResult['status'], evidence: stri
   return { id, status, evidence, ...(firstViolationAt !== undefined ? { firstViolationAt } : {}) }
 }
 
+/**
+ * Refuse to state a verdict about a repository nobody worked in.
+ *
+ * `facts` are read from the work root, which FALLS BACK to the session cwd
+ * when no tool call ever named a path. That cwd is fixed at session creation
+ * and is routinely a DIFFERENT checkout from the one being worked in: a live
+ * session reported "N commits ahead with no PR" and "no plan.md in the
+ * repository" about a project it had never opened, which is how a panel
+ * teaches its user to ignore it.
+ *
+ * Only the tracker can tell the two apart, because only it knows the session
+ * cwd — and a detector cannot recompute it, since `workroot.ts` imports THIS
+ * module and the dependency may not run back the other way. So the tracker
+ * passes the single flag `workRootAssumed` and every fact-reading detector
+ * consults it here. One guard rather than one `if` per detector: the rule is
+ * stated once, the wording of the refusal cannot drift, and a new fact-reading
+ * practice has an obvious place to opt in.
+ *
+ * Deliberately NOT applied to verdicts derived from the observed CALLS alone
+ * (a `gh pr create` that ran, a worktree scan invalidated by a sweep, files
+ * edited outside plan.md): those stay true no matter which directory the facts
+ * came from, so each detector answers them ABOVE this guard.
+ *
+ * @param id - the practice that would otherwise speak.
+ * @param view - the session view, for the flag and for the root being refused.
+ * @param claim - what is not being asserted, named in the evidence.
+ * @returns the `n/a` result to return, or undefined when facts are trustworthy.
+ */
+export function refuseAssumedRoot(id: PracticeId, view: SessionView, claim: string): PracticeResult | undefined {
+  if (view.workRootAssumed !== true) return undefined
+  return result(id, 'n/a', [`no tool call named a path; not judging ${claim} in ${view.facts?.topLevel ?? 'the session directory'}`])
+}
+
 export function detectWorktree(view: SessionView): PracticeResult {
   const facts = view.facts
   const mutating = view.calls.filter(isMutatingCall)
   if (mutating.length === 0) return result('worktree', 'n/a', ['no file mutations yet'])
   if (facts === undefined || !facts.gitAvailable) return result('worktree', 'amber', ['git facts unavailable'])
   if (!facts.inRepo) return result('worktree', 'n/a', ['cwd is not inside a git repository'])
+  // Branch, worktree-ness and checkout identity all come from the work root,
+  // so an assumed root can produce a false green ("linked worktree") just as
+  // easily as a false red. Both are refused. This is the stronger sibling of
+  // the `attributesLocation` gate below: that one asks whether a MUTATION
+  // named a path, this asks whether ANY call pinned the root the facts were
+  // read from. They can disagree — a relative `edit src/x.ts` attributes a
+  // location but names no root — and when they do, this one wins, because a
+  // relative path says nothing about WHICH checkout it landed in.
+  const refusal = refuseAssumedRoot('worktree', view, 'where these mutations landed')
+  if (refusal !== undefined) return refusal
   const onProtected = facts.branch !== undefined && view.protectedBranches.includes(facts.branch)
   if (facts.isWorktree === true) {
     return result('worktree', 'green', [`linked worktree on branch ${facts.branch ?? '(detached)'}`])
@@ -298,9 +395,15 @@ export function detectPullRequest(view: SessionView): PracticeResult {
   const created = view.calls.find(call => BASH_TOOLS.has(call.name) && !call.isError && isPrCreateCommand(call.target))
   const url = view.calls.map(call => findPrUrl(call.resultHead)).find((u): u is string => u !== undefined)
     ?? (created !== undefined ? findPrUrl(created.resultHead) : undefined)
-  if (facts?.pr !== undefined) return result('pull-request', 'green', [`PR ${facts.pr.state.toLowerCase()}: ${facts.pr.url}`])
+  // Call-derived evidence first, and it outranks `facts.pr`: a PR URL this
+  // session printed, or a create command it ran, happened wherever the agent
+  // was working, so it survives an assumed root. `facts.pr` is read from the
+  // work root and does not.
   if (url !== undefined) return result('pull-request', 'green', [`PR opened: ${short(url)}`])
   if (created !== undefined) return result('pull-request', 'green', ['PR creation command ran'])
+  const refusal = refuseAssumedRoot('pull-request', view, 'the branch/PR state')
+  if (refusal !== undefined) return refusal
+  if (facts?.pr !== undefined) return result('pull-request', 'green', [`PR ${facts.pr.state.toLowerCase()}: ${facts.pr.url}`])
   const mutating = view.calls.some(isMutatingCall)
   if (!mutating) return result('pull-request', 'n/a', ['no file mutations yet'])
   if (facts === undefined || !facts.gitAvailable) return result('pull-request', 'amber', ['git facts unavailable'])
@@ -368,14 +471,35 @@ export function detectConductor(view: SessionView): PracticeResult {
   return result('conductor', 'green', [`${delegations.length} delegation${delegations.length === 1 ? '' : 's'}, no self-edits`])
 }
 
+/**
+ * Whether the SDLC paper trail is intact for the active stage.
+ *
+ * Two rules keep this honest, both learned from false reds that trained the
+ * user to ignore the panel:
+ *
+ * 1. The verdict describes a SPECIFIC repository, so it may only be stated
+ *    when a tool call actually named that repository — see
+ *    `refuseAssumedRoot`, the rule every fact-reading practice shares.
+ * 2. Red means a chain that was STARTED AND DROPPED, never merely absent. A
+ *    one-file bugfix reported from a screenshot is legitimate work with no
+ *    planned phase behind it; demanding plan.md from it is noise. So red
+ *    needs evidence of a phase in flight — some artifact present — with the
+ *    stage's next artifact missing.
+ */
 export function detectArtifactChain(view: SessionView): PracticeResult {
   const facts = view.facts
   if (facts === undefined || !facts.inRepo) return result('artifact-chain', 'n/a', ['not inside a git repository'])
+  // Rule 1: an assumed root means these artifacts belong to whatever repo the
+  // session happened to start in, which is not evidence about the work.
+  const refusal = refuseAssumedRoot('artifact-chain', view, 'the artifact chain')
+  if (refusal !== undefined) return refusal
   const have = facts.artifacts
   const has = (file: string): boolean => have.some(path => path.endsWith(`/${file}`) || path === file)
-  const evidence = have.length > 0 ? [`present: ${have.join(', ')}`] : ['no stage artifacts found']
+  const evidence = have.length > 0 ? [`present: ${have.join(', ')}`] : ['no stage artifacts in this repository']
+  // Rule 2: nothing committed anywhere means no phase was ever planned here.
+  if (have.length === 0) return result('artifact-chain', 'n/a', ['no planned phase in this repository; artifact chain not applicable'])
   const stage = view.activeStage
-  if (stage === undefined) return result('artifact-chain', have.length > 0 ? 'green' : 'amber', evidence)
+  if (stage === undefined) return result('artifact-chain', 'green', evidence)
   const required: Record<string, string | undefined> = {
     plan: undefined,
     design: 'intent.md',
@@ -386,7 +510,7 @@ export function detectArtifactChain(view: SessionView): PracticeResult {
     cross: undefined,
   }
   const need = required[stage]
-  if (need === undefined) return result('artifact-chain', have.length > 0 ? 'green' : 'amber', evidence)
+  if (need === undefined) return result('artifact-chain', 'green', evidence)
   if (has(need)) return result('artifact-chain', 'green', evidence)
   return result('artifact-chain', 'red', [...evidence, `stage "${stage}" expects ${need} to be committed first`])
 }
@@ -397,6 +521,12 @@ export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   const first = view.calls.find(call => WRITE_TOOLS.has(call.name))
   if (first === undefined) return result('plan-before-code', 'n/a', ['no file edits yet'])
   if (facts === undefined || !facts.inRepo) return result('plan-before-code', 'n/a', ['not inside a git repository'])
+  // "no plan.md in the repository" names a repository, and `facts.artifacts`
+  // were listed in the work root. Under an assumed root this was the worst
+  // offender of all: a confident mid-session red about a checkout the agent
+  // never opened, while the plan it was following sat in the one it did.
+  const refusal = refuseAssumedRoot('plan-before-code', view, 'whether a plan.md exists')
+  if (refusal !== undefined) return refusal
   const hasPlan = facts.artifacts.some(path => path.endsWith('plan.md'))
   if (hasPlan) return result('plan-before-code', 'green', ['plan.md present before edits'])
   return result('plan-before-code', 'red', [`edited ${first.target !== undefined ? short(first.target) : 'a file'} with no plan.md in the repository`], first.t)
@@ -436,6 +566,11 @@ export function detectWorktreeHygiene(view: SessionView): PracticeResult {
   // present" right after it was removed), which is worse than saying nothing.
   if (view.worktreesStale === true) return result('worktree-hygiene', 'n/a', ['worktree state changed; rescanning'])
   if (wt === undefined || !(view.facts?.inRepo === true)) return result('worktree-hygiene', 'n/a', ['no worktree scan'])
+  // The scan was taken OF the work root's repository. Under an assumed root
+  // those are somebody else's worktrees, and "N merged worktrees still
+  // present" sends the agent sweeping a checkout it never worked in.
+  const refusal = refuseAssumedRoot('worktree-hygiene', view, 'the worktrees')
+  if (refusal !== undefined) return refusal
   if (wt.total <= 1) return result('worktree-hygiene', 'green', ['no linked worktrees'])
   const evidence: string[] = []
   if (wt.removable > 0) evidence.push(`${wt.removable} merged worktree${wt.removable === 1 ? '' : 's'} still present`)
@@ -462,6 +597,12 @@ export function detectWorktreeHygiene(view: SessionView): PracticeResult {
 export function detectPostMergeSync(view: SessionView): PracticeResult {
   const facts = view.facts
   if (facts?.inRepo !== true) return { id: 'post-merge-sync', status: 'n/a', evidence: ['not a git repository'] }
+  // `behind`, `defaultBranch` and `buildStale` are all read from the work
+  // root, and the verdict names the remote it compared against. Under an
+  // assumed root it announced that a merge had landed in a repository nobody
+  // had touched, and sent the agent to pull it.
+  const refusal = refuseAssumedRoot('post-merge-sync', view, 'how far behind the checkout is')
+  if (refusal !== undefined) return refusal
   const synced = view.calls.filter(c => isSyncCommand(c.target)).length
   if (facts.behind === undefined) {
     return { id: 'post-merge-sync', status: 'n/a', evidence: ['no remote default branch to compare with'] }

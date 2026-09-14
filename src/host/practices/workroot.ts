@@ -83,18 +83,36 @@ export function workRootOf(call: ObservedCall, cwd: string | undefined): string 
 }
 
 /**
- * The best current work root: the newest call that names one, else the session
- * cwd.
+ * The work root some call actually NAMED, or undefined when none did.
+ *
+ * Split out of `currentWorkRoot` because the cwd fallback is a GUESS and a
+ * practice that names a repository in its verdict has to tell the guess apart
+ * from evidence. In a live session the cwd was a different repository from the
+ * one being worked in, and the artifact-chain practice reported a confident
+ * red about a project nobody had touched.
  *
  * Deliberately NOT restricted to mutating calls: `cd /wt && git status` or
  * `git -C /wt log` says where the agent is working just as plainly as a write
  * does, and requiring a mutation first meant the session kept being judged
  * against the primary checkout until one happened to land.
  */
-export function currentWorkRoot(calls: readonly ObservedCall[], cwd: string | undefined): string | undefined {
+export function attributedWorkRoot(calls: readonly ObservedCall[], cwd: string | undefined): string | undefined {
   for (let i = calls.length - 1; i >= 0; i -= 1) {
     const root = workRootOf(calls[i], cwd)
     if (root !== undefined) return root
   }
-  return cwd
+  return undefined
+}
+
+/**
+ * The best current work root: the newest call that names one, else the session
+ * cwd.
+ *
+ * The fallback keeps git facts readable from the very first step, before any
+ * call has named a path. A caller that goes on to ASSERT something about that
+ * directory must consult `attributedWorkRoot` to learn the root was only
+ * assumed — see `SessionView.workRootAssumed`.
+ */
+export function currentWorkRoot(calls: readonly ObservedCall[], cwd: string | undefined): string | undefined {
+  return attributedWorkRoot(calls, cwd) ?? cwd
 }

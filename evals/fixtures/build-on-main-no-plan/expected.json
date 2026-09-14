@@ -3,7 +3,7 @@
     "worktree": "red",
     "pull-request": "red",
     "conductor": "n/a",
-    "artifact-chain": "red",
+    "artifact-chain": "n/a",
     "plan-before-code": "red",
     "plan-drift": "n/a",
     "worktree-hygiene": "green"
