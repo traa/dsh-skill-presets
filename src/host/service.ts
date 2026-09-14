@@ -9,6 +9,7 @@ import { access, mkdir, readdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC, STAGE_ORDER, defaultPractices } from './curated.ts'
+import { adoptFoundation, foundationReport, type FoundationReport } from './foundation.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import { cleanupWorktrees, scanWorktrees, type CleanupResult, type WorktreeInfo } from './practices/worktrees.ts'
@@ -448,6 +449,42 @@ export class SkillPresetsService {
     await this.ensure()
     await writeJson(this.paths().overlays, validateOverlaysFile(overlays))
     this.notify()
+  }
+
+  /**
+   * What a newer curated foundation would add to this store.
+   *
+   * Read-only: the store is seeded once, so a user whose `presets.json`
+   * predates a curated change never sees it. Comparing against the shipped
+   * constants on every call is cheap and always reflects the installed plugin
+   * version, so no migration marker has to be persisted.
+   */
+  async foundation(): Promise<FoundationReport> {
+    return foundationReport(CURATED_PRESETS, await this.presets(), CURATED_OVERLAYS, await this.overlays())
+  }
+
+  /**
+   * Adopt the pending foundation changes, optionally only the given ids.
+   *
+   * Merges rather than replaces (see foundation.ts), so a preset the user
+   * edited keeps their edits. Writes both documents and notifies, so the
+   * model's catalog and the browser pick the new skills up on the next step.
+   */
+  async adoptFoundation(only?: readonly string[]): Promise<{ kind: string, id: string, added: string[] }[]> {
+    await this.ensure()
+    const storedPresets = await this.presets()
+    const storedOverlays = await this.overlays()
+    const report = foundationReport(CURATED_PRESETS, storedPresets, CURATED_OVERLAYS, storedOverlays)
+    const { presets, overlays, applied } = adoptFoundation(
+      report, CURATED_PRESETS, storedPresets, CURATED_OVERLAYS, storedOverlays,
+      only,
+      () => this.now().toISOString(),
+    )
+    if (applied.length === 0) return applied
+    if (applied.some(a => a.kind === 'preset')) await writeJson(this.paths().presets, presets)
+    if (applied.some(a => a.kind === 'overlay')) await writeJson(this.paths().overlays, overlays)
+    this.notify()
+    return applied
   }
 
   async savePractices(doc: PracticesDoc): Promise<PracticesDoc> {

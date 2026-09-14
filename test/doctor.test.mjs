@@ -48,6 +48,19 @@ test('legacyRowEnabled reads the row body, not just the id line', () => {
   assert.equal(legacyRowEnabled('- id: knowledge\n'), undefined)
 })
 
+test('the foundation warning names the updatable and the customized counts together', () => {
+  const f = diagnose({ ...base, foundation: { updatable: 1, customized: 2, added: 0 } })
+  const finding = f.find(x => x.id === 'foundation')
+  assert.equal(finding.severity, 'warn')
+  assert.match(finding.message, /1 updatable/)
+  assert.match(finding.message, /2 customized/)
+})
+
+test('a foundation with nothing pending is ok', () => {
+  const f = diagnose({ ...base, foundation: { updatable: 0, customized: 0, added: 0 } })
+  assert.equal(f.find(x => x.id === 'foundation').severity, 'ok')
+})
+
 test('probe on this checkout reports lib present and node_modules real', async () => {
   const r = await probe({ profile: 'no-such-profile-xyz', env: { DSH_HOME: '/nonexistent' } })
   assert.ok(r.libNewest !== undefined)

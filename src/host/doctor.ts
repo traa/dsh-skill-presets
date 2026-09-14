@@ -53,6 +53,8 @@ export interface ProbeResults {
   libVersion?: string
   /** The root that was probed, to compare with what the profile resolves. */
   probedRoot?: string
+  /** Pending curated foundation changes, when the caller can supply them. */
+  foundation?: { updatable: number, customized: number, added: number }
 }
 
 export function diagnose(r: ProbeResults): Finding[] {
@@ -95,6 +97,27 @@ export function diagnose(r: ProbeResults): Finding[] {
     if (!s.ok) push(`store:${s.file}`, 'fail', `${s.file} is unreadable: ${s.note ?? 'parse error'} — defaults are in use`, 'fix or delete the file; the plugin re-seeds defaults')
   }
   if (r.storeParse.every(s => s.ok) && r.storeParse.length > 0) push('store', 'ok', `${r.storeParse.length} store files parse`)
+
+  if (r.foundation !== undefined) {
+    const { updatable, customized, added } = r.foundation
+    // `customized` counts entries that ALSO lack curated skills, so it is a
+    // peer of `updatable`/`added`, not a fallback: reporting it only when the
+    // other two were zero hid every customized entry behind a single updatable
+    // one.
+    const pending = updatable + added + customized
+    if (pending > 0) {
+      const parts: string[] = []
+      if (updatable > 0) parts.push(`${updatable} updatable`)
+      if (added > 0) parts.push(`${added} new`)
+      if (customized > 0) parts.push(`${customized} customized`)
+      push(
+        'foundation',
+        'warn',
+        `${pending} curated preset/overlay update(s) not adopted (${parts.join(', ')}) — skills the foundation added are not being offered`,
+        'run `dsh-skill-presets foundation --adopt` or press Adopt on the Stages tab',
+      )
+    } else push('foundation', 'ok', 'curated presets and overlays are current')
+  }
 
   if (r.evals !== undefined) {
     if (r.evals.failed > 0) push('evals', 'fail', `${r.evals.failed}/${r.evals.total} eval fixture(s) fail — a detector changed behaviour`, 'dsh-skill-presets eval; `--update` only after confirming the change is intended')
@@ -145,6 +168,8 @@ export interface ProbeOptions {
   host?: { startedAt: number, restrictSeam?: boolean, agentTeams?: boolean, version?: string }
   runEvals?: () => Promise<{ total: number, failed: number }>
   env?: Record<string, string | undefined>
+  /** Supplied by the host, which can read the store; the CLI may omit it. */
+  foundation?: { updatable: number, customized: number, added: number }
 }
 
 export async function probe(options: ProbeOptions = {}): Promise<ProbeResults> {
@@ -232,6 +257,7 @@ export async function probe(options: ProbeOptions = {}): Promise<ProbeResults> {
     ...(options.runEvals !== undefined ? { evals: await options.runEvals() } : {}),
     ...(options.host?.version !== undefined ? { hostVersion: options.host.version } : {}),
     ...(libVersion !== undefined ? { libVersion } : {}),
+    ...(options.foundation !== undefined ? { foundation: options.foundation } : {}),
   }
 }
 

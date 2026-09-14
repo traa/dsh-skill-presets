@@ -141,6 +141,41 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
   const practicePill = (r: PracticeResult | undefined, label: string): unknown =>
     h('span', { className: `skp-pill ${r?.status ?? ''}` }, h('i', { className: `skp-dot ${r?.status ?? ''}` }), label)
 
+  /**
+   * The pending curated update, shown above the presets because it changes
+   * what those presets contain. Spelling out that adoption MERGES is the whole
+   * point: without it a user who edited a builtin will not press the button.
+   */
+  function foundationCard(snap: SettingsSnapshot): unknown {
+    const report = snap.foundation
+    if (report === undefined) return null
+    if (report.updatable + report.added + report.customized === 0) return null
+    const pending = report.diffs.filter(d => d.status === 'new' || d.missingSkills.length > 0)
+    if (pending.length === 0) return null
+    return h('div', { className: 'skp-card' },
+      h('div', { style: { fontWeight: 650 } }, 'Foundation update available'),
+      h('div', { className: 'skp-sub' }, 'The curated presets and overlays that ship with the plugin have moved on. Adopting MERGES: skills you added stay, fields you edited stay — only missing curated skills are added.'),
+      ...pending.map(d => h('div', { key: `${d.kind}:${d.id}`, className: 'skp-line' },
+        h('span', { className: `skp-pill ${d.status === 'new' ? 'green' : 'amber'}` }, d.status),
+        h('span', { className: 'skp-sub' }, d.kind),
+        h('strong', null, d.id),
+        h('span', { className: 'skp-sub', style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: d.missingSkills.join(', ') },
+          d.missingSkills.length > 0 ? `adds ${d.missingSkills.join(', ')}` : ''),
+        h('button', {
+          className: 'skp-btn small', disabled: snap.busy !== undefined,
+          onClick: () => { void controller.adoptFoundation([d.id]) },
+        }, 'Adopt'),
+      )),
+      h('div', { className: 'skp-row' },
+        h('button', {
+          className: 'skp-btn primary', disabled: snap.busy !== undefined,
+          onClick: () => { void controller.adoptFoundation() },
+        }, 'Adopt all'),
+        h('span', { className: 'skp-sub' }, 'New skills are offered on the model\'s next step; no restart needed.'),
+      ),
+    )
+  }
+
   function StagesTab({ snap, status }: { snap: SettingsSnapshot, status: Status }): unknown {
     const active = status.active.default
     const rollup = snap.rollup
@@ -189,6 +224,7 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         h('div', { className: 'skp-sub' }, `Fetch the curated skills from ${status.sources.filter(s => s.kind === 'github' && s.enabled).map(s => s.title).join(', ')} into this workbench. Nothing is fetched until you click.`),
         h('div', { className: 'skp-row' }, h('button', { className: 'skp-btn primary', disabled: snap.busy !== undefined, onClick: () => { void controller.installFoundation() } }, 'Install foundation')),
       ) : null,
+      foundationCard(snap),
       h('div', { className: 'skp-row' },
         h('span', { className: 'skp-sub' }, 'Workspace default: '),
         h('strong', null, status.activePreset?.title ?? 'none'),

@@ -10,6 +10,7 @@
  */
 
 import { PRACTICE_INFO } from './curated.ts'
+import { short } from './practices/detectors.ts'
 import type { ResolvedSkill } from './presets.ts'
 import type { PracticeResult, Preset } from './types.ts'
 
@@ -44,7 +45,10 @@ export function renderGuardrails(input: PromptInput): string {
     for (const p of atRisk) {
       const info = PRACTICE_INFO[p.id]
       const fix = input.skills.some(s => s.name === info.skill) ? ` — load the \`${info.skill}\` skill` : ''
-      lines.push(`- ${info.title} [${p.status}]: ${p.evidence[0] ?? ''}${fix}`)
+      // Defensive: a detector interpolating an unbounded tool argument (a bash
+      // command can be thousands of characters) must not be able to flood the
+      // model's context through this block.
+      lines.push(`- ${info.title} [${p.status}]: ${short(p.evidence[0] ?? '', 160)}${fix}`)
     }
   }
   if (lines.length === 0) return ''

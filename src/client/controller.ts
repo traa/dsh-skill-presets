@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -15,6 +15,8 @@ export interface SettingsSnapshot {
   insights?: InsightCandidate[]
   pruning?: PruningReport
   doctor?: DoctorReport
+  /** Curated presets/overlays that moved on since this store was seeded. */
+  foundation?: FoundationReport
   impact?: ImpactReport
   experiments?: ExperimentsAggregate
   lint?: LibraryLint
@@ -47,8 +49,13 @@ export class SettingsController extends Store<SettingsSnapshot> {
   async refresh(): Promise<void> {
     this.set({ loading: true, error: undefined })
     try {
-      const [status, doctor, orphans] = await Promise.all([rpc<Status>('status'), rpc<DoctorReport>('doctor').catch(() => undefined), rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined)])
-      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}) })
+      const [status, doctor, orphans, foundation] = await Promise.all([
+        rpc<Status>('status'),
+        rpc<DoctorReport>('doctor').catch(() => undefined),
+        rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined),
+        rpc<FoundationReport>('foundation/report').catch(() => undefined),
+      ])
+      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}), ...(foundation !== undefined ? { foundation } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }
@@ -102,6 +109,22 @@ export class SettingsController extends Store<SettingsSnapshot> {
     } catch (error) {
       this.set({ busy: undefined, error: (error as Error).message })
     }
+  }
+
+  /**
+   * Adopt the curated foundation, all of it or the given ids.
+   *
+   * Merging, never replacing, so this is safe to offer as a single button even
+   * for a preset the user has edited; the notice names what was added so the
+   * change is never silent.
+   */
+  async adoptFoundation(ids?: string[]): Promise<void> {
+    await this.action('foundation', async () => {
+      const out = await rpc<{ ok: boolean, applied: { kind: string, id: string, added: string[] }[] }>('foundation/adopt', ids !== undefined ? { ids } : {})
+      if (out.applied.length === 0) return 'Already current; nothing to adopt.'
+      const added = [...new Set(out.applied.flatMap(a => a.added))]
+      return `Adopted ${out.applied.length} update${out.applied.length === 1 ? '' : 's'}${added.length > 0 ? `: added ${added.join(', ')}` : ''}. Offered on the model's next step.`
+    })
   }
 
   /** Settings page: set the WORKSPACE DEFAULT (new sessions start from it). */
