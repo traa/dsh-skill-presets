@@ -9,6 +9,7 @@
  * @module dsh-skill-presets/host/practices/detectors
  */
 
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { GitFacts } from './git.ts'
 import type { PracticeId, PracticeResult, Stage } from '../types.ts'
 
@@ -35,6 +36,16 @@ export interface SessionView {
   /** Turn indices at which the user spoke (a new turn began). */
   readonly userTurns: readonly number[]
   readonly activeStage?: Stage
+  /**
+   * The session's own working directory — where a RELATIVE tool path resolves.
+   *
+   * Not the work root: the work root is derived from what calls named, while
+   * this is fixed at session creation. Both are needed to answer "did this
+   * mutation land in the checkout the facts came from?", because
+   * `edit src/x.ts` resolves against THIS directory no matter which worktree a
+   * `cd` in some other call reached.
+   */
+  readonly cwd?: string
   readonly protectedBranches: readonly string[]
   /** Whether the session has ended (final checks apply). */
   readonly ended: boolean
@@ -147,6 +158,10 @@ const DIRECTORY_DIRECTIVE = /(?:^|[;&|]\s*)cd\s+\S|\s-C\s+\S|--cwd[=\s]\S|--dire
  * all is not evidence that the write happened there. Asserting
  * "on protected branch main in the primary checkout" from `npm install x` is
  * inventing attribution — the practice must say it does not know instead.
+ *
+ * NECESSARY BUT NOT SUFFICIENT: naming a path is not the same as naming a path
+ * in THIS checkout. `tiedToCheckout` adds the containment half; use that one
+ * whenever a verdict is about a specific repository.
  */
 export function attributesLocation(call: ObservedCall): boolean {
   if (WRITE_TOOLS.has(call.name)) return call.target !== undefined
@@ -156,6 +171,75 @@ export function attributesLocation(call: ObservedCall): boolean {
     const tool = tokens(segment)[0]?.split('/').pop()
     return tool !== undefined && PACKAGE_TOOLS.has(tool)
   })
+}
+
+/**
+ * The directory a mutation actually landed in, when it can be worked out.
+ *
+ * A write/edit target is a filesystem path: absolute, it names its own
+ * directory; relative, it resolves against the SESSION cwd, because that is
+ * what the file tools resolve it against — a `cd` inside some bash call does
+ * not move it. A bash mutation lands in that command's effective directory
+ * (`cd`, `-C`, `--cwd`), falling back to the session cwd.
+ *
+ * Returns undefined when the call names no path at all, or when it is relative
+ * and the session cwd is unknown: "I cannot tell" — never a guess.
+ */
+export function mutationLandedIn(call: ObservedCall, cwd: string | undefined): string | undefined {
+  if (call.target === undefined) return undefined
+  if (WRITE_TOOLS.has(call.name)) {
+    if (isAbsolute(call.target)) return dirname(call.target)
+    return cwd !== undefined ? dirname(resolve(cwd, call.target)) : undefined
+  }
+  if (!BASH_TOOLS.has(call.name)) return undefined
+  return commandCwd(call.target, cwd) ?? cwd
+}
+
+/** Whether `dir` is `root` or lives underneath it. */
+export function isInside(root: string, dir: string): boolean {
+  const rel = relative(root, dir)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * Whether a mutation is genuinely tied to the checkout the git facts describe.
+ *
+ * THE RULE: a mutation may be named as evidence about a checkout only when its
+ * landing directory is KNOWN and lies inside that checkout's top level.
+ *
+ * Two independent gates, and both are needed:
+ *
+ * 1. `attributesLocation` — did the call name WHERE it wrote at all? `npm
+ *    install left-pad` writes into a dependency directory and names no path,
+ *    so it can never be evidence about a checkout.
+ * 2. Containment — does the path it named actually land in THIS checkout?
+ *    This is the hole PR #11 left open. A relative `edit src/x.ts` passes gate
+ *    1 (it named a path) but says nothing about which checkout it landed in
+ *    until it is resolved against the session cwd; once resolved it either
+ *    lands under the root the facts were read from or it does not. An absolute
+ *    write to `/other/repo/x.ts` passes gate 1 and fails here outright.
+ *
+ * Rejected alternative: "count relative writes when the session has exactly
+ * one plausible root". That reasons about the session instead of the call, and
+ * it still names a file it cannot place — the resolution above is not a
+ * heuristic, it is what the filesystem tools literally do.
+ *
+ * The practice stays falsifiable: with `cwd` inside the primary checkout, a
+ * relative write resolves INTO it and the red verdict still fires — which is
+ * the real case the practice exists for.
+ *
+ * @param call - the mutating call being considered as evidence.
+ * @param roots - the checkout's top level, plus its unresolved spelling when a
+ *   symlink makes the two differ (see `GitFacts.topLevelAlias`). A path under
+ *   EITHER is inside the checkout — they name one directory.
+ * @param cwd - the session cwd, for resolving relative targets.
+ */
+export function tiedToCheckout(call: ObservedCall, roots: readonly (string | undefined)[], cwd: string | undefined): boolean {
+  if (!attributesLocation(call)) return false
+  const known = roots.filter((r): r is string => r !== undefined)
+  if (known.length === 0) return false
+  const landed = mutationLandedIn(call, cwd)
+  return landed !== undefined && known.some(root => isInside(root, landed))
 }
 
 /** Whether a call mutates files (write/edit, or a mutating bash command). */
@@ -194,6 +278,55 @@ export function shellSegments(command: string): string[] {
   }
   out.push(current)
   return out.map(s => s.trim()).filter(s => s.length > 0)
+}
+
+/** Commands whose `-C <dir>` really means "run in this directory". */
+const DASH_C_TOOLS = new Set(['git', 'jj', 'make', 'tar'])
+
+const CD_TARGET = /^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))/u
+
+function expand(path: string): string {
+  return path.replace(/^~(?=\/|$)/u, process.env.HOME ?? '~')
+}
+
+/**
+ * The directory a shell command actually runs in, from ANY segment.
+ *
+ * `npm ci && cd /wt && git commit` and `git -C /wt commit` both work in `/wt`,
+ * not in the session cwd — reading only a LEADING `cd` was the root cause of
+ * "file mutations on protected branch main in the primary checkout" while
+ * every write landed in a linked worktree. The LAST directive wins, because
+ * that is where the command ended up. Relative targets resolve against `cwd`.
+ *
+ * Lives here rather than in `workroot.ts` because it is pure command parsing
+ * over `shellSegments`, and because the detectors need it to decide whether a
+ * bash mutation landed inside the checkout being judged — and `detectors.ts`
+ * may not import `workroot.ts`, which imports this module.
+ */
+export function commandCwd(command: string, cwd: string | undefined): string | undefined {
+  let found: string | undefined
+  for (const segment of shellSegments(command)) {
+    const cd = segment.match(CD_TARGET)
+    if (cd !== null) {
+      found = expand(cd[1] ?? cd[2] ?? cd[3])
+      continue
+    }
+    const parts = segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
+    const tool = parts[0]?.replace(/["']/gu, '').split('/').pop()
+    if (tool === undefined) continue
+    for (let i = 1; i < parts.length; i += 1) {
+      const token = parts[i].replace(/["']/gu, '')
+      const inline = token.match(/^--(?:cwd|directory)=(.+)$/u)
+      if (inline !== null) { found = expand(inline[1]); continue }
+      const isFlag = token === '--cwd' || token === '--directory' || (token === '-C' && DASH_C_TOOLS.has(tool))
+      if (!isFlag) continue
+      const value = parts[i + 1]?.replace(/["']/gu, '')
+      if (value !== undefined && !value.startsWith('-')) { found = expand(value); i += 1 }
+    }
+  }
+  if (found === undefined) return undefined
+  if (isAbsolute(found)) return found
+  return cwd !== undefined ? resolve(cwd, found) : undefined
 }
 
 /** Split a segment into tokens, honouring quotes and stripping them. */
@@ -358,14 +491,19 @@ export function detectWorktree(view: SessionView): PracticeResult {
   if (!facts.inRepo) return result('worktree', 'n/a', ['cwd is not inside a git repository'])
   // Branch, worktree-ness and checkout identity all come from the work root,
   // so an assumed root can produce a false green ("linked worktree") just as
-  // easily as a false red. Both are refused. This is the stronger sibling of
-  // the `attributesLocation` gate below: that one asks whether a MUTATION
-  // named a path, this asks whether ANY call pinned the root the facts were
-  // read from. They can disagree — a relative `edit src/x.ts` attributes a
-  // location but names no root — and when they do, this one wins, because a
-  // relative path says nothing about WHICH checkout it landed in.
+  // easily as a false red. Both are refused. This asks whether ANY call pinned
+  // the root the facts were read from; `tiedToCheckout` below then asks, per
+  // mutation, whether THAT mutation landed inside it. Both must hold.
   const refusal = refuseAssumedRoot('worktree', view, 'where these mutations landed')
   if (refusal !== undefined) return refusal
+  // Every verdict below names this checkout — green ("linked worktree") as
+  // loudly as red — so it may only be stated about mutations that provably
+  // landed in it. See `tiedToCheckout` for the rule and why.
+  const tied = mutating.filter(call => tiedToCheckout(call, [facts.topLevel, facts.topLevelAlias], view.cwd))
+  if (tied.length === 0) {
+    const n = mutating.length
+    return result('worktree', 'amber', [`${n} file mutation${n === 1 ? '' : 's'} that cannot be placed in ${facts.topLevel ?? 'this checkout'}; not judging where they landed`])
+  }
   const onProtected = facts.branch !== undefined && view.protectedBranches.includes(facts.branch)
   if (facts.isWorktree === true) {
     return result('worktree', 'green', [`linked worktree on branch ${facts.branch ?? '(detached)'}`])
@@ -374,19 +512,16 @@ export function detectWorktree(view: SessionView): PracticeResult {
     return result('worktree', 'green', [`primary checkout but on feature branch ${facts.branch}`])
   }
   if (facts.isWorktree === undefined) return result('worktree', 'amber', ['could not determine worktree state'])
-  // Only mutations that name where they landed can carry a location claim.
-  const attributed = mutating.filter(attributesLocation)
-  if (attributed.length === 0) {
-    return result('worktree', 'amber', [`${mutating.length} file mutation${mutating.length === 1 ? '' : 's'} that name no path; cannot tie them to a checkout`])
-  }
+  const skipped = mutating.length - tied.length
   return result(
     'worktree',
     'red',
     [
-      `${attributed.length} file mutation${attributed.length === 1 ? '' : 's'} on protected branch ${facts.branch ?? '(detached)'} in the primary checkout`,
-      `first: ${attributed[0].name}${attributed[0].target !== undefined ? ` ${short(attributed[0].target)}` : ''}`,
+      `${tied.length} file mutation${tied.length === 1 ? '' : 's'} on protected branch ${facts.branch ?? '(detached)'} in the primary checkout`,
+      `first: ${tied[0].name}${tied[0].target !== undefined ? ` ${short(tied[0].target)}` : ''}`,
+      ...(skipped > 0 ? [`${skipped} further mutation${skipped === 1 ? '' : 's'} could not be placed in this checkout and are not counted`] : []),
     ],
-    attributed[0].t,
+    tied[0].t,
   )
 }
 

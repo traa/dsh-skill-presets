@@ -5,10 +5,17 @@ import * as detectors from '../lib/host/practices/detectors.js'
 import { workRootOf, currentWorkRoot, attributedWorkRoot } from '../lib/host/practices/workroot.js'
 import { changesWorktrees } from '../lib/host/practices/worktrees.js'
 
-const base = { calls: [], teamAttached: false, userTurns: [1], protectedBranches: ['main', 'master'], ended: false }
+// A real session always has BOTH a cwd and a repository top level: the facts
+// were read from a directory, and `edit src/x.ts` resolves against one. The
+// fixture carries them so the worktree practice can answer its question —
+// "did this mutation land in THIS checkout?" — as it does in a live session.
+// Same directory for both, which is the ordinary case: the agent is working
+// where the session started.
+const REPO = '/repo'
+const base = { calls: [], teamAttached: false, userTurns: [1], protectedBranches: ['main', 'master'], ended: false, cwd: REPO }
 const edit = (t = 't1', turn = 1, target = 'src/x.ts') => ({ t, turn, name: 'edit', target, isError: false })
 const bash = (command, resultHead, turn = 1) => ({ t: 't', turn, name: 'bash', target: command, isError: false, resultHead })
-const facts = (over = {}) => ({ inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ahead: 0, hasUpstream: true, dirty: false, ghAvailable: true, artifacts: [], instructionFiles: [], readAt: 'r', ...over })
+const facts = (over = {}) => ({ inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ahead: 0, hasUpstream: true, dirty: false, ghAvailable: true, topLevel: REPO, artifacts: [], instructionFiles: [], readAt: 'r', ...over })
 
 test('worktree: n/a before mutations; red on protected branch in primary checkout; green in a worktree or on a feature branch', () => {
   assert.equal(detectWorktree({ ...base, facts: facts() }).status, 'n/a')
@@ -157,6 +164,63 @@ test('work root: a cd or -C target has the same precedence as a write path — t
   assert.equal(currentWorkRoot([editCall, cdCall], '/primary'), '/wt-b')
   assert.equal(currentWorkRoot([cdCall, editCall], '/primary'), '/wt-a/src')
   assert.equal(currentWorkRoot([editCall, dashC], '/primary'), '/wt-c')
+})
+
+// A mutation may only be named as evidence about a checkout when it provably
+// landed IN that checkout: absolute and under the root, or relative and
+// resolving under it from the session cwd. PR #11 closed the "named no path"
+// hole; this closes the "named a path somewhere else" one.
+test('worktree: only mutations that provably landed in this checkout are counted as evidence', () => {
+  // (a) RELATIVE target, session cwd inside the repo: resolves to
+  // /repo/src/x.ts, so it IS this checkout and the red case still fires.
+  const rel = detectWorktree({ ...base, calls: [edit('t1', 1, 'src/x.ts')], facts: facts() })
+  assert.equal(rel.status, 'red', rel.evidence.join(' | '))
+  assert.match(rel.evidence[0], /1 file mutation on protected branch main in the primary checkout/)
+
+  // (b) ABSOLUTE target under the root: the plainest red there is.
+  const abs = detectWorktree({ ...base, calls: [edit('t1', 1, `${REPO}/src/x.ts`)], facts: facts() })
+  assert.equal(abs.status, 'red', abs.evidence.join(' | '))
+  assert.match(abs.evidence[0], /1 file mutation on protected branch main in the primary checkout/)
+
+  // (c) ABSOLUTE target OUTSIDE the root: nothing ties it to this checkout, so
+  // the practice must not name it — and must not claim the location either.
+  const outside = detectWorktree({ ...base, calls: [edit('t1', 1, '/other/repo/src/x.ts')], facts: facts() })
+  assert.notEqual(outside.status, 'red', outside.evidence.join(' | '))
+  assert.deepEqual(outside.evidence.filter(e => /primary checkout/.test(e)), [])
+  assert.match(outside.evidence.join(' | '), /cannot be placed/)
+
+  // A relative target whose session cwd sits OUTSIDE the attributed root is
+  // the PR #11 hole itself: it named a path, but not one in this checkout.
+  const elsewhere = detectWorktree({ ...base, cwd: '/other/repo', calls: [edit('t1', 1, 'src/x.ts')], facts: facts() })
+  assert.notEqual(elsewhere.status, 'red', elsewhere.evidence.join(' | '))
+  assert.deepEqual(elsewhere.evidence.filter(e => /primary checkout/.test(e)), [])
+
+  // Mixed: the in-checkout mutation still convicts, and the count is of TIED
+  // mutations only — the unplaceable one is declared, not silently folded in.
+  const mixed = detectWorktree({ ...base, calls: [edit('t1', 1, `${REPO}/src/x.ts`), edit('t2', 1, '/other/repo/y.ts')], facts: facts() })
+  assert.equal(mixed.status, 'red')
+  assert.match(mixed.evidence[0], /^1 file mutation on protected branch main/)
+  assert.match(mixed.evidence.join(' | '), /1 further mutation could not be placed/)
+
+  // The same containment rule guards the GREEN verdicts, which name this
+  // checkout just as loudly: a write outside a linked worktree is not evidence
+  // that the work happened safely inside it.
+  const falseGreen = detectWorktree({ ...base, calls: [edit('t1', 1, '/other/repo/y.ts')], facts: facts({ isWorktree: true }) })
+  assert.notEqual(falseGreen.status, 'green', falseGreen.evidence.join(' | '))
+})
+
+test('worktree: a symlinked checkout is still this checkout (git resolves the top level, tool paths do not)', () => {
+  // macOS /tmp → /private/tmp: `git rev-parse --show-toplevel` answers the
+  // realpath while every tool call carries the symlinked spelling. Comparing
+  // them literally turned a genuine red into "cannot be placed".
+  const r = detectWorktree({
+    ...base,
+    cwd: '/var/folders/x/repo',
+    calls: [edit('t1', 1, '/var/folders/x/repo/src/a.ts')],
+    facts: facts({ topLevel: '/private/var/folders/x/repo', topLevelAlias: '/var/folders/x/repo' }),
+  })
+  assert.equal(r.status, 'red', r.evidence.join(' | '))
+  assert.match(r.evidence[0], /primary checkout/)
 })
 
 test('worktree: with no attributable path the practice reports n/a or amber with a reason, never the primary checkout', () => {

@@ -130,6 +130,9 @@ async function main(): Promise<number> {
         calls: isMutating ? pending : [],
         facts,
         teamAttached: false,
+        // The directory the hook reported, which is both where the facts were
+        // read and what a relative `file_path` in the payload resolves against.
+        cwd,
         userTurns: [1],
         protectedBranches: doc.protectedBranches,
         ended: id === 'pull-request',

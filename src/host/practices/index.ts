@@ -249,6 +249,9 @@ export class PracticeTracker {
       teamAttached: state.teamAttached,
       ...(state.approvalRequired !== undefined ? { approvalRequired: state.approvalRequired } : {}),
       userTurns: state.userTurns,
+      // Where a RELATIVE tool path resolves, so a detector can tell whether
+      // `edit src/x.ts` landed in the checkout the facts came from.
+      ...(state.cwd !== undefined ? { cwd: state.cwd } : {}),
       protectedBranches: doc.protectedBranches,
       ended: state.ended,
       drift: state.drift,

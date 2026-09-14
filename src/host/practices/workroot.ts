@@ -10,8 +10,14 @@
  * @module dsh-skill-presets/host/practices/workroot
  */
 
-import { dirname, isAbsolute, resolve } from 'node:path'
-import { shellSegments, type ObservedCall } from './detectors.ts'
+import { dirname, isAbsolute } from 'node:path'
+import { commandCwd, type ObservedCall } from './detectors.ts'
+
+// `commandCwd` moved into `detectors.ts` — the detectors need it to decide
+// whether a bash mutation landed inside the checkout being judged, and they
+// may not import THIS module (the dependency runs the other way). Re-exported
+// so its existing callers keep their import site.
+export { commandCwd } from './detectors.ts'
 
 const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
 const BASH_TOOLS = new Set(['bash', 'Bash', 'shell', 'terminal'])
@@ -21,51 +27,6 @@ export function leadingCd(command: string): string | undefined {
   const m = command.trim().match(/^(?:set\s+-e\s*;\s*)?cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))/u)
   if (m === null) return undefined
   return (m[1] ?? m[2] ?? m[3]).replace(/^~(?=\/|$)/u, process.env.HOME ?? '~')
-}
-
-/** Commands whose `-C <dir>` really means "run in this directory". */
-const DASH_C_TOOLS = new Set(['git', 'jj', 'make', 'tar'])
-
-const CD_TARGET = /^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))/u
-
-/**
- * The directory a shell command actually runs in, from ANY segment.
- *
- * `leadingCd` only saw a `cd` in front of the whole command, so
- * `npm ci && cd /wt && git commit` and `git -C /wt commit` both looked like
- * work in the session cwd — the root cause of "file mutations on protected
- * branch main in the primary checkout" while every write landed in a linked
- * worktree. The LAST directive wins, because that is where the command ended
- * up. Relative targets resolve against `cwd`.
- */
-export function commandCwd(command: string, cwd: string | undefined): string | undefined {
-  let found: string | undefined
-  for (const segment of shellSegments(command)) {
-    const cd = segment.match(CD_TARGET)
-    if (cd !== null) {
-      found = expand(cd[1] ?? cd[2] ?? cd[3])
-      continue
-    }
-    const parts = segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
-    const tool = parts[0]?.replace(/["']/gu, '').split('/').pop()
-    if (tool === undefined) continue
-    for (let i = 1; i < parts.length; i += 1) {
-      const token = parts[i].replace(/["']/gu, '')
-      const inline = token.match(/^--(?:cwd|directory)=(.+)$/u)
-      if (inline !== null) { found = expand(inline[1]); continue }
-      const isFlag = token === '--cwd' || token === '--directory' || (token === '-C' && DASH_C_TOOLS.has(tool))
-      if (!isFlag) continue
-      const value = parts[i + 1]?.replace(/["']/gu, '')
-      if (value !== undefined && !value.startsWith('-')) { found = expand(value); i += 1 }
-    }
-  }
-  if (found === undefined) return undefined
-  if (isAbsolute(found)) return found
-  return cwd !== undefined ? resolve(cwd, found) : undefined
-}
-
-function expand(path: string): string {
-  return path.replace(/^~(?=\/|$)/u, process.env.HOME ?? '~')
 }
 
 /**

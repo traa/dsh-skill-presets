@@ -9,8 +9,9 @@
  */
 
 import { execFile } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { access } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export interface GitFacts {
   /** Whether `cwd` is inside a git work tree at all. */
@@ -26,6 +27,19 @@ export interface GitFacts {
   readonly dirty?: boolean
   /** Repository top-level directory. */
   readonly topLevel?: string
+  /**
+   * The same top level spelled the way the CALLER reaches it, when that
+   * differs from `topLevel`.
+   *
+   * `git rev-parse --show-toplevel` resolves symlinks, so a checkout reached
+   * through one (macOS `/tmp` → `/private/tmp`, or a symlinked worktree)
+   * reports `/private/var/…/repo` while every tool call carries
+   * `/var/…/repo`. Anything testing whether a path lies INSIDE the checkout
+   * must accept both spellings, or it silently concludes the write landed
+   * somewhere else. Only this module can record it: it is the half that knows
+   * which directory was asked about.
+   */
+  readonly topLevelAlias?: string
   /** Pull request state, when `gh` (or another forge CLI) could answer. */
   readonly pr?: { url: string, state: string }
   readonly ghAvailable: boolean
@@ -104,6 +118,7 @@ export async function readGitFacts(cwd: string, options: ReadFactsOptions = {}):
     run('git', ['status', '--porcelain'], cwd, timeoutMs),
   ])
   const topLevel = top.ok ? top.stdout.trim() : undefined
+  const topLevelAlias = topLevel !== undefined ? aliasTopLevel(cwd, topLevel) : undefined
   const isWorktree = gitDir.ok && commonDir.ok
     ? normalizeDir(gitDir.stdout) !== normalizeDir(commonDir.stdout)
     : undefined
@@ -189,11 +204,38 @@ export async function readGitFacts(cwd: string, options: ReadFactsOptions = {}):
     ...(buildStale !== undefined ? { buildStale } : {}),
     dirty: status.ok ? status.stdout.trim().length > 0 : undefined,
     ...(topLevel !== undefined ? { topLevel } : {}),
+    ...(topLevelAlias !== undefined ? { topLevelAlias } : {}),
     ...(pr !== undefined ? { pr } : {}),
     ghAvailable,
     artifacts,
     instructionFiles,
   }
+}
+
+/**
+ * The top level spelled the way `cwd` reaches it, when a symlink makes that
+ * differ from git's resolved answer.
+ *
+ * `cwd` and `topLevel` name the same directory by construction — git was asked
+ * about `cwd` — but git resolved symlinks and the caller did not. Walking
+ * `cwd` up by however many segments separate the RESOLVED cwd from the
+ * resolved top level lands on the caller's own spelling of it. Returns
+ * undefined when nothing resolves differently, so the common case adds no
+ * field at all.
+ */
+function aliasTopLevel(cwd: string, topLevel: string): string | undefined {
+  let realCwd: string
+  try {
+    realCwd = realpathSync(cwd)
+  } catch {
+    return undefined
+  }
+  if (realCwd === cwd) return undefined
+  const down = relative(topLevel, realCwd)
+  if (down.startsWith('..') || isAbsolute(down)) return undefined
+  const up = down === '' ? 0 : down.split(sep).length
+  const alias = resolve(cwd, ...Array.from({ length: up }, () => '..'))
+  return alias === topLevel ? undefined : alias
 }
 
 async function findInSlugDirs(root: string, file: string): Promise<string | undefined> {
