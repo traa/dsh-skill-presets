@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/views
  */
 
-import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
+import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, StageGuess, Status } from './api.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
 
 export interface ReactLike {
@@ -112,6 +112,13 @@ export const CSS = `
 /* The "+N not applicable" summary: present but deliberately quiet, and
    cursor:help advertises that the hidden titles/reasons are on hover. */
 .skp-na { font-size: 11px; color: var(--dsw-alias-label-secondary); opacity: .75; cursor: help; }
+/* The stage NAME stays the loudest part of the detected-stage line; the lead-in
+   and the "N% confident" tail are secondary text around it. */
+.skp-stage-name { font-weight: 650; color: var(--dsw-alias-label-primary); }
+/* The detector's reasons, and the muted line it falls back to when it has too
+   little to name a stage. Quiet like .skp-na, but a SEPARATE class: .skp-na
+   marks "not applicable in this stage" and is counted as such. */
+.skp-why { font-size: 11px; color: var(--dsw-alias-label-secondary); opacity: .75; cursor: help; }
 .skp-rate { display: flex; gap: 6px; }
 .skp-graph { position: relative; height: 240px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
 .skp-node { position: absolute; transform: translate(-50%, -50%); font-size: 11px; padding: 2px 7px; border-radius: 8px; background: var(--dsw-alias-bg-base);
@@ -133,6 +140,51 @@ const STAGE_LABEL: Record<string, string> = { plan: 'Plan', design: 'Design', bu
 
 function pct(n: number): string {
   return `${Math.round(n * 100)}%`
+}
+
+/**
+ * Below this confidence the detector is not reporting evidence, it is falling
+ * back: `detectStage` returns 0.2 when it never saw a repository and 0.5 when
+ * nothing at all matched. Every guess drawn from real evidence — artifacts, PR
+ * state, deploy or rollback commands — is ≥ 0.7, so 0.6 sits in the empty band
+ * between the two and separates them without clipping any evidenced case.
+ * Presentation only: `SUGGEST_AT` in host/stage.ts still decides, on its own,
+ * when a preset switch is offered.
+ */
+const STAGE_SHOW_AT = 0.6
+
+/**
+ * The detected-stage line, shared by the popover and the sidebar so the two can
+ * never drift apart.
+ *
+ * `confidence` is the detector's certainty in its GUESS, but a stage name
+ * followed by a bare percentage reads as PROGRESS ("Plan (50%)" → the plan is
+ * half done), which is the opposite of what it means. So the number is never
+ * shown bare: it is spelled out as "N% confident", after the stage name and an
+ * em dash, and the reasons move to their own muted line — which also keeps the
+ * first line inside 340px no matter how long a `why` (a PR URL) runs.
+ *
+ * Under `STAGE_SHOW_AT` no stage is named at all: a coin-flip fallback rendered
+ * with the weight of an 85% guess from an open PR is a wrong finding, not a
+ * weak one. The muted "not yet clear" line keeps the surface honest and still
+ * reachable — the guess and its number stay on hover rather than being dropped.
+ * @param h - bound `React.createElement`.
+ * @param guess - the host's stage guess.
+ * @param cls - text class for this surface ('skp-pop-s' | 'skp-sub').
+ */
+function stageLines(h: ReactLike['createElement'], guess: StageGuess, cls: string): unknown[] {
+  const label = STAGE_LABEL[guess.stage] ?? guess.stage
+  const why = guess.why.join(' · ')
+  if (guess.confidence < STAGE_SHOW_AT) {
+    return [h('div', {
+      className: `${cls} skp-why`,
+      title: `Best guess ${label} at ${pct(guess.confidence)} confidence — too low to name a stage${why.length > 0 ? ` · ${why}` : ''}`,
+    }, 'Detected stage: not yet clear')]
+  }
+  return [
+    h('div', { className: cls }, 'Detected stage: ', h('span', { className: 'skp-stage-name' }, label), ` — ${pct(guess.confidence)} confident`),
+    why.length > 0 ? h('div', { className: `${cls} skp-why`, title: why }, why) : null,
+  ]
 }
 
 /** Signed delta rendering: "+12 pt" / "−0.4". */
@@ -847,7 +899,7 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
         h('div', { className: 'skp-pop-item', onClick: () => { void controller.activate(null) } }, h('div', { className: 'skp-pop-s' }, 'No preset for this session (overlays only)')),
         card?.activeSource === 'session' ? h('div', { className: 'skp-pop-item', onClick: () => { void controller.useDefault() } }, h('div', { className: 'skp-pop-s' }, 'Forget this session\'s choice; follow the defaults')) : null,
         card !== undefined ? h('div', { className: 'skp-col', style: { borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 8 } },
-          h('div', { className: 'skp-pop-s' }, `Detected stage: ${STAGE_LABEL[card.stageGuess.stage] ?? card.stageGuess.stage} (${Math.round(card.stageGuess.confidence * 100)}%) — ${card.stageGuess.why[0] ?? ''}`),
+          ...stageLines(h, card.stageGuess, 'skp-pop-s'),
           card.overlays.length > 0 ? h('div', { className: 'skp-pop-s' }, `Overlays: ${card.overlays.join(', ')}`) : null,
           ...(() => {
             const { shown, hiddenCount, hiddenTitle } = splitApplicable(card.practices, id => status.practiceInfo[id]?.title ?? id)
@@ -891,7 +943,7 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
           card.overlays.length > 0 ? h('span', { className: 'skp-pill' }, `+ ${card.overlays.join(', ')}`) : null,
           !card.live ? h('span', { className: 'skp-pill amber' }, 'session not live') : null,
         ),
-        h('div', { className: 'skp-sub' }, `Detected: ${STAGE_LABEL[card.stageGuess.stage] ?? card.stageGuess.stage} (${Math.round(card.stageGuess.confidence * 100)}%) — ${card.stageGuess.why.join(' · ')}`),
+        ...stageLines(h, card.stageGuess, 'skp-sub'),
         card.suggestion !== undefined ? h('div', { className: 'skp-card skp-pulse', style: { padding: '8px 10px' } },
           h('div', { style: { fontWeight: 650 } }, `Switch to ${STAGE_LABEL[card.suggestion.to] ?? card.suggestion.to}?`),
           h('div', { className: 'skp-row' },

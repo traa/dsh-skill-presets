@@ -188,7 +188,10 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   assert.match(words, /1 of 2 loaded/)
   // Phase 2 surfaces: preset source, detected stage + suggestion, drift, experiments.
   assert.match(words, /this session/)
-  assert.match(words, /Detected: Test & Review/)
+  // The stage name is named AND its number is spelled out as confidence, so a
+  // reader cannot take "Test & Review 85%" for progress through that stage.
+  assert.match(words.replace(/\s+/gu, ' '), /Detected stage: Test & Review — 85% confident/)
+  assert.doesNotMatch(words, /Test & Review\s*\(85%\)/)
   assert.match(words, /Switch to Test & Review\?/)
   assert.match(words, /unplanned\.ts/)
   assert.match(words, /s-3/)
@@ -305,6 +308,37 @@ test('when every practice is n/a the muted line stands alone rather than an empt
   assert.equal(text(na[0]).join(''), '+3 not applicable in this stage')
   // The section still has its heading, so it cannot read as a broken empty block.
   assert.match(text(tree).join(' '), /Practices/)
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 5))
+})
+
+test('a sub-threshold stage guess names no stage: the 0.5 fallback is muted, not announced like a finding', async () => {
+  const { mod, React } = await load()
+  const { ctx, registrations } = fakeCtx()
+  const { scorecard, status } = mixedFixture()
+  // What detectStage returns when nothing matched at all.
+  scorecard.stageGuess = { stage: 'plan', confidence: 0.5, why: ['nothing observed yet; defaulting to Plan'] }
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
+  mod.apply(ctx)
+  const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
+  const props = { sessionId: 's-6', useTabInfo: () => ({ tab: { visible: true } }) }
+  render(React, React.createElement(Body, props))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  const tree = render(React, React.createElement(Body, props))
+  const words = text(tree).join(' ').replace(/\s+/gu, ' ')
+  assert.match(words, /Detected stage: not yet clear/)
+  // No stage is named and no percentage is shown on the line itself.
+  assert.doesNotMatch(words, /Detected stage: Plan/)
+  assert.doesNotMatch(words, /50%/)
+  // The guess is muted, not discarded: stage, exact figure and reason stay on hover.
+  const line = nodesWithClass(tree, 'skp-why').find(n => /not yet clear/u.test(text(n).join('')))
+  assert.ok(line, 'the muted stage line should carry the skp-why class')
+  assert.match(line.props.title, /Plan/)
+  assert.match(line.props.title, /50% confidence/)
+  assert.match(line.props.title, /nothing observed yet; defaulting to Plan/)
+  // It must not be counted as a "+N not applicable" practice line.
+  assert.equal(nodesWithClass(tree, 'skp-na').filter(n => /not yet clear/u.test(text(n).join(''))).length, 0)
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))
 })

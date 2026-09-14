@@ -630,7 +630,11 @@ export function detectArtifactChain(view: SessionView): PracticeResult {
   if (refusal !== undefined) return refusal
   const have = facts.artifacts
   const has = (file: string): boolean => have.some(path => path.endsWith(`/${file}`) || path === file)
-  const evidence = have.length > 0 ? [`present: ${have.join(', ')}`] : ['no stage artifacts in this repository']
+  // Only ever reached with artifacts present: the empty case returns below.
+  // Kept free of the old "no stage artifacts" phrasing so a future reorder
+  // cannot resurrect an accusation about a repository that simply never
+  // planned a phase.
+  const evidence = [`present: ${have.join(', ')}`]
   // Rule 2: nothing committed anywhere means no phase was ever planned here.
   if (have.length === 0) return result('artifact-chain', 'n/a', ['no planned phase in this repository; artifact chain not applicable'])
   const stage = view.activeStage
