@@ -43,6 +43,11 @@ export interface SessionView {
   readonly planUpdated?: boolean
   /** Worktree scan summary for the work root's repo. */
   readonly worktrees?: { removable: number, attention: string[], stale: number, symlinked: number, total: number }
+  /**
+   * A call changed the set of worktrees and the cached scan has not caught up.
+   * The summary above is then last-minute-old and must not be asserted as fact.
+   */
+  readonly worktreesStale?: boolean
 }
 
 /**
@@ -74,11 +79,170 @@ export function isMutatingCommand(command: string | undefined): boolean {
   return /(?:^|[;&|]\s*)(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|>\s*\S|>>\s*\S|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u.test(c)
 }
 
+/**
+ * Dependency managers. Their operands are PACKAGE names, and they write into a
+ * dependency directory rather than the tracked working tree, so they cannot
+ * pin a mutation to a checkout.
+ */
+const PACKAGE_TOOLS = new Set(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'pip3', 'cargo', 'gem', 'composer', 'poetry', 'uv', 'bundle'])
+
+const DIRECTORY_DIRECTIVE = /(?:^|[;&|]\s*)cd\s+\S|\s-C\s+\S|--cwd[=\s]\S|--directory[=\s]\S/u
+
+/**
+ * Whether a call names WHERE it wrote, so a verdict may state a location.
+ *
+ * Git facts are read from a derived work root; a call that names no path at
+ * all is not evidence that the write happened there. Asserting
+ * "on protected branch main in the primary checkout" from `npm install x` is
+ * inventing attribution — the practice must say it does not know instead.
+ */
+export function attributesLocation(call: ObservedCall): boolean {
+  if (WRITE_TOOLS.has(call.name)) return call.target !== undefined
+  if (!BASH_TOOLS.has(call.name) || call.target === undefined) return false
+  if (DIRECTORY_DIRECTIVE.test(call.target)) return true
+  return !shellSegments(call.target).every((segment) => {
+    const tool = tokens(segment)[0]?.split('/').pop()
+    return tool !== undefined && PACKAGE_TOOLS.has(tool)
+  })
+}
+
 /** Whether a call mutates files (write/edit, or a mutating bash command). */
 export function isMutatingCall(call: ObservedCall): boolean {
   if (WRITE_TOOLS.has(call.name)) return true
   if (BASH_TOOLS.has(call.name)) return isMutatingCommand(call.target)
   return false
+}
+
+/**
+ * Split a shell command into its top-level segments on `&&`, `||`, `;` and `|`.
+ *
+ * Quote-aware, because a commit message legitimately contains those characters
+ * (`git commit -m "fix: a || b"` is ONE segment), and heredoc-aware: everything
+ * from a `<<`/`<<-` operator onward is body text, not commands, so
+ * `git commit -F - <<'EOF' …` must not be chopped up by whatever the message
+ * happens to contain.
+ */
+export function shellSegments(command: string): string[] {
+  const head = command.split(/<<-?\s*['"]?\w/u)[0]
+  const out: string[] = []
+  let current = ''
+  let quote: string | undefined
+  for (let i = 0; i < head.length; i += 1) {
+    const ch = head[i]
+    if (quote !== undefined) {
+      current += ch
+      if (ch === quote) quote = undefined
+      continue
+    }
+    if (ch === '"' || ch === '\'') { quote = ch; current += ch; continue }
+    const two = head.slice(i, i + 2)
+    if (two === '&&' || two === '||') { out.push(current); current = ''; i += 1; continue }
+    if (ch === ';' || ch === '|') { out.push(current); current = ''; continue }
+    current += ch
+  }
+  out.push(current)
+  return out.map(s => s.trim()).filter(s => s.length > 0)
+}
+
+/** Split a segment into tokens, honouring quotes and stripping them. */
+function tokens(segment: string): string[] {
+  const found = segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
+  return found.map(t => t.replace(/["']/gu, ''))
+}
+
+/** Version-control / forge CLIs whose history commands are the conductor's own job. */
+const VCS_TOOLS = new Set(['git', 'gh', 'jj', 'glab'])
+
+/** Global `git` flags that swallow the next token, so the subcommand is later. */
+const GIT_GLOBAL_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env'])
+
+/** `git` subcommands that rewrite working-tree CONTENT rather than record history. */
+const GIT_TREE_WRITERS = new Set(['restore', 'apply', 'am', 'revert', 'cherry-pick', 'merge', 'rebase', 'rm', 'mv', 'clean'])
+
+/** Peel a VCS invocation into tool, subcommand and remaining arguments. */
+function vcsParts(segment: string): { tool: string, sub?: string, rest: string[] } | undefined {
+  const parts = tokens(segment)
+  if (parts.length === 0) return undefined
+  const tool = parts[0].split('/').pop() ?? parts[0]
+  if (!VCS_TOOLS.has(tool)) return undefined
+  let i = 1
+  while (i < parts.length && parts[i].startsWith('-')) {
+    const flag = parts[i].split('=')[0]
+    i += GIT_GLOBAL_VALUE_FLAGS.has(flag) && !parts[i].includes('=') ? 2 : 1
+  }
+  const sub = parts[i]
+  return { tool, ...(sub !== undefined ? { sub } : {}), rest: parts.slice(i + 1) }
+}
+
+/** Whether a `git` subcommand changes files in the working tree. */
+function writesWorkingTree(sub: string, rest: readonly string[]): boolean {
+  if (GIT_TREE_WRITERS.has(sub)) return true
+  if (sub === 'reset') return rest.some(a => a === '--hard' || a === '--merge' || a === '--keep')
+  if (sub === 'stash') {
+    const first = rest.find(a => !a.startsWith('-'))
+    return first === undefined || !['list', 'show', 'drop', 'clear', 'create'].includes(first)
+  }
+  if (sub === 'checkout') {
+    // `git checkout <branch>` moves HEAD (plumbing, same as `switch`);
+    // `git checkout -- <path>` / `-p` / `checkout <file.ts>` OVERWRITES files.
+    if (rest.includes('--') || rest.includes('-p') || rest.includes('--patch')) return true
+    const first = rest.find(a => !a.startsWith('-'))
+    return first !== undefined && (first === '.' || first.startsWith('./') || first.startsWith('/') || /\.\w+$/u.test(first))
+  }
+  return false
+}
+
+/**
+ * Whether a shell command is pure version-control / publishing plumbing.
+ *
+ * Committing, pushing and opening a PR are EXPLICITLY the conductor's job in
+ * the team protocol, yet `isMutatingCommand` classifies them as mutating —
+ * correctly, for the worktree and pull-request practices, which must count a
+ * `git`-driven write. Only the conductor practice ("did it do a teammate's
+ * job?") needs to look past them, so the exclusion lives here rather than in
+ * the mutation classifier.
+ *
+ * Every segment must be a VCS invocation: `rm -rf x && git commit` is not
+ * plumbing. A bare `cd`/`set` prefix is allowed because it writes nothing and
+ * is how an agent reaches a linked worktree before committing in it.
+ * Subcommands that rewrite working-tree CONTENT (`git restore`, `git apply`,
+ * `git checkout -- path`, `stash pop`, `revert`, `cherry-pick`, `merge`,
+ * `rebase`) are NOT plumbing — those are edits by another name.
+ */
+export function isVcsPlumbing(target: string | undefined): boolean {
+  if (target === undefined) return false
+  const segments = shellSegments(target)
+  if (segments.length === 0) return false
+  let sawVcs = false
+  for (const segment of segments) {
+    // A redirection writes a file whatever sits in front of it.
+    if (/(?:^|[^0-9<>&])>{1,2}\s*[^&\s]/u.test(segment)) return false
+    const lead = tokens(segment)[0]?.split('/').pop()
+    if (lead === 'cd' || lead === 'set') continue
+    const parts = vcsParts(segment)
+    if (parts === undefined) return false
+    sawVcs = true
+    if (parts.tool !== 'git' || parts.sub === undefined) continue
+    if (writesWorkingTree(parts.sub, parts.rest)) return false
+  }
+  return sawVcs
+}
+
+/**
+ * Whether a command rewrites working-tree content through a VCS subcommand.
+ *
+ * The complement of `isVcsPlumbing`, and NOT simply its negation: it answers
+ * positively, so a caller can spot `git restore src/a.ts` even though
+ * `isMutatingCommand` — which lists only some write-y subcommands — does not
+ * classify it as a mutation. Needed because the conductor practice must catch
+ * a teammate's job done through git as readily as through an editor tool.
+ */
+export function writesWorkingTreeViaVcs(target: string | undefined): boolean {
+  if (target === undefined) return false
+  return shellSegments(target).some((segment) => {
+    const parts = vcsParts(segment)
+    return parts?.tool === 'git' && parts.sub !== undefined && writesWorkingTree(parts.sub, parts.rest)
+  })
 }
 
 const PR_URL = /https?:\/\/[^\s)]+\/(?:pull|pulls|merge_requests|pull-requests)\/\d+/u
@@ -113,14 +277,19 @@ export function detectWorktree(view: SessionView): PracticeResult {
     return result('worktree', 'green', [`primary checkout but on feature branch ${facts.branch}`])
   }
   if (facts.isWorktree === undefined) return result('worktree', 'amber', ['could not determine worktree state'])
+  // Only mutations that name where they landed can carry a location claim.
+  const attributed = mutating.filter(attributesLocation)
+  if (attributed.length === 0) {
+    return result('worktree', 'amber', [`${mutating.length} file mutation${mutating.length === 1 ? '' : 's'} that name no path; cannot tie them to a checkout`])
+  }
   return result(
     'worktree',
     'red',
     [
-      `${mutating.length} file mutation${mutating.length === 1 ? '' : 's'} on protected branch ${facts.branch ?? '(detached)'} in the primary checkout`,
-      `first: ${mutating[0].name}${mutating[0].target !== undefined ? ` ${short(mutating[0].target)}` : ''}`,
+      `${attributed.length} file mutation${attributed.length === 1 ? '' : 's'} on protected branch ${facts.branch ?? '(detached)'} in the primary checkout`,
+      `first: ${attributed[0].name}${attributed[0].target !== undefined ? ` ${short(attributed[0].target)}` : ''}`,
     ],
-    mutating[0].t,
+    attributed[0].t,
   )
 }
 
@@ -150,9 +319,28 @@ export function detectPullRequest(view: SessionView): PracticeResult {
   return result('pull-request', 'amber', ['work in progress; no PR yet'])
 }
 
+/**
+ * Whether a call is the conductor doing a TEAMMATE's job.
+ *
+ * Not the same question as `isMutatingCall`, in both directions: recording or
+ * publishing history (`git commit`, `push`, `gh pr create`) is the conductor's
+ * own duty and does not count, while rewriting working-tree content through
+ * git (`git restore`, `git checkout -- path`) does count even where
+ * `isMutatingCommand` does not list that subcommand.
+ */
+export function isConductorSelfMutation(call: ObservedCall): boolean {
+  if (WRITE_TOOLS.has(call.name)) return true
+  if (!BASH_TOOLS.has(call.name)) return false
+  if (writesWorkingTreeViaVcs(call.target)) return true
+  return isMutatingCommand(call.target) && !isVcsPlumbing(call.target)
+}
+
 export function detectConductor(view: SessionView): PracticeResult {
   if (!view.teamAttached) return result('conductor', 'n/a', ['no team attached'])
-  const selfEdits = view.calls.filter(isMutatingCall)
+  // Committing, pushing and opening the PR are the conductor's OWN duties in
+  // the team protocol, so they cannot count as doing a teammate's job — even
+  // though `isMutatingCall` rightly reports them as mutations elsewhere.
+  const selfEdits = view.calls.filter(call => isConductorSelfMutation(call))
   const delegations = view.calls.filter(call => call.name === 'team_delegate' && !call.isError)
   const evidence: string[] = []
   let firstViolation: string | undefined
@@ -214,11 +402,26 @@ export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   return result('plan-before-code', 'red', [`edited ${first.target !== undefined ? short(first.target) : 'a file'} with no plan.md in the repository`], first.t)
 }
 
+/** First-seen-order unique paths, so a repeatedly edited file counts once. */
+function dedupeByPath(entries: readonly { path: string, t: string }[]): { path: string, t: string }[] {
+  const seen = new Set<string>()
+  const out: { path: string, t: string }[] = []
+  for (const entry of entries) {
+    if (seen.has(entry.path)) continue
+    seen.add(entry.path)
+    out.push(entry)
+  }
+  return out
+}
+
 export function detectPlanDrift(view: SessionView): PracticeResult {
   if (view.activeStage !== 'build') return result('plan-drift', 'n/a', ['applies in the Build stage'])
   const hasPlan = view.facts?.artifacts.some(a => a.endsWith('plan.md')) === true
   if (!hasPlan) return result('plan-drift', 'n/a', ['no plan.md to drift from'])
-  const drift = view.drift ?? []
+  // One entry is recorded per EDIT, so a file edited three times appears three
+  // times. The practice judges drifting FILES, so count distinct paths —
+  // otherwise one file reads as three and the evidence lists it three times.
+  const drift = dedupeByPath(view.drift ?? [])
   if (drift.length === 0) return result('plan-drift', 'green', ['every edit is named in plan.md'])
   if (view.planUpdated === true) return result('plan-drift', 'green', [`plan.md updated after ${drift.length} unplanned edit${drift.length === 1 ? '' : 's'}`])
   // Raw evidence is persisted to telemetry and the scorecard, not only
@@ -228,6 +431,10 @@ export function detectPlanDrift(view: SessionView): PracticeResult {
 
 export function detectWorktreeHygiene(view: SessionView): PracticeResult {
   const wt = view.worktrees
+  // A sweep or an add invalidates the cached scan. Reporting the old numbers
+  // then asserts a worktree that no longer exists ("1 merged worktree still
+  // present" right after it was removed), which is worse than saying nothing.
+  if (view.worktreesStale === true) return result('worktree-hygiene', 'n/a', ['worktree state changed; rescanning'])
   if (wt === undefined || !(view.facts?.inRepo === true)) return result('worktree-hygiene', 'n/a', ['no worktree scan'])
   if (wt.total <= 1) return result('worktree-hygiene', 'green', ['no linked worktrees'])
   const evidence: string[] = []
