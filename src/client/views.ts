@@ -5,13 +5,15 @@
  * @module dsh-skill-presets/client/views
  */
 
-import type { CompareCard, LockedSkill, Preset, PracticeResult, PracticesDoc, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
+import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
 
 export interface ReactLike {
   createElement(type: unknown, props?: unknown, ...children: unknown[]): unknown
   useState<T>(initial: T | (() => T)): [T, (next: T) => void]
   useEffect(effect: () => void | (() => void), deps?: unknown[]): void
+  /** Needed for dismiss-on-outside-click: the listener must test the LIVE DOM nodes, not a render-time copy. */
+  useRef<T>(initial: T): { current: T }
   Fragment?: unknown
 }
 
@@ -83,13 +85,21 @@ export const CSS = `
 .skp-hchip { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 9px;
   cursor: pointer; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); position: relative; }
 .skp-hchip:hover { background: var(--dsw-alias-bg-layer-2); }
+/* Height is bounded to the viewport (own 6px top offset + header + a bottom gap) and the body
+   scrolls: without this the list below the trigger is simply unreachable. overscroll-behavior
+   keeps a scroll gesture inside the popover from chaining to the conversation behind it. */
 .skp-pop { position: absolute; top: calc(100% + 6px); right: 0; width: 340px; z-index: 50; background: var(--dsw-alias-bg-overlay);
+  max-height: calc(100vh - 120px); overflow-y: auto; overscroll-behavior: contain;
   border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 10px; display: flex; flex-direction: column; gap: 8px; text-align: left; }
 .skp-pop-item { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
 .skp-pop-item:hover { background: var(--dsw-alias-bg-layer-2); }
 .skp-pop-item.on { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); }
 .skp-pop-t { font-weight: 650; font-size: 12px; }
 .skp-pop-s { font-size: 11px; color: var(--dsw-alias-label-secondary); line-height: 1.4; }
+/* Skill-name chips inside a popover row: they must wrap inside 340px, never widen it. */
+.skp-pop-skills { gap: 3px; }
+.skp-pop-skills > .skp-chip { font-size: 10px; padding: 0 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skp-chip.more { color: var(--dsw-alias-label-secondary); font-family: inherit; }
 .skp-side { padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow: auto; height: 100%; box-sizing: border-box; }
 .skp-side h3 { font-size: 12px; font-weight: 650; margin: 0; color: var(--dsw-alias-label-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .skp-skill-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--dsw-alias-border-l1); }
@@ -701,11 +711,49 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
 
 // ------------------------------------------------------------- Header chip --
 
+/** How many skill names a popover row shows before it collapses the rest into "+N more". */
+const POP_SKILL_CAP = 8
+
+/**
+ * The name the MODEL sees for a preset skill ref, which is what the user is choosing
+ * between — never the `<source>/<dir>` ref or the file path. Alias wins because it is
+ * what the catalog is told to call it; the lock name is the skill's own name; the last
+ * path segment is the last resort for a ref that is not installed, and the caller marks
+ * that chip `miss` so an unresolved ref reads as missing rather than as a real skill.
+ */
+function exposedName(ref: PresetSkillRef, lock: Lock): { name: string, resolved: boolean } {
+  if (ref.as !== undefined && ref.as.length > 0) return { name: ref.as, resolved: true }
+  const locked = lock.skills.find(s => `${s.source}/${s.dir}` === ref.ref)
+  if (locked !== undefined) return { name: locked.name, resolved: true }
+  return { name: ref.ref.split('/').pop() ?? ref.ref, resolved: false }
+}
+
 export function makeHeaderChip(React: ReactLike, controller: ScorecardController): () => unknown {
   const h = React.createElement.bind(React)
   return function SkillPresetChip(): unknown {
     const snap = useStoreHook(React, controller)
     React.useEffect(() => controller.watch(), [])
+    const popRef = React.useRef<HTMLElement | null>(null)
+    const chipRef = React.useRef<HTMLElement | null>(null)
+    const open = snap.popover
+    // Dismiss on an outside click or Escape. `pointerdown`, not `click`: the click that OPENS
+    // the popover also reaches document, so a click listener registered during that same gesture
+    // would close it instantly. The chip itself is excluded so its own onClick keeps toggling
+    // instead of being closed here and reopened by the button. Not `blur`: the popover is not
+    // focused, and a blur race steals clicks from the buttons inside it.
+    React.useEffect(() => {
+      if (!open || typeof document === 'undefined') return undefined
+      const outside = (target: EventTarget | null): boolean =>
+        !(popRef.current?.contains(target as Node) ?? false) && !(chipRef.current?.contains(target as Node) ?? false)
+      const onPointerDown = (event: PointerEvent): void => { if (outside(event.target)) controller.togglePopover(false) }
+      const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') controller.togglePopover(false) }
+      document.addEventListener('pointerdown', onPointerDown, true)
+      document.addEventListener('keydown', onKeyDown)
+      return () => {
+        document.removeEventListener('pointerdown', onPointerDown, true)
+        document.removeEventListener('keydown', onKeyDown)
+      }
+    }, [open])
     const card = snap.card
     const status = snap.status
     const title = card?.activePreset?.title ?? (snap.loading ? '…' : 'no preset')
@@ -714,6 +762,7 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
     const sourceLabel = card?.activeSource === 'session' ? 'this session' : card?.activeSource === 'agent-preset' ? `agent preset ${card.agentPreset ?? ''}` : 'workspace default'
     return h('div', { className: 'skp', style: { position: 'relative', display: 'inline-flex' } },
       h('button', {
+        ref: chipRef,
         className: `skp-hchip${suggestion !== undefined ? ' skp-pulse' : ''}`,
         title: `Skill preset (${sourceLabel}) and practice status — click to switch${suggestion !== undefined ? ` · suggestion: ${STAGE_LABEL[suggestion.to] ?? suggestion.to}` : ''}`,
         onClick: () => controller.togglePopover(),
@@ -725,7 +774,7 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
         card !== undefined && card.overlays.length > 0 ? h('span', { className: 'skp-sub' }, `+${card.overlays.length}`) : null,
         suggestion !== undefined ? h('span', { className: 'skp-sub' }, `→ ${STAGE_LABEL[suggestion.to] ?? suggestion.to}?`) : null,
       ),
-      snap.popover && status !== undefined ? h('div', { className: 'skp-pop' },
+      snap.popover && status !== undefined ? h('div', { className: 'skp-pop', ref: popRef },
         suggestion !== undefined ? h('div', { className: 'skp-card', style: { padding: '8px 10px' } },
           h('div', { className: 'skp-pop-t' }, `Artifacts say ${STAGE_LABEL[suggestion.to] ?? suggestion.to} — switch?`),
           h('div', { className: 'skp-pop-s' }, suggestion.why.join(' · ')),
@@ -737,11 +786,30 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
           ),
         ) : null,
         h('div', { className: 'skp-pop-s' }, `Switching applies to this session; the catalog updates on the model's next step. Now: ${sourceLabel}.`),
-        ...status.presets.map(p => h('div', { key: p.id, className: `skp-pop-item${p.id === card?.activePreset?.id ? ' on' : ''}`, onClick: () => { void controller.activate(p.id) } },
-          h('span', { className: 'skp-swatch', style: { background: p.color ?? 'var(--dsw-alias-border-l2)', marginTop: 3 } }),
-          h('div', { className: 'skp-col', style: { gap: 2, flex: 1 } }, h('div', { className: 'skp-pop-t' }, `${p.title} · ${STAGE_LABEL[p.stage] ?? p.stage}`), h('div', { className: 'skp-pop-s' }, `${p.summary} (${p.skills.length} skills)`)),
-          h('button', { className: 'skp-btn small', title: 'Make this the workspace default too', onClick: (e: { stopPropagation(): void }) => { e.stopPropagation(); void controller.activate(p.id, 'default') } }, 'default'),
-        )),
+        ...status.presets.map((p) => {
+          // The names, not just the count: which skills are in play in which mode is the
+          // whole decision the user is making here. Capped so a big preset cannot turn the
+          // dropdown into a wall of chips; the count above stays the complete number.
+          const names = p.skills.map(s => exposedName(s, status.lock))
+          const shown = names.slice(0, POP_SKILL_CAP)
+          const rest = names.length - shown.length
+          return h('div', { key: p.id, className: `skp-pop-item${p.id === card?.activePreset?.id ? ' on' : ''}`, onClick: () => { void controller.activate(p.id) } },
+            h('span', { className: 'skp-swatch', style: { background: p.color ?? 'var(--dsw-alias-border-l2)', marginTop: 3 } }),
+            h('div', { className: 'skp-col', style: { gap: 2, flex: 1, minWidth: 0 } },
+              h('div', { className: 'skp-pop-t' }, `${p.title} · ${STAGE_LABEL[p.stage] ?? p.stage}`),
+              h('div', { className: 'skp-pop-s' }, p.summary),
+              h('div', { className: 'skp-pop-s' }, `${names.length} skill${names.length === 1 ? '' : 's'}${names.length > 0 ? ':' : ''}`),
+              names.length > 0 ? h('div', { className: 'skp-chips skp-pop-skills' },
+                ...shown.map((n, i) => h('span', {
+                  key: p.skills[i].ref, className: `skp-chip${n.resolved ? '' : ' miss'}`,
+                  title: n.resolved ? p.skills[i].ref : `${p.skills[i].ref} — not installed`,
+                }, n.name)),
+                rest > 0 ? h('span', { className: 'skp-chip more', title: names.slice(POP_SKILL_CAP).map(n => n.name).join(', ') }, `+${rest} more`) : null,
+              ) : null,
+            ),
+            h('button', { className: 'skp-btn small', title: 'Make this the workspace default too', onClick: (e: { stopPropagation(): void }) => { e.stopPropagation(); void controller.activate(p.id, 'default') } }, 'default'),
+          )
+        }),
         h('div', { className: 'skp-pop-item', onClick: () => { void controller.activate(null) } }, h('div', { className: 'skp-pop-s' }, 'No preset for this session (overlays only)')),
         card?.activeSource === 'session' ? h('div', { className: 'skp-pop-item', onClick: () => { void controller.useDefault() } }, h('div', { className: 'skp-pop-s' }, 'Forget this session\'s choice; follow the defaults')) : null,
         card !== undefined ? h('div', { className: 'skp-col', style: { borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 8 } },

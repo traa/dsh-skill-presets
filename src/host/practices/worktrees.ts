@@ -213,6 +213,22 @@ export function worktreeAddPath(command: string, cwd: string): string | undefine
   return resolve(cwd, raw)
 }
 
+/**
+ * Whether a shell command changes WHICH worktrees exist. Pure.
+ *
+ * The scan behind `worktree-hygiene` is cached for a minute, so a sweep left
+ * the verdict asserting "1 merged worktree still present" while the tree was
+ * already gone. Any command that adds, removes, moves or prunes a worktree —
+ * including this plugin's own `worktrees --clean` and `sync`, which sweep
+ * merged ones — must invalidate that cache. `git worktree list` is read-only
+ * and deliberately excluded.
+ */
+export function changesWorktrees(command: string | undefined): boolean {
+  if (command === undefined) return false
+  if (/\bgit\s+(?:-[^\s]+\s+\S+\s+)*worktree\s+(?:add|remove|move|prune)\b/u.test(command)) return true
+  return /\bworktrees\b[^&|;]*--clean\b/u.test(command) || /\bdsh-skill-presets\s+sync\b/u.test(command)
+}
+
 /** Short display name for a worktree path. */
 export function worktreeLabel(path: string): string {
   return basename(path)

@@ -12,7 +12,7 @@ import { evaluate, isMutatingCall, worst, type ObservedCall, type SessionView } 
 import { readGitFacts, type GitFacts, type Runner } from './git.ts'
 import { coveredByPlan, isPlanArtifact, planPaths } from './plan.ts'
 import { currentWorkRoot } from './workroot.ts'
-import { classify, scanWorktrees, worktreeAddPath, type WorktreeInfo } from './worktrees.ts'
+import { changesWorktrees, classify, scanWorktrees, worktreeAddPath, type WorktreeInfo } from './worktrees.ts'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { PracticeId, PracticeResult, PracticesDoc, Stage } from '../types.ts'
@@ -40,6 +40,8 @@ export interface SessionState {
   drift: { path: string, t: string }[]
   planUpdated: boolean
   worktrees?: { defaultBranch: string, list: WorktreeInfo[], scannedAt: number }
+  /** A worktree-changing call landed; the scan is invalid until it is redone. */
+  worktreesStale: boolean
   /** Paths already announced as drift (one context line each). */
   announced: Set<string>
 }
@@ -71,6 +73,7 @@ export class PracticeTracker {
       state = {
         sessionId, calls: [], userTurns: [], currentTurn: 0, factsDirty: true, teamAttached: false, ended: false,
         results: [], lastReported: new Map(), turnsSincePrCheck: 0, drift: [], planUpdated: false, announced: new Set(),
+        worktreesStale: false,
       }
       this.sessions.set(sessionId, state)
     }
@@ -107,7 +110,15 @@ export class PracticeTracker {
     if (root !== state.workRoot) { state.workRoot = root; state.factsDirty = true }
     if (['bash', 'Bash', 'shell'].includes(call.name) && call.target !== undefined && !call.isError) {
       const created = worktreeAddPath(call.target, state.workRoot ?? state.cwd ?? process.cwd())
-      if (created !== undefined) { this.deps.onWorktreeCreated?.(sessionId, created); state.worktrees = undefined }
+      if (created !== undefined) this.deps.onWorktreeCreated?.(sessionId, created)
+      // The cached scan is now describing worktrees that may be gone. Drop it
+      // and rescan; until fresh facts land the detector says so rather than
+      // repeating a verdict the sweep already invalidated.
+      if (changesWorktrees(call.target)) {
+        state.worktrees = undefined
+        state.worktreesStale = true
+        state.factsDirty = true
+      }
     }
     let drift: string | undefined
     if (['write', 'edit', 'Write', 'Edit', 'multi_edit'].includes(call.name) && call.target !== undefined && !call.isError) {
@@ -126,7 +137,11 @@ export class PracticeTracker {
 
   /** Scan the work root's worktrees (at most once per 60 s per session). */
   private async scanWorktrees(state: SessionState): Promise<void> {
-    if (state.facts?.inRepo !== true || state.facts.topLevel === undefined) { state.worktrees = undefined; return }
+    if (state.facts?.inRepo !== true || state.facts.topLevel === undefined) {
+      state.worktrees = undefined
+      state.worktreesStale = false
+      return
+    }
     if (state.worktrees !== undefined && Date.now() - state.worktrees.scannedAt < 60_000) return
     try {
       const created = await this.deps.createdWorktrees?.()
@@ -136,7 +151,11 @@ export class PracticeTracker {
         skipPr: state.facts.ghAvailable === false,
       })
       state.worktrees = { defaultBranch: scan.defaultBranch, list: scan.worktrees, scannedAt: Date.now() }
+      state.worktreesStale = false
     } catch (error) {
+      // No fresh facts, but the old ones are still invalid: clear the flag so
+      // the detector falls back to "no worktree scan" instead of claiming both.
+      state.worktreesStale = false
       this.deps.log?.(`worktree scan for ${state.sessionId}: ${(error as Error).message}`)
     }
   }
@@ -150,7 +169,7 @@ export class PracticeTracker {
   /** Force a rescan (after a cleanup). */
   invalidateWorktrees(sessionId: string): void {
     const state = this.sessions.get(sessionId)
-    if (state !== undefined) { state.worktrees = undefined; state.factsDirty = true }
+    if (state !== undefined) { state.worktrees = undefined; state.worktreesStale = true; state.factsDirty = true }
   }
 
   /** Read plan.md patterns when the facts say one exists and we have none cached. */
@@ -235,6 +254,7 @@ export class PracticeTracker {
       drift: state.drift,
       planUpdated: state.planUpdated,
       ...(state.worktrees !== undefined ? { worktrees: summarizeWorktrees(state.worktrees.list, state.worktrees.defaultBranch, Number(doc.practices.find(p => p.id === 'worktree-hygiene')?.params.staleDays ?? 14)) } : {}),
+      ...(state.worktreesStale ? { worktreesStale: true } : {}),
     }
     const stage = await this.deps.activeStage(state.sessionId, state.agentPreset)
     const results = evaluate({ ...view, ...(stage !== undefined ? { activeStage: stage } : {}) }, enabled)
