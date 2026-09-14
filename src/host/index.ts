@@ -28,6 +28,7 @@ import { diagnose, probe, worstSeverity } from './doctor.ts'
 import { presetImpact, sessionVsPeers, skillImpact } from './impact.ts'
 import { lintLibrary } from './lint.ts'
 import { orphanSkills, suggestPlacement } from './placement.ts'
+import { createStrictPreset, listStrictPresets, planStrictPreset, shippedPresetsDir } from './strictpreset.ts'
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
@@ -583,6 +584,28 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     return { cards }
+  })
+  // ---- strict agent preset: copy a shipped preset into the user root minus its filesystem skill row
+  rpc.handle('strict/presets', async () => {
+    let shipped: string[] = []
+    try {
+      const { readdir } = await import('node:fs/promises')
+      shipped = (await readdir(shippedPresetsDir(), { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name)
+    } catch { /* profile cannot resolve agent-presets */ }
+    return { shipped, strict: await listStrictPresets() }
+  })
+  rpc.handle('strict/create', async (args) => {
+    const base = str(args, 'base')
+    const id = optStr(args, 'id') ?? `${base}-strict`
+    const skillPreset = optStr(args, 'skillPreset')
+    const plan = await planStrictPreset(base, id)
+    const created = await createStrictPreset(plan, {
+      name: optStr(args, 'name') ?? `${base} (strict skills)`,
+      description: `Copy of the shipped "${base}" agent preset without local skill discovery: every skill the model sees comes from dsh-skill-presets.`,
+    })
+    // Map it so new sessions under it start from the chosen skill preset.
+    if (skillPreset !== undefined) await service.activate(skillPreset, 'ui', { scope: 'agent-preset', agentPreset: id })
+    return { ok: true, ...created, id, dropped: created.dropped, note: 'Restart the profile so the agent-preset picker lists it; then pick it for new sessions.' }
   })
   // ---- lint: provider-neutrality and routing quality of the library
   rpc.handle('lint', async () => {

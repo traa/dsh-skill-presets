@@ -29,10 +29,13 @@ const has = (facts: GitFacts, file: string): boolean => facts.artifacts.some(a =
  */
 export function detectStage(facts: GitFacts | undefined, recent: readonly ObservedCall[] = []): StageGuess {
   if (facts === undefined || !facts.inRepo) return { stage: 'plan', confidence: 0.2, why: ['no repository facts'] }
-  const cmds = recent.map(c => c.target ?? '').join('\n')
-  const incident = facts.artifacts.some(a => /incidents?\//u.test(a)) || /\bincident|postmortem|rollback\b/iu.test(cmds)
+  // Only SHELL commands count, and only when the deploy verb is the command
+  // itself — not a word inside a commit message, a grep, or a branch name.
+  const shell = recent.filter(c => ['bash', 'Bash', 'shell'].includes(c.name)).map(c => c.target ?? '')
+  const startsWith = (re: RegExp): boolean => shell.some(cmd => cmd.split(/\s*(?:&&|\|\||;|\|)\s*/u).some(part => re.test(part.trim())))
+  const incident = facts.artifacts.some(a => /incidents?\//u.test(a)) || startsWith(/^git\s+revert\b|^(?:kubectl|helm)\s+rollout\s+undo\b/u)
   if (incident) return { stage: 'maintain', confidence: 0.75, why: ['incident record or rollback activity'] }
-  if (/\b(?:deploy|release|kubectl|helm|terraform|docker push|npm publish|gh release)\b/iu.test(cmds)) {
+  if (startsWith(/^(?:kubectl|helm|terraform|pulumi|fly|vercel|netlify|wrangler|serverless|sam|cdk)\s+(?:apply|deploy|install|upgrade|up|publish|rollout)\b|^docker\s+push\b|^(?:npm|pnpm|yarn)\s+publish\b|^gh\s+release\s+create\b|^(?:make|npm run|pnpm|yarn)\s+(?:deploy|release)\b/u)) {
     return { stage: 'deploy', confidence: 0.7, why: ['deployment commands observed'] }
   }
   if (facts.pr !== undefined) {

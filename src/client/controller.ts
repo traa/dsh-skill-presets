@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -19,6 +19,7 @@ export interface SettingsSnapshot {
   experiments?: ExperimentsAggregate
   lint?: LibraryLint
   orphans?: OrphanSkill[]
+  strictPresets?: StrictPresets
   /** After a promotion: where the new skill could go. */
   lastPromotion?: { ref: string, name: string, suggestedPresets: Placement[] }
   job?: JobState
@@ -57,6 +58,19 @@ export class SettingsController extends Store<SettingsSnapshot> {
     this.set({ tab, notice: undefined, error: undefined })
     if (tab === 'insights' && this.get().rollup === undefined) void this.loadInsights()
     if (tab === 'library' && this.get().lint === undefined) void this.loadLint()
+    if (tab === 'practices' && this.get().strictPresets === undefined) void this.loadStrictPresets()
+  }
+
+  async loadStrictPresets(): Promise<void> {
+    try { this.set({ strictPresets: await rpc<StrictPresets>('strict/presets', {}) }) } catch { /* advisory */ }
+  }
+
+  async createStrictPreset(base: string, skillPreset?: string): Promise<void> {
+    await this.action('strict', async () => {
+      const out = await rpc<{ ok: boolean, id: string, targetDir: string, dropped: string[], note: string }>('strict/create', { base, ...(skillPreset !== undefined ? { skillPreset } : {}) })
+      await this.loadStrictPresets()
+      return `Created agent preset "${out.id}" at ${out.targetDir} (dropped: ${out.dropped.join(', ') || 'nothing'}). ${out.note}`
+    })
   }
 
   async loadLint(): Promise<void> {

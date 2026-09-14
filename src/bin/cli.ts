@@ -21,6 +21,7 @@ import { applyImport, exportBundle, planImport, readLocalSkill, validateBundle }
 import { diagnose, probe, pluginRoot, worstSeverity } from '../host/doctor.ts'
 import { checkSync, performSync, type SyncTarget } from '../host/sync.ts'
 import { lintLibrary } from '../host/lint.ts'
+import { createStrictPreset, planStrictPreset } from '../host/strictpreset.ts'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -254,6 +255,20 @@ async function main(): Promise<number> {
       if (restart) console.log('\nThe running server still holds the previous build — it must be restarted to pick this up.')
       return code
     }
+    case 'strict-preset': {
+      // strict-preset <base> [id] [--skill-preset <id>] [--profile <name>]
+      const base = rest[0]
+      if (base === undefined) { console.error('usage: strict-preset <shipped-agent-preset> [id] [--skill-preset <id>]'); return 2 }
+      const id = rest[1] !== undefined && !rest[1].startsWith('--') ? rest[1] : `${base}-strict`
+      const sp = rest.indexOf('--skill-preset'); const skillPreset = sp !== -1 ? rest[sp + 1] : undefined
+      const pi = rest.indexOf('--profile'); const profile = pi !== -1 ? rest[pi + 1] : undefined
+      const plan = await planStrictPreset(base, id, { ...(profile !== undefined ? { profile } : {}) })
+      const created = await createStrictPreset(plan, { name: `${base} (strict skills)` })
+      console.log(`created ${created.targetDir} (dropped rows: ${created.dropped.join(', ') || 'none'})`)
+      if (skillPreset !== undefined) { await service.activate(skillPreset, 'cli', { scope: 'agent-preset', agentPreset: id }); console.log(`sessions under "${id}" start from skill preset "${skillPreset}"`) }
+      console.log('restart the profile so the agent-preset picker lists it')
+      return 0
+    }
     case 'rollup': {
       const telemetry = new Telemetry(service.paths(), m => console.error(m))
       const rollup = await telemetry.rebuildRollup()
@@ -273,6 +288,7 @@ async function main(): Promise<number> {
         '  worktrees [cwd] [--dry-run|--clean]   list worktrees; remove merged+clean ones (and their branch)',
         '  export <file> [preset…]              write a shareable bundle (presets, overlays, pinned lock, local skill bodies)',
         '  import <file> [--replace|--rename] [--dry-run]   plan and apply a bundle; collisions kept as ours by default',
+        '  strict-preset <base> [id] [--skill-preset <id>]   copy a shipped agent preset into ~/.dsh/.agent-presets without local skill discovery',
         '  lint [ref] [--json]    provider-neutrality + routing quality of installed skills; exit 1 on errors',
         '  sync [--dry-run] [root…]   after a merge: pull --ff-only + npm ci + build + sweep merged worktrees',
         '  doctor [--profile name] [--json]   is the running plugin the source? seams present? store sane?',

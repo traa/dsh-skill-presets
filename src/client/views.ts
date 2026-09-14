@@ -25,6 +25,10 @@ export const CSS = `
   color: var(--dsw-alias-label-secondary); border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .skp-tab.on { color: var(--dsw-alias-brand-primary); border-bottom-color: var(--dsw-alias-brand-primary); }
 .skp-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* A status line: the dot stays on the first text line; the text wraps inside its own box. */
+.skp-line { display: flex; gap: 8px; align-items: flex-start; flex-wrap: nowrap; }
+.skp-line > .skp-dot { margin-top: 5px; }
+.skp-line > span { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .skp-col { display: flex; flex-direction: column; gap: 6px; }
 .skp-btn { font: inherit; font-size: 12px; font-weight: 550; padding: 6px 12px; border-radius: 7px; cursor: pointer;
   border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); }
@@ -416,6 +420,26 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
         ),
       ),
       h('div', { className: 'skp-card' },
+        h('strong', null, 'Exact catalog: a strict agent preset'),
+        h('div', { className: 'skp-sub' }, 'The agent preset\'s own skill-filesystem row is what still shows the model ~/.dsh/skills and project .dsh/skills. This copies a shipped agent preset into ~/.dsh/.agent-presets/ WITHOUT that row (the harness\'s own copy-then-edit authoring; nothing in the harness checkout changes) and maps it to a skill preset. Pick it in the agent-preset picker for new sessions.'),
+        snap.strictPresets === undefined ? h('div', { className: 'skp-sub' }, 'Looking up shipped presets…') : h('div', { className: 'skp-col' },
+          snap.strictPresets.strict.length > 0 ? h('div', { className: 'skp-row' }, h('span', { className: 'skp-sub' }, 'Strict presets you have:'), ...snap.strictPresets.strict.map(p => h('span', { key: p.id, className: 'skp-chip' }, p.name ?? p.id))) : null,
+          h('div', { className: 'skp-row' },
+            h('select', { className: 'skp-input small', id: 'skp-strict-base', defaultValue: snap.strictPresets.shipped.includes('standard') ? 'standard' : snap.strictPresets.shipped[0] ?? '' },
+              ...snap.strictPresets.shipped.map(b => h('option', { key: b, value: b }, b))),
+            h('span', { className: 'skp-sub' }, '→ start sessions from'),
+            h('select', { className: 'skp-input small', id: 'skp-strict-skill', defaultValue: status.active.default ?? '' },
+              h('option', { value: '' }, '(workspace default)'),
+              ...status.presets.map(p => h('option', { key: p.id, value: p.id }, p.title))),
+            h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined || snap.strictPresets.shipped.length === 0, onClick: () => {
+              const base = (typeof document !== 'undefined' ? (document.getElementById('skp-strict-base') as { value?: string } | null)?.value : undefined) ?? 'standard'
+              const sp = typeof document !== 'undefined' ? (document.getElementById('skp-strict-skill') as { value?: string } | null)?.value : undefined
+              void controller.createStrictPreset(base, sp !== undefined && sp.length > 0 ? sp : undefined)
+            } }, 'Create strict agent preset'),
+          ),
+        ),
+      ),
+      h('div', { className: 'skp-card' },
         h('div', { className: 'skp-row' },
           h('strong', null, 'Export as hooks (optional)'),
           h('span', { style: { flex: 1 } }),
@@ -618,7 +642,7 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
       ),
       h('div', { className: 'skp-tabs' }, ...tabs.map(([id, label]) => h('button', { key: id, className: `skp-tab${snap.tab === id ? ' on' : ''}`, onClick: () => controller.setTab(id) }, label))),
       snap.doctor !== undefined && snap.doctor.worst !== 'ok' ? h('div', { className: 'skp-card', style: { borderColor: snap.doctor.worst === 'fail' ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-state-warn-primary)' } },
-        h('div', { className: 'skp-row' }, h('i', { className: `skp-dot ${snap.doctor.worst === 'fail' ? 'red' : 'amber'}` }), h('strong', null, snap.doctor.worst === 'fail' ? 'The running plugin is not healthy' : 'Some features are degraded'), h('span', { className: 'skp-sub' }, '— dsh-skill-presets doctor')),
+        h('div', { className: 'skp-line' }, h('i', { className: `skp-dot ${snap.doctor.worst === 'fail' ? 'red' : 'amber'}` }), h('span', null, h('strong', null, snap.doctor.worst === 'fail' ? 'The running plugin is not healthy' : 'Some features are degraded'), h('span', { className: 'skp-sub' }, ' — dsh-skill-presets doctor'))),
         ...snap.doctor.findings.filter(f => f.severity !== 'ok').map(f => h('div', { key: f.id, className: 'skp-col', style: { gap: 2 } },
           h('div', { className: 'skp-row' }, h('span', { className: `skp-pill ${f.severity === 'fail' ? 'red' : 'amber'}` }, f.id), h('span', null, f.message)),
           f.fix !== undefined ? h('div', { className: 'skp-ev' }, `→ ${f.fix}`) : null,
@@ -687,7 +711,7 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
         card !== undefined ? h('div', { className: 'skp-col', style: { borderTop: '1px solid var(--dsw-alias-border-l1)', paddingTop: 8 } },
           h('div', { className: 'skp-pop-s' }, `Detected stage: ${STAGE_LABEL[card.stageGuess.stage] ?? card.stageGuess.stage} (${Math.round(card.stageGuess.confidence * 100)}%) — ${card.stageGuess.why[0] ?? ''}`),
           card.overlays.length > 0 ? h('div', { className: 'skp-pop-s' }, `Overlays: ${card.overlays.join(', ')}`) : null,
-          ...card.practices.map(p => h('div', { key: p.id, className: 'skp-row' }, h('i', { className: `skp-dot ${p.status}` }), h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.status}${p.evidence[0] !== undefined ? ` — ${p.evidence[0]}` : ''}`))),
+          ...card.practices.map(p => h('div', { key: p.id, className: 'skp-line' }, h('i', { className: `skp-dot ${p.status}` }), h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.status}${p.evidence[0] !== undefined ? ` — ${p.evidence[0]}` : ''}`))),
         ) : null,
         snap.notice !== undefined ? h('div', { className: 'skp-msg ok' }, snap.notice) : null,
         snap.error !== undefined ? h('div', { className: 'skp-msg error' }, snap.error) : null,
@@ -745,7 +769,7 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
       h('div', { className: 'skp-col' },
         h('h3', null, 'Practices'),
         ...card.practices.map(p => h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
-          h('div', { className: 'skp-row' }, h('i', { className: `skp-dot ${p.status}` }), h('span', null, status.practiceInfo[p.id]?.title ?? p.id), h('span', { className: `skp-pill ${p.status}` }, p.status)),
+          h('div', { className: 'skp-line' }, h('i', { className: `skp-dot ${p.status}` }), h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: `skp-pill ${p.status}` }, p.status))),
           ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
         )),
       ),
