@@ -14,6 +14,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { PracticeTracker } from './practices/index.ts'
+import { ReviewGate, modeFrom } from './practices/reviewgate.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
@@ -32,6 +33,7 @@ import { createStrictPreset, listStrictPresets, planStrictPreset, shippedPresets
 import { discoverSkills, GithubClient } from './github.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
+import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -117,6 +119,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
     log: warn,
   })
+
+  /**
+   * The review gate. Unlike the practices above it can REFUSE a tool call, so
+   * it is deliberately independent of them: it holds its own memory-only state,
+   * decides synchronously, and degrades to allow. See `practices/reviewgate.ts`.
+   */
+  const reviewGate = new ReviewGate(modeFrom(process.env), warn)
 
   /** The registry's invalidate control, set when the provider registers. */
   let invalidate: (() => void) | undefined
@@ -242,6 +251,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     const top = tracker.results(sessionId)?.facts?.topLevel
     strict.release(sessionId)
     strictSupport.delete(sessionId)
+    // Obligations are memory-only and die with the session: nothing persisted
+    // can wedge a later one, and a restart is always a clean slate.
+    reviewGate.forget(sessionId)
     void tracker.onDisposed(sessionId).then(async () => {
       await service.sessionDisposed(sessionId)
       if (top !== undefined) await autoClean(top, sessionId)
@@ -319,6 +331,57 @@ export function apply(ctx: Context, config: Config = {}): void {
     return cfg
   }) as never)
 
+  // The review reminder. `tools/post-execute` is the ONLY seam that can put a
+  // message in front of the model at the moment a tool returns: its
+  // `PostToolDecision.additionalContexts` is drained by the agent loop when the
+  // result is committed, so the directive is delivered with the next request —
+  // PR number in hand, no state to remember. `tools/result` cannot do this; it
+  // is an observation with no return path.
+  //
+  // CONTAINMENT: this is waterfall middleware, and a throw here turns the
+  // SUCCESSFUL tool call it wraps into an error result. So `next()` is awaited
+  // first and its decision is the return value on every path, `observe` is
+  // synchronous and swallows its own faults, and this try/catch is the second
+  // wall: any fault returns the downstream decision untouched.
+  ctx.on('tools/post-execute' as never, (async (
+    exec: { name: string, arguments: unknown, agent?: AgentLike },
+    result: { isError: boolean, content?: { type: string, text?: string }[] },
+    next: () => Promise<Record<string, unknown>>,
+  ) => {
+    const decision = await next()
+    try {
+      const sessionId = exec.agent?.session.id
+      if (sessionId === undefined) return decision
+      const gateArgs = (typeof exec.arguments === 'object' && exec.arguments !== null ? exec.arguments : {}) as Record<string, unknown>
+      const current = tracker.results(sessionId)
+      // The FULL output: a forge prints the PR URL on its own line, and the
+      // tracker's `resultHead` keeps only line one, which would miss it.
+      const text = (result.content ?? []).map(b => b.text ?? '').join('\n')
+      const directive = reviewGate.observe(sessionId, exec.name, gateArgs, result.isError, text, {
+        teamAttached: current?.teamAttached === true,
+        ...(current?.facts?.branch !== undefined ? { branch: current.facts.branch } : {}),
+      })
+      if (directive === undefined) return decision
+      // Deliberately no telemetry event: the only kinds available are a denial
+      // and the usage events, and an injected reminder is neither. Recording it
+      // as `denied` would corrupt the denial counts the panel reports. A
+      // `directive` kind belongs in `types.ts`, which is the types author's
+      // file — flagged in the handoff rather than edited here.
+      const injected = {
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text: directive }],
+        source: { kind: 'plugin', plugin: 'dsh-skill-presets', form: 'notice', summary: 'Review required for the pull request just opened' },
+      }
+      // Append, never replace: another listener's contexts must survive.
+      const existing = Array.isArray(decision.additionalContexts) ? decision.additionalContexts : []
+      return { ...decision, additionalContexts: [...existing, injected] }
+    } catch (error) {
+      warn(`review gate injection failed, passing result through: ${(error as Error).message}`)
+      return decision
+    }
+  }) as never)
+
   ctx.on('tools/result' as never, ((
     exec: { name: string, arguments: unknown, agent?: AgentLike },
     result: { isError: boolean, content?: { type: string, text?: string }[], error?: { message?: string } },
@@ -368,6 +431,24 @@ export function apply(ctx: Context, config: Config = {}): void {
   ) => {
     const sessionId = exec.agent?.session.id
     if (sessionId === undefined) return await next()
+    // The review gate answers BEFORE the practice gates and independently of
+    // them: it is not a `mode: hard` practice, so none of the early returns
+    // below may skip it. Synchronous, and `decide` returns undefined on any
+    // internal fault, so the worst case here is that the call is allowed.
+    try {
+      const gateArgs = (typeof exec.arguments === 'object' && exec.arguments !== null ? exec.arguments : {}) as Record<string, unknown>
+      const current = tracker.results(sessionId)
+      const verdict = reviewGate.decide(sessionId, exec.name, gateArgs, {
+        teamAttached: current?.teamAttached === true,
+        ...(current?.facts?.branch !== undefined ? { branch: current.facts.branch } : {}),
+      })
+      if (verdict !== undefined) {
+        telemetry.record(sessionId, { kind: 'denied', tool: exec.name, reason: verdict.reason })
+        return verdict
+      }
+    } catch (error) {
+      warn(`review gate decision failed, allowing: ${(error as Error).message}`)
+    }
     let doc: PracticesDoc
     try { doc = await service.practices() } catch { return await next() }
     const hard = new Set(doc.practices.filter(p => p.mode === 'hard').map(p => p.id))
