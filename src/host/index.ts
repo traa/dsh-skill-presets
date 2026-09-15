@@ -14,6 +14,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { PracticeTracker } from './practices/index.ts'
+import { ReviewGate, modeFrom } from './practices/reviewgate.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
 import { detectStage, suggest, type Suggestion } from './stage.ts'
@@ -117,6 +118,13 @@ export function apply(ctx: Context, config: Config = {}): void {
     },
     log: warn,
   })
+
+  /**
+   * The review gate. Unlike the practices above it can REFUSE a tool call, so
+   * it is deliberately independent of them: it holds its own memory-only state,
+   * decides synchronously, and degrades to allow. See `practices/reviewgate.ts`.
+   */
+  const reviewGate = new ReviewGate(modeFrom(process.env), warn)
 
   /** The registry's invalidate control, set when the provider registers. */
   let invalidate: (() => void) | undefined
@@ -242,6 +250,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     const top = tracker.results(sessionId)?.facts?.topLevel
     strict.release(sessionId)
     strictSupport.delete(sessionId)
+    // Obligations are memory-only and die with the session: nothing persisted
+    // can wedge a later one, and a restart is always a clean slate.
+    reviewGate.forget(sessionId)
     void tracker.onDisposed(sessionId).then(async () => {
       await service.sessionDisposed(sessionId)
       if (top !== undefined) await autoClean(top, sessionId)
@@ -325,6 +336,21 @@ export function apply(ctx: Context, config: Config = {}): void {
   ) => {
     const sessionId = exec.agent?.session.id
     if (sessionId === undefined) return
+    // Review-gate bookkeeping first and in its own guard: it must see the FULL
+    // output (a forge prints the PR URL on its own line, and the `resultHead`
+    // below keeps only line one), and a fault in it must not cost the telemetry
+    // that follows. `observe` swallows its own errors; this is the second wall.
+    try {
+      const gateArgs = (typeof exec.arguments === 'object' && exec.arguments !== null ? exec.arguments : {}) as Record<string, unknown>
+      const current = tracker.results(sessionId)
+      const text = (result.content ?? []).map(b => b.text ?? '').join('\n')
+      reviewGate.observe(sessionId, exec.name, gateArgs, result.isError, text, {
+        teamAttached: current?.teamAttached === true,
+        ...(current?.facts?.branch !== undefined ? { branch: current.facts.branch } : {}),
+      })
+    } catch (error) {
+      warn(`review gate observation failed: ${(error as Error).message}`)
+    }
     try {
       const args = (typeof exec.arguments === 'object' && exec.arguments !== null ? exec.arguments : {}) as Record<string, unknown>
       const turn = tracker.session(sessionId).currentTurn
@@ -368,6 +394,24 @@ export function apply(ctx: Context, config: Config = {}): void {
   ) => {
     const sessionId = exec.agent?.session.id
     if (sessionId === undefined) return await next()
+    // The review gate answers BEFORE the practice gates and independently of
+    // them: it is not a `mode: hard` practice, so none of the early returns
+    // below may skip it. Synchronous, and `decide` returns undefined on any
+    // internal fault, so the worst case here is that the call is allowed.
+    try {
+      const gateArgs = (typeof exec.arguments === 'object' && exec.arguments !== null ? exec.arguments : {}) as Record<string, unknown>
+      const current = tracker.results(sessionId)
+      const verdict = reviewGate.decide(sessionId, exec.name, gateArgs, {
+        teamAttached: current?.teamAttached === true,
+        ...(current?.facts?.branch !== undefined ? { branch: current.facts.branch } : {}),
+      })
+      if (verdict !== undefined) {
+        telemetry.record(sessionId, { kind: 'denied', tool: exec.name, reason: verdict.reason })
+        return verdict
+      }
+    } catch (error) {
+      warn(`review gate decision failed, allowing: ${(error as Error).message}`)
+    }
     let doc: PracticesDoc
     try { doc = await service.practices() } catch { return await next() }
     const hard = new Set(doc.practices.filter(p => p.mode === 'hard').map(p => p.id))
