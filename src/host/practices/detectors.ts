@@ -242,11 +242,29 @@ export function tiedToCheckout(call: ObservedCall, roots: readonly (string | und
   return landed !== undefined && known.some(root => isInside(root, landed))
 }
 
+/**
+ * Whether a tool NAME plus its target mutates files. The tool-shape-neutral
+ * core of `isMutatingCall`.
+ *
+ * Split out because the `worktree` hard gate judges a call that has not run
+ * yet, so it has a name and an argument but no `ObservedCall` (no timestamp,
+ * no turn, no result). Both callers must agree on what "mutating" means — the
+ * gate denying an edit the detector would not have counted, or the reverse, is
+ * exactly the divergence `gate.ts` exists to remove — so the membership tests
+ * live here once and every caller funnels through them.
+ *
+ * Tolerates an undefined name: a malformed payload is not a mutation.
+ */
+export function mutatesFiles(name: string | undefined, target: string | undefined): boolean {
+  if (name === undefined) return false
+  if (WRITE_TOOLS.has(name)) return true
+  if (BASH_TOOLS.has(name)) return isMutatingCommand(target)
+  return false
+}
+
 /** Whether a call mutates files (write/edit, or a mutating bash command). */
 export function isMutatingCall(call: ObservedCall): boolean {
-  if (WRITE_TOOLS.has(call.name)) return true
-  if (BASH_TOOLS.has(call.name)) return isMutatingCommand(call.target)
-  return false
+  return mutatesFiles(call.name, call.target)
 }
 
 /**
@@ -483,10 +501,40 @@ export function refuseAssumedRoot(id: PracticeId, view: SessionView, claim: stri
   return result(id, 'n/a', [`no tool call named a path; not judging ${claim} in ${view.facts?.topLevel ?? 'the session directory'}`])
 }
 
+/**
+ * "Nothing judged yet" rendered as the same silent `n/a` as "nothing to
+ * report" is how a panel tells a user everything is fine right up to the
+ * moment their edit is denied.
+ *
+ * Status stays `n/a` — no violation HAS occurred, and claiming otherwise would
+ * make the practice lie in the other direction. Only the evidence changes: it
+ * names the exposure, so the state the gate is about to act on is visible
+ * BEFORE the denial rather than explained after it.
+ *
+ * Subject to `refuseAssumedRoot` like every other fact-derived line here: when
+ * no tool call ever named a path, these facts may describe a repository the
+ * session never opened, and "the next edit will be denied" about the wrong
+ * repository is precisely the confident-but-wrong claim that guard exists to
+ * prevent. The caller applies the guard first.
+ */
+function atRiskEvidence(facts: GitFacts | undefined, protectedBranches: readonly string[]): string | undefined {
+  if (facts === undefined || !facts.gitAvailable || !facts.inRepo) return undefined
+  if (facts.isWorktree !== false) return undefined
+  const branch = facts.branch
+  if (branch === undefined || !protectedBranches.includes(branch)) return undefined
+  return `at risk — on protected branch ${branch} in the primary checkout; the next edit will be denied`
+}
+
 export function detectWorktree(view: SessionView): PracticeResult {
   const facts = view.facts
   const mutating = view.calls.filter(isMutatingCall)
-  if (mutating.length === 0) return result('worktree', 'n/a', ['no file mutations yet'])
+  if (mutating.length === 0) {
+    // The assumed-root guard applies to the at-risk line too — it is a claim
+    // about a specific checkout. Without it the verdict stays the plain,
+    // truthful "nothing observed".
+    const risk = view.workRootAssumed === true ? undefined : atRiskEvidence(facts, view.protectedBranches)
+    return result('worktree', 'n/a', risk !== undefined ? ['no file mutations yet', risk] : ['no file mutations yet'])
+  }
   if (facts === undefined || !facts.gitAvailable) return result('worktree', 'amber', ['git facts unavailable'])
   if (!facts.inRepo) return result('worktree', 'n/a', ['cwd is not inside a git repository'])
   // Branch, worktree-ness and checkout identity all come from the work root,

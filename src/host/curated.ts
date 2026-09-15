@@ -178,7 +178,12 @@ export function defaultPractices(): PracticesDoc {
     instructionFiles: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.agents/AGENTS.md', 'CONTRIBUTING.md'],
     protectedBranches: ['main', 'master', 'develop', 'trunk'],
     practices: [
-      { id: 'worktree', mode: 'advisory', params: {} },
+      // `hard` since phase 6: advisory enforcement never stopped an edit on a
+      // protected branch, which is the single thing this practice exists to
+      // prevent. Only a store with NO practices.json — or one whose file omits
+      // this entry — picks this up; see `validatePractices` for why an existing
+      // `advisory` is never silently upgraded.
+      { id: 'worktree', mode: 'hard', params: {} },
       { id: 'pull-request', mode: 'advisory', params: { checkEveryTurns: 10 } },
       { id: 'conductor', mode: 'advisory', params: {} },
       { id: 'artifact-chain', mode: 'advisory', params: { root: 'docs/sdlc' } },

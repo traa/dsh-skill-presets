@@ -23,7 +23,7 @@
   "practices": [
     {
       "id": "worktree",
-      "mode": "advisory",
+      "mode": "hard",
       "params": {}
     },
     {
