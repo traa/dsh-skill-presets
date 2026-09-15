@@ -21,6 +21,12 @@
  * from anything below — answers `allow`. A guardrail that throws would block
  * unrelated work and be switched off wholesale within the hour, which costs
  * more than the violation it was trying to prevent.
+ *
+ * ONE EXCEPTION, AND IT RUNS THE OTHER WAY: a malformed EXEMPTION fails closed.
+ * Doubt about whether a rule applies allows the call; doubt about whether
+ * enforcement was deliberately switched off does not, because that doubt
+ * resolves to "the gate is off" and an override nobody can account for is
+ * indistinguishable from the gate being broken. See `exemptionLive`.
  * @module dsh-skill-presets/host/practices/gate
  */
 
@@ -36,21 +42,38 @@ import { mutatesFiles } from './detectors.ts'
  * override is a gate the user disables wholesale the first time it is wrong,
  * so the sanctioned escape hatch is named in the deny message itself.
  *
- * Two independent forms, either of which suffices:
- * - `exemptRepos` names this checkout's top level, and
- * - `exemptUntil` is still in the future.
+ * ONE RECORD, TWO FIELDS, BOTH REQUIRED. `exemptRepos` and `exemptUntil` are
+ * not alternative forms — they are the scope and the lifetime of a single
+ * grant, and `exemptWorktree` has always written them as a pair. Treating them
+ * as an independent OR (the first cut of this function did) produced two
+ * failures that were worse than the hole this phase set out to close, because
+ * in both the gate still LOOKED enforced:
+ * - an expired grant kept working, since a matching repo returned early and
+ *   the expiry was never consulted — "just this once" became permanent;
+ * - a live grant for repo A disabled the gate in EVERY repository, since the
+ *   repo check simply fell through to a future timestamp.
  *
- * An `exemptUntil` in the PAST revokes nothing else: it simply is not live, so
- * the repo list is consulted on its own. That is what makes the time-boxed
- * form expire quietly instead of needing a cleanup step.
+ * FAIL-CLOSED ON A MALFORMED EXEMPTION, fail-open on malformed FACTS. These
+ * are different axes and collapsing them is what caused the bug above. An
+ * exemption is a claim that enforcement should stop, so anything doubtful
+ * about it — no expiry, an unparseable expiry, no repository list, a checkout
+ * whose top level cannot be determined — means NO exemption and the gate
+ * applies as normal. Doubt about the git facts, by contrast, still allows the
+ * call: see `decideWorktreeGate`.
+ *
+ * Both spellings of the top level are accepted, because
+ * `git rev-parse --show-toplevel` resolves symlinks while the caller may reach
+ * the same directory through one (`/tmp` → `/private/tmp` on macOS). Comparing
+ * only one spelling would silently drop a grant the user did make.
  */
 function exemptionLive(facts: GitFacts, doc: PracticesDoc, now: number): boolean {
-  const repos = Array.isArray(doc.exemptRepos) ? doc.exemptRepos : []
-  const top = facts.topLevel
-  if (top !== undefined && repos.some(r => r === top)) return true
-  if (typeof doc.exemptUntil !== 'string') return false
+  const repos = Array.isArray(doc.exemptRepos) ? doc.exemptRepos.filter(r => typeof r === 'string') : []
+  // No fields at all: there is no exemption to evaluate. Reached on every
+  // ordinary deny, so it must not be mistaken for a vacuously satisfied one.
+  if (repos.length === 0 || typeof doc.exemptUntil !== 'string') return false
   const until = Date.parse(doc.exemptUntil)
-  return Number.isFinite(until) && until > now
+  if (!Number.isFinite(until) || until <= now) return false
+  return [facts.topLevel, facts.topLevelAlias].some(top => top !== undefined && repos.includes(top))
 }
 
 /**

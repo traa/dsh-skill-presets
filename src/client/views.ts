@@ -6,6 +6,7 @@
  */
 
 import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, StageGuess, Status } from './api.ts'
+import { AT_RISK_PREFIX } from '../host/practices/detectors.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
 
 export interface ReactLike {
@@ -204,6 +205,35 @@ function deltaClass(v: number | undefined, higherIsBetter = true): string {
 }
 
 /**
+ * An `n/a` that reports EXPOSURE rather than irrelevance.
+ *
+ * "Not judged yet" and "satisfied" both render as a quiet `n/a`, so a session
+ * sitting on a protected branch in the primary checkout looked exactly like a
+ * session with nothing to answer for — until the first edit was denied. The
+ * detector marks the difference in its evidence (it cannot raise the status:
+ * no violation has actually happened yet), and this is the half that keeps
+ * such a row on screen instead of folding it into "+N not applicable".
+ *
+ * Keyed on `AT_RISK_PREFIX`, imported from the module that WRITES it, so the
+ * two halves of this contract cannot drift apart silently.
+ */
+function isAtRisk(p: { status: string, evidence: readonly string[] }): boolean {
+  return p.status === 'n/a' && p.evidence.some(e => e.startsWith(AT_RISK_PREFIX))
+}
+
+/**
+ * The at-risk evidence with its marker prefix removed, for a row that already
+ * renders "at risk" as its own label — otherwise the marker is printed twice
+ * ("at risk — at risk — on protected branch main…").
+ *
+ * Falls back to the first evidence line, so a row is never left blank.
+ */
+function atRiskDetail(p: { evidence: readonly string[] }): string | undefined {
+  const line = p.evidence.find(e => e.startsWith(AT_RISK_PREFIX))
+  return line !== undefined ? line.slice(AT_RISK_PREFIX.length) : p.evidence[0]
+}
+
+/**
  * Split practices into the ones that APPLY and a summary of the ones that do
  * not.
  *
@@ -217,23 +247,6 @@ function deltaClass(v: number | undefined, higherIsBetter = true): string {
  * @param practices - the scorecard's results, in display order.
  * @param titleOf - practice id → human title, for the hover text.
  */
-/**
- * An `n/a` that reports EXPOSURE rather than irrelevance.
- *
- * "Not judged yet" and "satisfied" both render as a quiet `n/a`, so a session
- * sitting on a protected branch in the primary checkout looked exactly like a
- * session with nothing to answer for — until the first edit was denied. The
- * detector marks the difference in its evidence (it cannot raise the status:
- * no violation has actually happened yet), and this is the half that keeps
- * such a row on screen instead of folding it into "+N not applicable".
- *
- * Matched on the evidence prefix the detector writes, which is a contract
- * between these two modules and nothing else.
- */
-function isAtRisk(p: { status: string, evidence: readonly string[] }): boolean {
-  return p.status === 'n/a' && p.evidence.some(e => e.startsWith('at risk —'))
-}
-
 function splitApplicable<T extends { id: string, status: string, evidence: readonly string[] }>(
   practices: readonly T[],
   titleOf: (id: string) => string,
@@ -926,7 +939,15 @@ export function makeHeaderChip(React: ReactLike, controller: ScorecardController
           ...(() => {
             const { shown, hiddenCount, hiddenTitle } = splitApplicable(card.practices, id => status.practiceInfo[id]?.title ?? id)
             return [
-              ...shown.map(p => h('div', { key: p.id, className: 'skp-line' }, h('i', { className: `skp-dot ${isAtRisk(p) ? 'at-risk' : p.status}` }), h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${isAtRisk(p) ? 'at risk' : p.status}${p.evidence[0] !== undefined ? ` — ${(isAtRisk(p) ? p.evidence.find(e => e.startsWith('at risk —')) : p.evidence[0]) ?? p.evidence[0]}` : ''}`))),
+              ...shown.map((p) => {
+                // The label already says "at risk", so the detail must not
+                // repeat the marker the detector put on the evidence line.
+                const risk = isAtRisk(p)
+                const detail = risk ? atRiskDetail(p) : p.evidence[0]
+                return h('div', { key: p.id, className: 'skp-line' },
+                  h('i', { className: `skp-dot ${risk ? 'at-risk' : p.status}` }),
+                  h('span', { className: 'skp-pop-s' }, `${status.practiceInfo[p.id]?.title ?? p.id}: ${risk ? 'at risk' : p.status}${detail !== undefined ? ` — ${detail}` : ''}`))
+              }),
               hiddenCount > 0 ? h('div', { key: 'skp-na', className: 'skp-pop-s skp-na', title: hiddenTitle }, `+${hiddenCount} not applicable in this stage`) : null,
             ]
           })(),
@@ -989,12 +1010,20 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
         ...(() => {
           const { shown, hiddenCount, hiddenTitle } = splitApplicable(card.practices, id => status.practiceInfo[id]?.title ?? id)
           return [
-            ...shown.map(p => h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
-              h('div', { className: 'skp-line' },
-                h('i', { className: `skp-dot ${isAtRisk(p) ? 'at-risk' : p.status}` }),
-                h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: `skp-pill ${isAtRisk(p) ? 'at-risk' : p.status}` }, isAtRisk(p) ? 'at risk' : p.status))),
-              ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
-            )),
+            ...shown.map((p) => {
+              const risk = isAtRisk(p)
+              // Same de-duplication as the popover: the pill carries the
+              // marker, so the evidence lines below it must not repeat it.
+              const evidence = risk
+                ? p.evidence.map(e => e.startsWith(AT_RISK_PREFIX) ? e.slice(AT_RISK_PREFIX.length) : e)
+                : p.evidence
+              return h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
+                h('div', { className: 'skp-line' },
+                  h('i', { className: `skp-dot ${risk ? 'at-risk' : p.status}` }),
+                  h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: `skp-pill ${risk ? 'at-risk' : p.status}` }, risk ? 'at risk' : p.status))),
+                ...evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
+              )
+            }),
             hiddenCount > 0 ? h('div', { key: 'skp-na', className: 'skp-na', title: hiddenTitle }, `+${hiddenCount} not applicable in this stage`) : null,
           ]
         })(),

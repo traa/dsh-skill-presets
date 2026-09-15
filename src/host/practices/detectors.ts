@@ -82,8 +82,38 @@ export function short(text: string, max = 120): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
-const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
-const BASH_TOOLS = new Set(['bash', 'Bash', 'shell', 'terminal'])
+/**
+ * Tool-name membership, matched on a NORMALISED name.
+ *
+ * Tool names arrive spelled differently depending on the path: the native
+ * `tools/pre-execute` seam passes the harness's own name (`MultiEdit`), while
+ * the hook bridge lowercases whatever the provider sent (`multiedit`). The
+ * first version of these sets listed spellings by hand — `'multi_edit'`,
+ * `'MultiEdit'`, `'notebook_edit'` — and the two paths then DISAGREED about
+ * MultiEdit and notebook_edit: the native gate denied and the CLI allowed,
+ * which is precisely the divergence `gate.ts` was written to eliminate,
+ * surviving one layer down inside the fix.
+ *
+ * So normalisation happens in ONE place and the sets hold one canonical
+ * spelling each: case is folded and `_` is dropped, which collapses
+ * snake_case and camelCase onto the same key and makes a future
+ * `notebook_edit`/`notebookEdit` pair impossible to get wrong. Adding a tool
+ * means adding ONE entry, spelled lowercase and without separators.
+ */
+const normalizeTool = (name: string): string => name.toLowerCase().replace(/[_-]/gu, '')
+
+const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'notebookedit'])
+const BASH_TOOLS = new Set(['bash', 'shell', 'terminal'])
+
+/** Whether a tool name is a file-writing tool, in any spelling. */
+export function isWriteTool(name: string | undefined): boolean {
+  return name !== undefined && WRITE_TOOLS.has(normalizeTool(name))
+}
+
+/** Whether a tool name is a shell tool, in any spelling. */
+export function isBashTool(name: string | undefined): boolean {
+  return name !== undefined && BASH_TOOLS.has(normalizeTool(name))
+}
 
 /**
  * Redirection targets that are not files: a file descriptor (`2>&1`, `>&2`)
@@ -164,8 +194,8 @@ const DIRECTORY_DIRECTIVE = /(?:^|[;&|]\s*)cd\s+\S|\s-C\s+\S|--cwd[=\s]\S|--dire
  * whenever a verdict is about a specific repository.
  */
 export function attributesLocation(call: ObservedCall): boolean {
-  if (WRITE_TOOLS.has(call.name)) return call.target !== undefined
-  if (!BASH_TOOLS.has(call.name) || call.target === undefined) return false
+  if (isWriteTool(call.name)) return call.target !== undefined
+  if (!isBashTool(call.name) || call.target === undefined) return false
   if (DIRECTORY_DIRECTIVE.test(call.target)) return true
   return !shellSegments(call.target).every((segment) => {
     const tool = tokens(segment)[0]?.split('/').pop()
@@ -187,11 +217,11 @@ export function attributesLocation(call: ObservedCall): boolean {
  */
 export function mutationLandedIn(call: ObservedCall, cwd: string | undefined): string | undefined {
   if (call.target === undefined) return undefined
-  if (WRITE_TOOLS.has(call.name)) {
+  if (isWriteTool(call.name)) {
     if (isAbsolute(call.target)) return dirname(call.target)
     return cwd !== undefined ? dirname(resolve(cwd, call.target)) : undefined
   }
-  if (!BASH_TOOLS.has(call.name)) return undefined
+  if (!isBashTool(call.name)) return undefined
   return commandCwd(call.target, cwd) ?? cwd
 }
 
@@ -257,8 +287,8 @@ export function tiedToCheckout(call: ObservedCall, roots: readonly (string | und
  */
 export function mutatesFiles(name: string | undefined, target: string | undefined): boolean {
   if (name === undefined) return false
-  if (WRITE_TOOLS.has(name)) return true
-  if (BASH_TOOLS.has(name)) return isMutatingCommand(target)
+  if (isWriteTool(name)) return true
+  if (isBashTool(name)) return isMutatingCommand(target)
   return false
 }
 
@@ -502,6 +532,23 @@ export function refuseAssumedRoot(id: PracticeId, view: SessionView, claim: stri
 }
 
 /**
+ * Marks an `n/a` verdict that reports EXPOSURE rather than irrelevance.
+ *
+ * The client tells an at-risk `n/a` from a quiet one by testing this prefix on
+ * the evidence, because `PracticeResult` carries no structural flag for it and
+ * that type is frozen. Exported so the producer (`atRiskEvidence`, below) and
+ * the consumer (`isAtRisk` in `src/client/views.ts`) cannot drift: with the
+ * string written out by hand at both ends, changing either one would silently
+ * stop the panel flagging at-risk sessions, with every test still green.
+ *
+ * Safe to import from the browser half even though this module imports
+ * `node:path`: it is a plain string, so the bundler tree-shakes everything
+ * else away and no Node builtin reaches `lib/client.js` (verified against the
+ * built bundle, not assumed).
+ */
+export const AT_RISK_PREFIX = 'at risk — '
+
+/**
  * "Nothing judged yet" rendered as the same silent `n/a` as "nothing to
  * report" is how a panel tells a user everything is fine right up to the
  * moment their edit is denied.
@@ -522,7 +569,7 @@ function atRiskEvidence(facts: GitFacts | undefined, protectedBranches: readonly
   if (facts.isWorktree !== false) return undefined
   const branch = facts.branch
   if (branch === undefined || !protectedBranches.includes(branch)) return undefined
-  return `at risk — on protected branch ${branch} in the primary checkout; the next edit will be denied`
+  return `${AT_RISK_PREFIX}on protected branch ${branch} in the primary checkout; the next edit will be denied`
 }
 
 export function detectWorktree(view: SessionView): PracticeResult {
@@ -575,7 +622,7 @@ export function detectWorktree(view: SessionView): PracticeResult {
 
 export function detectPullRequest(view: SessionView): PracticeResult {
   const facts = view.facts
-  const created = view.calls.find(call => BASH_TOOLS.has(call.name) && !call.isError && isPrCreateCommand(call.target))
+  const created = view.calls.find(call => isBashTool(call.name) && !call.isError && isPrCreateCommand(call.target))
   const url = view.calls.map(call => findPrUrl(call.resultHead)).find((u): u is string => u !== undefined)
     ?? (created !== undefined ? findPrUrl(created.resultHead) : undefined)
   // Call-derived evidence first, and it outranks `facts.pr`: a PR URL this
@@ -615,8 +662,8 @@ export function detectPullRequest(view: SessionView): PracticeResult {
  * `isMutatingCommand` does not list that subcommand.
  */
 export function isConductorSelfMutation(call: ObservedCall): boolean {
-  if (WRITE_TOOLS.has(call.name)) return true
-  if (!BASH_TOOLS.has(call.name)) return false
+  if (isWriteTool(call.name)) return true
+  if (!isBashTool(call.name)) return false
   if (writesWorkingTreeViaVcs(call.target)) return true
   return isMutatingCommand(call.target) && !isVcsPlumbing(call.target)
 }
@@ -705,7 +752,7 @@ export function detectArtifactChain(view: SessionView): PracticeResult {
 export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   if (view.activeStage !== 'build') return result('plan-before-code', 'n/a', ['applies in the Build stage'])
   const facts = view.facts
-  const first = view.calls.find(call => WRITE_TOOLS.has(call.name))
+  const first = view.calls.find(call => isWriteTool(call.name))
   if (first === undefined) return result('plan-before-code', 'n/a', ['no file edits yet'])
   if (facts === undefined || !facts.inRepo) return result('plan-before-code', 'n/a', ['not inside a git repository'])
   // "no plan.md in the repository" names a repository, and `facts.artifacts`

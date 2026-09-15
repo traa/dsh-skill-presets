@@ -496,6 +496,14 @@ export class SkillPresetsService {
    * it is scoped to one repository, it carries a reason, and it dies on its
    * own, so "just this once" cannot quietly become the permanent state.
    *
+   * EACH GRANT REPLACES THE PREVIOUS ONE. `exemptUntil` is a single timestamp
+   * shared by the whole list, so APPENDING to `exemptRepos` (as the first cut
+   * did) would silently resurrect every earlier repo's expired grant every
+   * time a new one was issued — exempt B for an hour and A comes back to life
+   * with it. One scope, one clock, one reason: replacing is the only form that
+   * keeps "expiring" true. Re-run the command per repository if two genuinely
+   * need it at once; that is intended friction, not an oversight.
+   *
    * @param repo - repository top level the exemption covers.
    * @param hours - lifetime; the exemption is dead after it elapses.
    * @param reason - why, kept for the audit trail in the log.
@@ -504,13 +512,10 @@ export class SkillPresetsService {
   async exemptWorktree(repo: string, hours: number, reason: string): Promise<PracticesDoc> {
     const doc = await this.practices()
     const until = new Date(this.now().getTime() + hours * 3_600_000).toISOString()
-    const repos = doc.exemptRepos ?? []
+    const replaced = (doc.exemptRepos ?? []).filter(r => r !== repo)
+    if (replaced.length > 0) this.log(`worktree exemption replaced for ${replaced.join(', ')}`)
     this.log(`worktree exemption for ${repo} until ${until}: ${reason}`)
-    return await this.savePractices({
-      ...doc,
-      exemptRepos: repos.includes(repo) ? repos : [...repos, repo],
-      exemptUntil: until,
-    })
+    return await this.savePractices({ ...doc, exemptRepos: [repo], exemptUntil: until })
   }
 
   async savePractices(doc: PracticesDoc): Promise<PracticesDoc> {

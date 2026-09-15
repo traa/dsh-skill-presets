@@ -140,19 +140,39 @@ test('worktree gate: migration - retains advisory mode if configured, defaults t
   assert.equal(decideWorktreeGate(facts(), pendingEdit, emptyDoc).allow, true, 'missing entry in practices list degrades to allow')
 })
 
-test('worktree gate: exemption - exemptRepos and exemptUntil suppress the deny', () => {
-  const exemptRepoDoc = doc({ exemptRepos: [REPO] })
-  assert.equal(decideWorktreeGate(facts(), pendingEdit, exemptRepoDoc).allow, true, 'exemptRepos match')
+test('worktree gate: exemption - exemptRepos and exemptUntil composite state', () => {
+  const now = Date.now();
+  const futureIso = new Date(now + 100000).toISOString();
+  const pastIso = new Date(now - 100000).toISOString();
   
-  const nonExemptRepoDoc = doc({ exemptRepos: ['/other-repo'] })
-  assert.equal(decideWorktreeGate(facts(), pendingEdit, nonExemptRepoDoc).allow, false, 'exemptRepos non-match')
+  const combinations = [
+    { desc: 'active + repo listed', exemptUntil: futureIso, exemptRepos: [REPO], expectAllow: true },
+    { desc: 'active + repo not listed', exemptUntil: futureIso, exemptRepos: ['/other'], expectAllow: false },
+    { desc: 'active + list absent', exemptUntil: futureIso, exemptRepos: undefined, expectAllow: false },
+    
+    { desc: 'expired + repo listed', exemptUntil: pastIso, exemptRepos: [REPO], expectAllow: false },
+    { desc: 'expired + repo not listed', exemptUntil: pastIso, exemptRepos: ['/other'], expectAllow: false },
+    { desc: 'expired + list absent', exemptUntil: pastIso, exemptRepos: undefined, expectAllow: false },
+    
+    { desc: 'absent + repo listed', exemptUntil: undefined, exemptRepos: [REPO], expectAllow: false },
+    { desc: 'absent + repo not listed', exemptUntil: undefined, exemptRepos: ['/other'], expectAllow: false },
+    { desc: 'absent + list absent', exemptUntil: undefined, exemptRepos: undefined, expectAllow: false },
+  ];
   
-  const futureExemptDoc = doc({ exemptUntil: new Date(Date.now() + 100000).toISOString() })
-  assert.equal(decideWorktreeGate(facts(), pendingEdit, futureExemptDoc).allow, true, 'future exemptUntil')
-  
-  const pastExemptDoc = doc({ exemptUntil: new Date(Date.now() - 100000).toISOString() })
-  assert.equal(decideWorktreeGate(facts(), pendingEdit, pastExemptDoc).allow, false, 'past exemptUntil')
+  for (const c of combinations) {
+    const testDoc = doc({
+      ...(c.exemptUntil !== undefined ? { exemptUntil: c.exemptUntil } : {}),
+      ...(c.exemptRepos !== undefined ? { exemptRepos: c.exemptRepos } : {})
+    });
+    
+    const result = decideWorktreeGate(facts(), pendingEdit, testDoc, now);
+    assert.equal(result.allow, c.expectAllow, `exemption composite: ${c.desc}`);
+  }
+
+  const malformedDoc = doc({ exemptUntil: 'not-a-date', exemptRepos: [REPO] });
+  assert.equal(decideWorktreeGate(facts(), pendingEdit, malformedDoc, now).allow, false, 'exemption composite: malformed exemptUntil should DENY');
 })
+
 
 test('subagent inheritance regression: gate decision for child session ID identical to parent', () => {
   // The signature of decideWorktreeGate does not accept a session ID or agent identity.
