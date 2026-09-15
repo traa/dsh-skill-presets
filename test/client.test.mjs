@@ -440,6 +440,11 @@ test('client bundle imports no Node built-ins', async () => {
   // not at build time. Matched on the import FORM, never the bare substring
   // `node:`, which appears harmlessly inside unrelated strings.
   const bundle = await readFile(ARTIFACT, 'utf8')
-  const hits = bundle.match(/require\("node:|from ?"node:|import ?"node:/gu) ?? []
+  // Any form that can pull a Node built-in into a browser bundle: static or
+  // dynamic, either quote style. `createRequire` is flagged separately — it is
+  // the escape hatch that would smuggle one past a specifier-only match.
+  const specifier = /(?:require|import)\s*\(\s*["']node:[^"']+["']\s*\)|from\s*["']node:[^"']+["']/gu
+  const smuggler = /createRequire\s*\(/gu
+  const hits = [...(bundle.match(specifier) ?? []), ...(bundle.match(smuggler) ?? [])]
   assert.equal(hits.length, 0, `client bundle pulls in Node built-ins: ${hits.join(', ')}`)
 })

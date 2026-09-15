@@ -192,11 +192,63 @@ test('worktree gate: exemption - exemptRepos and exemptUntil composite state', (
 })
 
 
-test('subagent inheritance regression: gate decision for child session ID identical to parent', () => {
-  // The signature of decideWorktreeGate does not accept a session ID or agent identity.
-  // It takes (facts: GitFacts, pending: PendingCall, doc: PracticesDoc).
-  // Because session ID structurally cannot enter the decision, a subagent sharing
-  // its parent's directory is guaranteed to receive the identical gate decision.
-  // This is enforced by the function signature's arity and types. No runtime assertion is meaningful.
-  assert.equal(decideWorktreeGate.length, 3, 'decideWorktreeGate should accept 3 required arguments (facts, pending, doc), and none of them represent a session ID')
+test('subagent inheritance regression: gate decision for child session ID identical to parent', async () => {
+  const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-test-'))
+  const repoDir = path.join(tmpBase, 'repo')
+  const wtDir = path.join(tmpBase, 'wt')
+  const storeDir = path.join(tmpBase, 'store')
+  
+  try {
+    await fs.mkdir(repoDir)
+    await fs.mkdir(storeDir)
+    
+    // Create an empty practices.json to use the default curated practices (which defaults to 'hard' mode for worktree)
+    await fs.writeFile(path.join(storeDir, 'practices.json'), JSON.stringify({ version: 1, practices: [{id: 'worktree', mode: 'hard', params: {}}] }))
+    
+    await execAsync('git init', { cwd: repoDir })
+    await fs.writeFile(path.join(repoDir, 'a.txt'), 'hello')
+    await execAsync('git add .', { cwd: repoDir })
+    await execAsync('git commit -m init', { cwd: repoDir })
+    await execAsync('git branch -m main', { cwd: repoDir }) 
+    await execAsync('git worktree add ../wt -b feat/x', { cwd: repoDir })
+
+    const cliPath = path.resolve('./lib/bin/cli.js')
+    
+    const runCheck = async (cwd, sessionId) => {
+      const stdinStr = JSON.stringify({
+        cwd,
+        tool_name: 'edit',
+        tool_input: { file_path: 'a.txt' },
+        session_id: sessionId
+      })
+
+      let stdout = ''
+      try {
+        const result = await execAsync(`echo '${stdinStr}' | node ${cliPath} check worktree --hook claude-code --json`, {
+          cwd: tmpBase,
+          env: { ...process.env, DSH_SKILL_PRESETS_ROOT: storeDir } 
+        })
+        stdout = result.stdout
+      } catch (err) {
+        stdout = err.stdout
+      }
+      
+      return JSON.parse(stdout.trim()).block
+    }
+
+    const sessionA = 'session-1111'
+    const sessionB = 'session-2222'
+
+    const blockRepoA = await runCheck(repoDir, sessionA)
+    const blockRepoB = await runCheck(repoDir, sessionB)
+    
+    const blockWtA = await runCheck(wtDir, sessionA)
+
+    assert.equal(blockRepoA, true, 'primary checkout should block write')
+    assert.equal(blockRepoA, blockRepoB, 'two different session IDs in the same repo should get the exact same decision')
+    assert.notEqual(blockRepoA, blockWtA, 'the same session in a linked worktree should get a DIFFERENT decision')
+
+  } finally {
+    await fs.rm(tmpBase, { recursive: true, force: true })
+  }
 })
