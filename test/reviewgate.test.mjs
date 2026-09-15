@@ -2,10 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ReviewGate, modeFrom } from '../lib/host/practices/reviewgate.js'
 
-function createGate(mode = 'default', now = 1000) {
-  let time = now
-  const gate = new ReviewGate(mode, () => {}, () => time)
-  return { gate, tick: (ms) => { time += ms }, setTime: (t) => { time = t } }
+function createGate(mode = 'default') {
+  const gate = new ReviewGate(mode, () => {})
+  return { gate }
 }
 
 test('Group A: DENY - Second gh pr create while a PR is unreviewed names the PR', () => {
@@ -124,14 +123,6 @@ test('Group B: ALLOW - session with no team attached never accrues an obligation
   assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, { teamAttached: false }), undefined)
 })
 
-test('Group B: ALLOW - After the TTL expires', () => {
-  const { gate, tick } = createGate()
-  const ctx = { teamAttached: true }
-  
-  gate.observe('s1', 'bash', { command: 'gh pr create' }, false, 'https://github.com/org/repo/pull/42', ctx)
-  tick(7 * 60 * 60 * 1000) // > 6 hours
-  assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, ctx), undefined)
-})
 
 test('Group B: ALLOW - After forget()', () => {
   const { gate } = createGate()
@@ -142,26 +133,6 @@ test('Group B: ALLOW - After forget()', () => {
   assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, ctx), undefined)
 })
 
-test('Group C: ESCAPE - The literal phrase "no reviewer available" in the gated call allows and clears', () => {
-  const { gate } = createGate()
-  const ctx = { teamAttached: true }
-  
-  gate.observe('s1', 'bash', { command: 'gh pr create' }, false, 'https://github.com/org/repo/pull/42', ctx)
-  const verdict = gate.decide('s1', 'bash', { command: 'gh pr merge --body "no reviewer available"' }, ctx)
-  assert.equal(verdict, undefined)
-  // Check it cleared
-  const verdict2 = gate.decide('s1', 'bash', { command: 'gh pr create' }, ctx)
-  assert.equal(verdict2, undefined)
-})
-
-test('Group C: ESCAPE - Phrase present when PR CREATED opens no obligation at all', () => {
-  const { gate } = createGate()
-  const ctx = { teamAttached: true }
-  
-  gate.observe('s1', 'bash', { command: 'gh pr create --body "no reviewer available"' }, false, 'https://github.com/org/repo/pull/42', ctx)
-  const verdict = gate.decide('s1', 'bash', { command: 'gh pr create' }, ctx)
-  assert.equal(verdict, undefined)
-})
 
 test('Group C: ESCAPE - DSH_REVIEW_GATE=off and =all behave correctly', () => {
   assert.equal(modeFrom({}), 'default')
@@ -213,23 +184,6 @@ test('Group D: CONTAINMENT - A context whose teamAttached getter THROWS degrades
   assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, hostileCtx), undefined)
 })
 
-test('Group D: CONTAINMENT - After three faults isTripped is true and everything is allowed', () => {
-  const { gate } = createGate()
-  const ctx = { teamAttached: true }
-  
-  gate.observe('s1', 'bash', { command: 'gh pr create' }, false, 'https://github.com/org/repo/pull/42', ctx)
-  assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, ctx)?.kind, 'deny')
-  
-  const hostileCtx = { get teamAttached() { throw new Error('boom') } }
-  assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, hostileCtx), undefined)
-  assert.equal(gate.isTripped, false)
-  
-  assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, hostileCtx), undefined)
-  assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, hostileCtx), undefined)
-  
-  assert.equal(gate.isTripped, true)
-  assert.equal(gate.decide('s1', 'bash', { command: 'gh pr create' }, ctx), undefined)
-})
 
 test('Group D: CONTAINMENT - observe() never throws on hostile inputs', () => {
   const { gate } = createGate()
@@ -248,4 +202,29 @@ test('Group D: CONTAINMENT - observe() never throws on hostile inputs', () => {
   for (const h of hostiles) {
     gate.observe('s1', 'bash', h, false, '', ctx) // Should not throw
   }
+})
+
+test('Group E: DIRECTIVE - A successful gh pr create yields a directive naming the PR', () => {
+  const { gate } = createGate()
+  const ctx = { teamAttached: true }
+  
+  const directive = gate.observe('s1', 'bash', { command: 'gh pr create' }, false, 'https://github.com/org/repo/pull/42', ctx)
+  assert.ok(directive !== undefined, 'Directive should be injected')
+  assert.ok(directive.includes('https://github.com/org/repo/pull/42'), 'Directive should name the PR')
+  
+  const text = directive.toLowerCase()
+  assert.ok(text.includes('route'), 'Directive mentions routing')
+  assert.ok(text.includes('relay'), 'Directive mentions relaying')
+  assert.ok(text.includes('finding'), 'Directive mentions findings')
+})
+
+test('Group E: DIRECTIVE - Non-publishing calls or failed creations yield nothing', () => {
+  const { gate } = createGate()
+  const ctx = { teamAttached: true }
+  
+  assert.equal(gate.observe('s1', 'bash', { command: 'npm test' }, false, 'ok', ctx), undefined)
+  assert.equal(gate.observe('s1', 'edit', { file_path: 'foo.js' }, false, '', ctx), undefined)
+  assert.equal(gate.observe('s1', 'bash', { command: 'git push' }, false, '', ctx), undefined)
+  
+  assert.equal(gate.observe('s1', 'bash', { command: 'gh pr create' }, true, 'Error', ctx), undefined)
 })
