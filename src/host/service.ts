@@ -496,13 +496,21 @@ export class SkillPresetsService {
    * it is scoped to one repository, it carries a reason, and it dies on its
    * own, so "just this once" cannot quietly become the permanent state.
    *
-   * EACH GRANT REPLACES THE PREVIOUS ONE. `exemptUntil` is a single timestamp
-   * shared by the whole list, so APPENDING to `exemptRepos` (as the first cut
-   * did) would silently resurrect every earlier repo's expired grant every
-   * time a new one was issued — exempt B for an hour and A comes back to life
-   * with it. One scope, one clock, one reason: replacing is the only form that
-   * keeps "expiring" true. Re-run the command per repository if two genuinely
-   * need it at once; that is intended friction, not an oversight.
+   * EACH GRANT REPLACES THE PREVIOUS ONE — SO ONLY ONE REPOSITORY CAN BE
+   * EXEMPT AT A TIME. Exempting repo B REVOKES an existing exemption on repo
+   * A. There is no way to hold two at once through this method; do not expect
+   * one.
+   *
+   * That is forced by the schema, not chosen: `PracticesDoc` carries a single
+   * `exemptUntil` timestamp for the whole `exemptRepos` list, so the list
+   * cannot express per-grant lifetimes. Appending would therefore have been
+   * worse than replacing — every new grant would silently reset the shared
+   * clock and resurrect every earlier repo's EXPIRED exemption. Given one
+   * clock, replacing is the only form that keeps "expiring" true.
+   *
+   * The honest model is a list of `{ repo, until, reason }` records, which
+   * would let grants coexist and expire independently. That is a follow-up: it
+   * changes `PracticesDoc`, which this PR treats as frozen.
    *
    * @param repo - repository top level the exemption covers.
    * @param hours - lifetime; the exemption is dead after it elapses.

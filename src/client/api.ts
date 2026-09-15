@@ -28,6 +28,27 @@ export async function rpc<T>(method: string, body: unknown = {}): Promise<T> {
   return parsed as T
 }
 
+/**
+ * Marks an `n/a` practice verdict that reports EXPOSURE rather than
+ * irrelevance, so the client can render such a row distinctly instead of
+ * folding it into "+N not applicable".
+ *
+ * MIRRORS `AT_RISK_PREFIX` in `src/host/practices/detectors.ts`, which is the
+ * source of truth: the detector WRITES this prefix onto its evidence line and
+ * this half only reads it. Duplicated rather than imported for exactly the
+ * reason the wire types below are duplicated — the browser bundle takes
+ * NOTHING from `src/host/` at runtime. Importing it directly does work today,
+ * because the bundler shakes out the rest of that module including its
+ * `node:path` import, but it leaves the artifact one careless top-level side
+ * effect in an unrelated host module away from carrying a Node builtin into
+ * the browser, and that failure would be silent.
+ *
+ * The duplication is safe because it is asserted, not trusted: a test compares
+ * this literal with the detector's export, so divergence fails loudly instead
+ * of quietly switching the at-risk styling off.
+ */
+export const AT_RISK_PREFIX = 'at risk — '
+
 // Wire shapes (mirrors of host types, kept structural so nothing is imported at runtime).
 
 export interface PresetSkillRef { ref: string, as?: string, whenToUse?: string }

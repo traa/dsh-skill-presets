@@ -5,8 +5,8 @@
  * @module dsh-skill-presets/client/views
  */
 
+import { AT_RISK_PREFIX } from './api.ts'
 import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, StageGuess, Status } from './api.ts'
-import { AT_RISK_PREFIX } from '../host/practices/detectors.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
 
 export interface ReactLike {

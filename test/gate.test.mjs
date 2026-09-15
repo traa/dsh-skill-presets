@@ -83,41 +83,59 @@ test('worktree gate: anti-divergence - CLI path and native path produce the same
 
     const cliPath = path.resolve('./lib/bin/cli.js')
     
+    const spellings = [
+      { name: 'edit', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'Edit', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'write', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'Write', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'multi_edit', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'MultiEdit', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'multiedit', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'notebook_edit', tool_input: { file_path: 'a.txt' }, isWrite: true },
+      { name: 'bash', tool_input: { command: 'rm -rf x' }, isWrite: true },
+      { name: 'bash', tool_input: { command: 'ls' }, isWrite: false },
+    ]
+
     const fixtures = [
-      { label: 'hard deny in primary checkout', cwd: repoDir, expectedBlock: true },
-      { label: 'allow in linked worktree', cwd: wtDir, expectedBlock: false },
+      { label: 'primary checkout', cwd: repoDir, deniesWrite: true },
+      { label: 'linked worktree', cwd: wtDir, deniesWrite: false },
     ]
     
     // Both use default configuration from store (empty practices.json -> defaults)
     const testDoc = validatePractices({}, defaultPractices)
     
-    for (const { label, cwd, expectedBlock } of fixtures) {
-      const stdinStr = JSON.stringify({
-        cwd: cwd,
-        tool_name: 'edit',
-        tool_input: { file_path: 'a.txt' }
-      })
+    for (const fixture of fixtures) {
+      for (const spell of spellings) {
+        const expectedBlock = fixture.deniesWrite && spell.isWrite
+        const label = `${fixture.label} - ${spell.name} (${spell.isWrite ? 'mutating' : 'readonly'})`
 
-      let stdout = ''
-      try {
-        const result = await execAsync(`echo '${stdinStr}' | node ${cliPath} check worktree --hook claude-code --json`, {
-          cwd: tmpBase,
-          env: { ...process.env, DSH_SKILL_PRESETS_ROOT: storeDir } 
+        const stdinStr = JSON.stringify({
+          cwd: fixture.cwd,
+          tool_name: spell.name,
+          tool_input: spell.tool_input
         })
-        stdout = result.stdout
-      } catch (err) {
-        stdout = err.stdout
+
+        let stdout = ''
+        try {
+          const result = await execAsync(`echo '${stdinStr}' | node ${cliPath} check worktree --hook claude-code --json`, {
+            cwd: tmpBase,
+            env: { ...process.env, DSH_SKILL_PRESETS_ROOT: storeDir } 
+          })
+          stdout = result.stdout
+        } catch (err) {
+          stdout = err.stdout
+        }
+        
+        const cliResult = JSON.parse(stdout.trim())
+        assert.equal(cliResult.block, expectedBlock, `CLI path mismatch for: ${label}`)
+        
+        // Native path
+        const nativeFacts = await readGitFacts(fixture.cwd, { instructionFiles: [] })
+        const nativePending = { name: spell.name, filePath: spell.tool_input.file_path, command: spell.tool_input.command }
+        const nativeDecision = decideWorktreeGate(nativeFacts, nativePending, testDoc)
+        
+        assert.equal(!nativeDecision.allow, expectedBlock, `Native path mismatch for: ${label}`)
       }
-      
-      const cliResult = JSON.parse(stdout.trim())
-      assert.equal(cliResult.block, expectedBlock, `CLI path mismatch for: ${label}`)
-      
-      // Native path
-      const nativeFacts = await readGitFacts(cwd, { instructionFiles: [] })
-      const nativePending = { name: 'edit', filePath: 'a.txt' }
-      const nativeDecision = decideWorktreeGate(nativeFacts, nativePending, testDoc)
-      
-      assert.equal(!nativeDecision.allow, expectedBlock, `Native path mismatch for: ${label}`)
     }
   } finally {
     await fs.rm(tmpBase, { recursive: true, force: true })

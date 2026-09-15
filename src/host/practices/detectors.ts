@@ -536,15 +536,20 @@ export function refuseAssumedRoot(id: PracticeId, view: SessionView, claim: stri
  *
  * The client tells an at-risk `n/a` from a quiet one by testing this prefix on
  * the evidence, because `PracticeResult` carries no structural flag for it and
- * that type is frozen. Exported so the producer (`atRiskEvidence`, below) and
- * the consumer (`isAtRisk` in `src/client/views.ts`) cannot drift: with the
- * string written out by hand at both ends, changing either one would silently
- * stop the panel flagging at-risk sessions, with every test still green.
+ * that type is frozen.
  *
- * Safe to import from the browser half even though this module imports
- * `node:path`: it is a plain string, so the bundler tree-shakes everything
- * else away and no Node builtin reaches `lib/client.js` (verified against the
- * built bundle, not assumed).
+ * THIS DECLARATION IS THE SOURCE OF TRUTH, and `atRiskEvidence` below builds
+ * its line from it instead of repeating the literal — otherwise the coupling
+ * merely moves from the reader to the writer.
+ *
+ * The browser half does NOT import this. It keeps its own copy in
+ * `src/client/api.ts`, mirrored like every other host shape, because the
+ * client bundle takes nothing from `src/host/` at runtime; a test asserts the
+ * two literals are equal, so the mirror cannot drift silently. Do not
+ * "simplify" that into a direct import: it would work — the bundler drops the
+ * rest of this module, `node:path` included — right up until an unrelated
+ * top-level side effect here leaked a Node builtin into a browser artifact,
+ * and that failure would not announce itself.
  */
 export const AT_RISK_PREFIX = 'at risk — '
 
