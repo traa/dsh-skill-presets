@@ -151,6 +151,59 @@ test('isVcsPlumbing classifies commit/push/PR plumbing apart from working-tree w
   }
 })
 
+test('isVcsPlumbing: pipe fixes and regressions', () => {
+  const { isVcsPlumbing } = detectors
+
+  // 1. THE FIX (must be unflagged)
+  assert.equal(isVcsPlumbing('git push -u origin feat/x 2>&1 | tail -4'), true, 'pipe into pager must not defeat plumbing exclusion')
+  assert.equal(isVcsPlumbing('cd /repo && git commit -q -m x | tail -1'), true, 'pipe into pager must not defeat plumbing exclusion (commit)')
+
+  // 2. THE POOLED-FLAG TRAP (must be unflagged / plumbing true)
+  assert.equal(isVcsPlumbing('git push | grep -i error'), true, 'flags like -i on grep must not be mistaken for writes')
+
+  // 3. QUOTED WRITE that redirectsToFile cannot see (must be FLAGGED / plumbing false)
+  assert.equal(isVcsPlumbing('git log | awk \'{print > "o.txt"}\''), false, 'quoted awk write must not be laundered')
+  assert.equal(isVcsPlumbing('git log | sort -o out.txt'), false, 'sort -o must not be laundered')
+
+  // 4. STILL FLAGGED — a pipe must not launder a real edit
+  assert.equal(isVcsPlumbing('sed -i s/a/b/ src/x.ts | tail -1'), false, 'sed -i in pipe must not be laundered')
+
+  // 5. STILL FLAGGED — a read-only consumer must not launder a write in ANOTHER segment
+  assert.equal(isVcsPlumbing('git commit -m x && rm -rf build | tail -1'), false, 'rm in segment must not be laundered')
+
+  // 6. STILL FLAGGED — xargs and tee
+  assert.equal(isVcsPlumbing('git ls-files | xargs rm'), false, 'xargs is not a read-only consumer')
+  assert.equal(isVcsPlumbing('git push | tee log.txt'), false, 'tee is not a read-only consumer')
+
+  // 7. REDIRECTION still disqualifies
+  assert.equal(isVcsPlumbing('git log > out.txt'), false, 'redirection to file is not plumbing')
+  assert.equal(isVcsPlumbing('git log | tail > out.txt'), false, 'redirection to file after pipe is not plumbing')
+  assert.equal(isVcsPlumbing('git log 2>/dev/null'), true, 'redirection to /dev/null is still plumbing')
+
+  // 8. sawVcs still required
+  assert.equal(isVcsPlumbing('ls | tail'), false, 'chain with no VCS invocation must not become plumbing')
+
+  // 9. WORKING-TREE subcommands still disqualify, bare AND piped into | tail -1
+  for (const command of [
+    'git restore src/a.ts',
+    'git checkout -- src/a.ts',
+    'git stash pop',
+    'git revert x',
+    'git cherry-pick x',
+    'git merge x',
+    'git rebase main',
+    'git apply p.patch',
+  ]) {
+    assert.equal(isVcsPlumbing(command), false, `working-tree subcommand ${command}`)
+    assert.equal(isVcsPlumbing(`${command} | tail -1`), false, `working-tree subcommand ${command} piped`)
+  }
+
+  // 10. Plain unpiped forms unchanged
+  assert.equal(isVcsPlumbing('git push -u origin feat/x'), true)
+  assert.equal(isVcsPlumbing('cd /repo && git commit -q -m x'), true)
+  assert.equal(isVcsPlumbing('gh pr create --title x'), true)
+})
+
 // --- RULE 2: never assert a false location.
 test('work root: an absolute path reached by a non-leading cd or a -C flag is honoured', () => {
   assert.equal(workRootOf({ t: 't', turn: 1, name: 'bash', target: 'git -C /wt commit -m x', isError: false }, '/primary'), '/wt')

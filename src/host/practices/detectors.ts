@@ -392,6 +392,75 @@ const GIT_GLOBAL_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', 
 /** `git` subcommands that rewrite working-tree CONTENT rather than record history. */
 const GIT_TREE_WRITERS = new Set(['restore', 'apply', 'am', 'revert', 'cherry-pick', 'merge', 'rebase', 'rm', 'mv', 'clean'])
 
+/**
+ * Commands that only READ their stdin and write nothing, so having one on the
+ * receiving end of a pipe cannot turn a read into a mutation.
+ *
+ * Membership is decided by one question: can this command, by itself, create or
+ * modify a file? Every entry here writes to stdout only. Deliberately EXCLUDED
+ * even though they are common pipe consumers:
+ * - `xargs`, because it executes an arbitrary command chosen by its operands —
+ *   `… | xargs rm` is exactly the mutation this practice exists to catch;
+ * - `tee` and `dd` and `split`, whose entire purpose is writing files;
+ * - `sh`/`bash`/`node`/`python`, which run arbitrary programs.
+ * `sed` and `awk` ARE here, but only survive the flag check below: both can
+ * write when asked to, and the check is what distinguishes `sed -n` from
+ * `sed -i`.
+ */
+const READONLY_FILTERS = new Set([
+  'tail', 'head', 'cat', 'grep', 'rg', 'egrep', 'fgrep', 'wc', 'sort', 'uniq',
+  'tr', 'cut', 'less', 'more', 'nl', 'column', 'jq', 'sed', 'awk', 'rev', 'strings',
+])
+
+/**
+ * Flags that turn a specific read-only filter into a writer.
+ *
+ * Keyed BY COMMAND rather than pooled, because the same spelling means
+ * opposite things per tool: `sed -i` edits the file in place, while `grep -i`
+ * merely ignores case and `grep -o` prints only the match. A pooled list would
+ * disqualify `git push | grep -i error` — re-introducing the very false
+ * positive this change removes, just on a different flag.
+ */
+const FILTER_WRITE_FLAGS: Record<string, readonly string[]> = {
+  sed: ['-i', '--in-place'],
+  sort: ['-o', '--output'],
+  uniq: ['-o'],
+}
+
+/**
+ * Whether a segment is a read-only consumer of piped input.
+ *
+ * WHY THIS EXISTS: `shellSegments` splits on `|` as well as `&&`/`;`, so a
+ * command piped into a pager arrived here as two segments. The second one is
+ * not a VCS invocation, which made `isVcsPlumbing` reject the WHOLE chain, and
+ * the conductor practice then reported `git push … 2>&1 | tail -4` as
+ * "conductor mutated files itself" while the unpiped `git push …` was fine. An
+ * output pager writes NOTHING; appending one cannot change what a command did,
+ * and a verdict that flips on the presence of `| tail` is reporting the pipe,
+ * not the mutation. This is the same false-positive class as the `bash ls
+ * 2>/dev/null` case recorded on `redirectsToFile`.
+ *
+ * Conservative by construction: anything unrecognised returns false and the
+ * chain stays disqualified, so a miss costs a false positive that was already
+ * there, never a missed mutation.
+ */
+function isReadOnlyFilter(segment: string): boolean {
+  const parts = tokens(segment)
+  const lead = parts[0]?.split('/').pop()
+  if (lead === undefined || !READONLY_FILTERS.has(lead)) return false
+  const args = parts.slice(1)
+  const writeFlags = FILTER_WRITE_FLAGS[lead] ?? []
+  if (args.some(t => writeFlags.includes(t.split('=')[0]))) return false
+  // `uniq <in> <out>` writes its SECOND operand — the one shape in this set
+  // where a plain positional argument is an output file rather than an input.
+  if (lead === 'uniq' && args.filter(t => !t.startsWith('-')).length >= 2) return false
+  // A `>` or a `sed`/`awk` write instruction that survived tokenisation was
+  // QUOTED, which is exactly where `redirectsToFile` blanks it out:
+  // `awk '{print > "out.txt"}'` and `sed 's/x/y/w out.txt'` create files
+  // through their PROGRAM text, with no shell operator for the caller to see.
+  return !args.some(t => t.includes('>') || /\/w\s+\S/u.test(t))
+}
+
 /** Peel a VCS invocation into tool, subcommand and remaining arguments. */
 function vcsParts(segment: string): { tool: string, sub?: string, rest: string[] } | undefined {
   const parts = tokens(segment)
@@ -436,8 +505,19 @@ function writesWorkingTree(sub: string, rest: readonly string[]): boolean {
  * the mutation classifier.
  *
  * Every segment must be a VCS invocation: `rm -rf x && git commit` is not
- * plumbing. A bare `cd`/`set` prefix is allowed because it writes nothing and
- * is how an agent reaches a linked worktree before committing in it.
+ * plumbing. Two kinds of segment are tolerated alongside them, on the SAME
+ * grounds — they write nothing, so they cannot change what the chain did:
+ * - a bare `cd`/`set` prefix, which is how an agent reaches a linked worktree
+ *   before committing in it;
+ * - a read-only pipe consumer (`isReadOnlyFilter`), because `shellSegments`
+ *   splits on `|` too, so `git push … 2>&1 | tail -4` arrived as a git segment
+ *   plus a `tail` segment and the `tail` disqualified the whole chain. Piping
+ *   a push into a pager was reported as the conductor mutating files while the
+ *   identical unpiped push was not.
+ * At least one VCS invocation is still REQUIRED (`sawVcs`): `ls | tail` writes
+ * nothing either, but it is not plumbing, and letting it through would hand a
+ * blanket exemption to any command ending in a pipe.
+ *
  * Subcommands that rewrite working-tree CONTENT (`git restore`, `git apply`,
  * `git checkout -- path`, `stash pop`, `revert`, `cherry-pick`, `merge`,
  * `rebase`) are NOT plumbing — those are edits by another name.
@@ -454,6 +534,10 @@ export function isVcsPlumbing(target: string | undefined): boolean {
     if (redirectsToFile(segment)) return false
     const lead = tokens(segment)[0]?.split('/').pop()
     if (lead === 'cd' || lead === 'set') continue
+    // Checked BEFORE `vcsParts` so a filter segment is skipped rather than
+    // rejected, and AFTER `redirectsToFile` so `git log | tail > out.txt`
+    // still fails: the pager wrote nothing, but the redirection did.
+    if (isReadOnlyFilter(segment)) continue
     const parts = vcsParts(segment)
     if (parts === undefined) return false
     sawVcs = true
