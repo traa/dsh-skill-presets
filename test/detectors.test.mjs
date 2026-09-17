@@ -537,3 +537,58 @@ test('evaluate and worst', () => {
   assert.equal(worst([{ status: 'n/a' }, { status: 'green' }]), 'green')
   assert.equal(worst([]), 'n/a')
 })
+
+test('package manager subcommands survive a global flag', () => {
+  // RULE: a subcommand is found by SKIPPING FLAGS BY ARITY, never by searching the line for the word "install"
+  // otherwise a script named `install-hooks` denies innocent work.
+  
+  const mutating = [
+    'npm ci',
+    'npm --prefix /tmp install x',
+    'npm -g install x',
+    'npm install foo'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'npm run install-hooks',
+    'npm --prefix /tmp run build',
+    'npm test',
+    'npm ls',
+    'npm run build',
+    'pnpm test'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+})
+
+test('package manager subcommands are matched by exact spelling, not prefix or substring', () => {
+  // RULE: membership is a test of the SUBCOMMAND SPELLING, not a prefix or substring match — 
+  // which is why ci and uninstall each have to be listed by name, and why a read-only verb 
+  // like list must never be added to that table.
+
+  const mutating = [
+    'yarn remove x',
+    'cargo remove x',
+    'cargo install x',
+    'pip uninstall x',
+    'pip3 uninstall x'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'cargo build',
+    'cargo test',
+    'yarn run build',
+    'pip list',
+    'npm run install-hooks'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+})

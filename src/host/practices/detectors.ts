@@ -175,19 +175,119 @@ const MUTATING_TOOLS = new Set(['rm', 'mv', 'cp', 'mkdir', 'touch', 'tee'])
  *
  * Keyed BY TOOL for the same reason as `FILTER_WRITE_FLAGS`: `install` writes
  * under `npm` and `pip`, while `pnpm remove` and `npm uninstall` are the same
- * act spelled differently. The subcommand is the first NON-FLAG argument, so
+ * act spelled differently. The subcommand is the first non-flag argument left
+ * once `packageSubcommand` has skipped the global flags that take a value, so
  * `npm --prefix /tmp install x` is still an install.
+ *
+ * Every ALIAS of an install has to be listed by name, because this is a
+ * membership test and not a prefix match: `npm ci` rewrites `node_modules`
+ * from the lockfile exactly as `npm install` does — it deletes the directory
+ * first — yet it shares no letters with `install`. Same for `pnpm i` and
+ * `bun i`. The read-only spellings (`ls`, `test`, `run <script>`) are absent by
+ * construction, which is what keeps `npm run install-hooks` a read.
+ *
+ * MEMBERSHIP RULE: a subcommand belongs here when running it changes
+ * DEPENDENCY STATE — the installed package set, a lockfile, a linked package —
+ * or rewrites files already in the project. Not "touches the disk at all":
+ * `cargo build` and `gem build` write, but only into build OUTPUT (`target/`,
+ * a `.gem`), which is ignored by the tracked tree and is not what this
+ * practice is asking about. Keeping build verbs out is also what stops this
+ * table from classifying every compile as a mutation on the path that DENIES
+ * tool calls.
+ *
+ * BY THAT RULE these are deliberately ABSENT, and each was considered:
+ * - build/compile verbs: `cargo build`, `cargo test`, `gem build`,
+ *   `poetry build`, `uv build` — output only.
+ * - read verbs: `ls`, `list`, `search`, `info`, `show`, `outdated`, `why`,
+ *   `view`, `freeze`, `licenses`, `audit`/`outdated` WITHOUT a fixing flag.
+ * - SCAFFOLDING verbs (`npm init`, `cargo new`, `cargo init`, `poetry new`,
+ *   `uv init`): they create a project rather than change one, and admitting
+ *   them would need the same care as a build verb. Left out as ONE class, on
+ *   purpose, so the omission is visible rather than accidental.
+ *
+ * TWO KNOWN BLIND SPOTS, both structural rather than missing entries — the
+ * subcommand is not where the write is decided, so neither can be fixed by
+ * adding a row here:
+ * - a write hidden behind a FLAG: `npm audit fix` and `pip-audit --fix` write
+ *   while bare `audit` does not, so listing `audit` would be a false positive
+ *   on the DENY path.
+ * - a NESTED subcommand: `uv pip install x` and `uv tool install x` write
+ *   while `uv pip list` does not; `packageSubcommand` reads only the first
+ *   token, so `pip`/`tool` are left out rather than admitted wholesale.
  */
 const PACKAGE_WRITE_SUBS: Record<string, readonly string[]> = {
-  npm: ['install', 'i', 'uninstall'],
-  pnpm: ['add', 'install', 'remove'],
-  yarn: ['add'],
-  cargo: ['add'],
+  npm: ['install', 'i', 'ci', 'add', 'uninstall', 'remove', 'rm', 'un', 'update', 'up', 'prune', 'dedupe', 'rebuild', 'link', 'unlink'],
+  pnpm: ['add', 'install', 'i', 'remove', 'rm', 'uninstall', 'un', 'update', 'up', 'prune', 'dedupe', 'link', 'unlink', 'import', 'patch', 'patch-commit', 'rebuild'],
+  yarn: ['add', 'install', 'remove', 'up', 'upgrade', 'link', 'unlink', 'import'],
+  // `bun` was in `PACKAGE_TOOLS` but had NO entry here, so every `bun add`
+  // and `bun install` was read as a non-mutation — the same one-half-of-the-
+  // file blindness recorded on `pip` below.
+  bun: ['add', 'install', 'i', 'remove', 'rm', 'update', 'link', 'unlink', 'patch'],
+  // `cargo install` puts a BINARY in the cargo home rather than in the working
+  // tree. It is still a write, and this function answers "does this write" —
+  // whether a LOCATION can be named is `attributesLocation`'s separate job,
+  // and it already declines to place any `PACKAGE_TOOLS` command. `cargo fix`
+  // is here for the opposite reason: it rewrites SOURCE FILES in place.
+  cargo: ['add', 'remove', 'rm', 'install', 'uninstall', 'update', 'fix'],
   // `pip` and `pip3` are one tool under two names, and `PACKAGE_TOOLS` already
   // lists both — the regex this replaced knew only `pip`, which is the same
   // one-half-of-the-file blindness as `/bin/rm`.
-  pip: ['install'],
-  pip3: ['install'],
+  pip: ['install', 'uninstall', 'download'],
+  pip3: ['install', 'uninstall', 'download'],
+  gem: ['install', 'uninstall', 'update', 'cleanup', 'pristine'],
+  composer: ['install', 'i', 'update', 'u', 'upgrade', 'require', 'remove', 'create-project', 'dump-autoload', 'dumpautoload'],
+  poetry: ['add', 'install', 'remove', 'update', 'lock', 'sync'],
+  uv: ['add', 'remove', 'sync', 'lock', 'venv', 'export'],
+  bundle: ['install', 'i', 'update', 'add', 'remove', 'lock', 'binstubs', 'pristine', 'cache', 'package', 'clean'],
+}
+
+/**
+ * Global flags of a package manager that swallow the NEXT token, so the
+ * subcommand sits after their value rather than being the first non-flag
+ * argument.
+ *
+ * THE SAME RULE AS `XARGS_VALUE_FLAGS` AND `GIT_GLOBAL_VALUE_FLAGS`: a flag
+ * belongs here only when its argument is MANDATORY and SEPARATE. A boolean
+ * flag consumes nothing and must stay out — `-g`, `--global`, `--silent`,
+ * `--force`, `--save-dev`/`-D` are all boolean, and listing one would eat the
+ * subcommand behind it (`npm -g install x` would read as no subcommand at
+ * all). An ATTACHED value (`--prefix=/tmp`, `-C/tmp`) already consumes
+ * nothing further, which is why the `=` form is excluded at the call site and
+ * why membership is an EXACT token match.
+ *
+ * Keyed BY TOOL, and that is not decoration: `-w` takes a workspace NAME under
+ * npm and is the BOOLEAN `--workspace-root` under pnpm. A pooled set would
+ * make `pnpm -w add x` skip the `add`.
+ *
+ * WHY NOT just look for `install` anywhere in the segment: this function feeds
+ * `decideWorktreeGate`, which DENIES a tool call, and `npm run install-hooks`
+ * would then be reported as a mutation. Skipping by ARITY reaches the real
+ * subcommand without ever reading a token out of position — exactly what
+ * `vcsParts` already does for `git -C /wt commit`.
+ */
+const PACKAGE_GLOBAL_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  npm: new Set(['--prefix', '-C', '--workspace', '-w', '--userconfig', '--globalconfig', '--cache']),
+  pnpm: new Set(['--dir', '-C', '--filter']),
+  yarn: new Set(['--cwd']),
+  bun: new Set(['--cwd']),
+}
+
+/**
+ * The subcommand a package manager will run, past its value-taking global
+ * flags — or undefined when the invocation names none (`npm` alone, or the
+ * malformed `npm --prefix` whose value is missing, which npm itself rejects
+ * without writing anything).
+ */
+function packageSubcommand(tool: string, args: readonly string[]): string | undefined {
+  const valueFlags = PACKAGE_GLOBAL_VALUE_FLAGS[tool]
+  let i = 0
+  while (i < args.length) {
+    const token = args[i]
+    if (!token.startsWith('-') || token === '-') break
+    if (token === '--') { i += 1; break }
+    i += valueFlags?.has(token) === true ? 2 : 1
+  }
+  return args[i]
 }
 
 /** `git` subcommands that record history or rewrite the working tree. */
@@ -277,7 +377,11 @@ function segmentWrites(segment: string): boolean {
   if (lead === 'sed') return sedWrites(parts.slice(1))
   const packageSubs = PACKAGE_WRITE_SUBS[lead]
   if (packageSubs !== undefined) {
-    const sub = parts.slice(1).find(a => !a.startsWith('-'))
+    // NOT `find(a => !a.startsWith('-'))`: that returns the VALUE of a global
+    // flag, so `npm --prefix /tmp install x` classified `/tmp` as the
+    // subcommand and never reached the `install`. `packageSubcommand` skips a
+    // value-taking flag by arity, the way `vcsParts` does for `git -C /wt`.
+    const sub = packageSubcommand(lead, parts.slice(1))
     return sub !== undefined && packageSubs.includes(sub)
   }
   // `vcsParts` already knows how to skip `-C /wt`, `-c k=v`, `--git-dir …` to
