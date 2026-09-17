@@ -264,12 +264,55 @@ const PACKAGE_WRITE_SUBS: Record<string, readonly string[]> = {
  * would then be reported as a mutation. Skipping by ARITY reaches the real
  * subcommand without ever reading a token out of position — exactly what
  * `vcsParts` already does for `git -C /wt commit`.
+ *
+ * ARITY IS THE ONLY QUESTION — NOT whether the tool calls the flag "global".
+ * An earlier version of this set also demanded that a flag be accepted BEFORE
+ * the subcommand, and dropped `gem --config-file`, `bundle --gemfile` and
+ * `uv --python` because the installed binaries reject or ignore them in that
+ * position (`gem --config-file f install` → "Invalid option";
+ * `bundle --gemfile G install` → "called with arguments [install]";
+ * `uv --python 3.11 tree` → "unexpected argument"). That rule was WRONG HERE,
+ * and the reasoning is worth keeping because it looks right:
+ * - This walk sees whatever tokens the CALLER actually wrote. It steps over a
+ *   leading `--flag value` pair before the tool ever runs, so a flag the tool
+ *   would only accept later still displaces the subcommand IN THIS PARSE.
+ *   Refusing to list it leaves the value itself read as the subcommand — the
+ *   precise false negative this whole mechanism exists to remove.
+ * - Neither error direction costs anything. Listing a value-taking flag can
+ *   only ever REVEAL the subcommand behind it; it cannot invent one, because
+ *   the token it lands on still has to be in `PACKAGE_WRITE_SUBS`. And where
+ *   the real tool errors out, the command writes nothing either way, so the
+ *   verdict is unobservable rather than a false positive on a live session.
+ * The asymmetry that DOES matter is unchanged: a BOOLEAN wrongly listed eats
+ * the subcommand and silently turns a real write into a miss. So the bar to
+ * add a flag is only "its value is mandatory and separate", and the bar to
+ * leave one out is any doubt about that.
  */
 const PACKAGE_GLOBAL_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
   npm: new Set(['--prefix', '-C', '--workspace', '-w', '--userconfig', '--globalconfig', '--cache']),
   pnpm: new Set(['--dir', '-C', '--filter']),
   yarn: new Set(['--cwd']),
   bun: new Set(['--cwd']),
+  // `-Z` is nightly-only and `-C` is unstable, but both take a mandatory
+  // separate value when present, which is the only question this set asks.
+  cargo: new Set(['--color', '--config', '--explain', '-Z', '-C', '--manifest-path', '--target']),
+  // `-d` is composer's short `--working-dir`. Per-tool keying matters here for
+  // the same reason as npm's `-w`: `-d` is a BOOLEAN in other tools.
+  composer: new Set(['--working-dir', '-d']),
+  poetry: new Set(['-C', '--directory', '-P', '--project']),
+  // `-C` is gem's only flag accepted before the subcommand; `--config-file` is
+  // a per-COMMAND option and gem rejects it there. Listed anyway, per the
+  // arity rule above — it takes a mandatory separate value, so a caller who
+  // writes it first would otherwise have `/tmp/f` read as the subcommand.
+  gem: new Set(['-C', '--config-file']),
+  uv: new Set(['--color', '--directory', '--project', '--config-file', '--allow-insecure-host', '--python']),
+  // Bundler's pre-command globals are `--no-color`/`--verbose`, both BOOLEAN
+  // and correctly absent. `--gemfile` and `--path` are per-command options
+  // that take a mandatory separate value, listed for the same reason as gem's
+  // `--config-file`. `--retry`/`--jobs` also take values but are omitted:
+  // the short forms are ambiguous across bundler versions and an unverified
+  // guess here is the one error that costs a missed write.
+  bundle: new Set(['--gemfile', '--path']),
 }
 
 /**

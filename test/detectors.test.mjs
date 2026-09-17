@@ -592,3 +592,33 @@ test('package manager subcommands are matched by exact spelling, not prefix or s
     assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
   }
 })
+
+test('a global flag never hides a package manager subcommand', () => {
+  // RULE: a flag consumes the next token ONLY when its argument is MANDATORY and SEPARATE, and the flag sets are keyed PER TOOL because the same spelling disagrees between tools — -w takes a value under npm but is a boolean under pnpm, -d is composer's working-dir but a boolean elsewhere. A boolean wrongly treated as value-taking EATS the subcommand and turns a real write into a silent miss.
+
+  const mutating = [
+    'cargo --color always install x',
+    'composer --working-dir /tmp require x',
+    'poetry -C /tmp add x',
+    'gem --config-file /tmp/f install x',
+    'bundle --gemfile /tmp/Gemfile install',
+    'uv --directory /tmp add x',
+    'yarn --cwd /tmp remove x',
+    'pnpm --filter pkg remove x'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'cargo --color always build',
+    'poetry -C /tmp show',
+    'composer --working-dir /tmp show',
+    'uv --directory /tmp tree',
+    'bundle --gemfile /tmp/Gemfile exec rspec',
+    'npm --prefix /tmp run build'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+})
