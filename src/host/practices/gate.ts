@@ -42,24 +42,39 @@ import { mutatesFiles } from './detectors.ts'
  * override is a gate the user disables wholesale the first time it is wrong,
  * so the sanctioned escape hatch is named in the deny message itself.
  *
- * ONE RECORD, TWO FIELDS, BOTH REQUIRED. `exemptRepos` and `exemptUntil` are
- * not alternative forms — they are the scope and the lifetime of a single
- * grant, and `exemptWorktree` has always written them as a pair. Treating them
- * as an independent OR (the first cut of this function did) produced two
- * failures that were worse than the hole this phase set out to close, because
- * in both the gate still LOOKED enforced:
+ * ONE GRANT IS ONE RECORD, AND EVERY FIELD OF IT IS REQUIRED. A record carries
+ * its own scope (`repo`) and its own lifetime (`until`); both must hold for
+ * that record before it authorises anything, and a record that fails is simply
+ * skipped rather than weakening its neighbours.
+ *
+ * THE SHAPE IS THIS WAY BECAUSE OF A RECORDED BUG. Scope and lifetime used to
+ * live in two document-level fields (`exemptRepos` + `exemptUntil`), written
+ * as a pair. The first cut of this function tested them as an independent OR,
+ * which produced two failures worse than the hole the gate was closing,
+ * because in both the gate still LOOKED enforced:
  * - an expired grant kept working, since a matching repo returned early and
  *   the expiry was never consulted — "just this once" became permanent;
  * - a live grant for repo A disabled the gate in EVERY repository, since the
  *   repo check simply fell through to a future timestamp.
+ * Per-record fields make that class of bug unrepresentable: there is no
+ * document-level expiry left for a scope check to fall through to. It is also
+ * why the AND below is written as one conjunction per record, and why a record
+ * missing either half is discarded instead of being partially honoured.
  *
  * FAIL-CLOSED ON A MALFORMED EXEMPTION, fail-open on malformed FACTS. These
  * are different axes and collapsing them is what caused the bug above. An
  * exemption is a claim that enforcement should stop, so anything doubtful
- * about it — no expiry, an unparseable expiry, no repository list, a checkout
- * whose top level cannot be determined — means NO exemption and the gate
- * applies as normal. Doubt about the git facts, by contrast, still allows the
- * call: see `decideWorktreeGate`.
+ * about it — no expiry, an unparseable expiry, no repository, a checkout whose
+ * top level cannot be determined — means NO exemption and the gate applies as
+ * normal. Doubt about the git facts, by contrast, still allows the call: see
+ * `decideWorktreeGate`.
+ *
+ * LEGACY FIELDS ARE NOT READ HERE. `validatePractices` migrates them, and both
+ * production callers (`cli.ts check` and the host `tools/pre-execute` gate)
+ * reach this function with a doc from `service.practices()`, which validates on
+ * read. Re-implementing the migration here would restore exactly the two-places
+ * duplication this module exists to remove — and it would have to fail OPEN on
+ * a shape the store deliberately discarded, which inverts the rule above.
  *
  * Both spellings of the top level are accepted, because
  * `git rev-parse --show-toplevel` resolves symlinks while the caller may reach
@@ -67,13 +82,19 @@ import { mutatesFiles } from './detectors.ts'
  * only one spelling would silently drop a grant the user did make.
  */
 function exemptionLive(facts: GitFacts, doc: PracticesDoc, now: number): boolean {
-  const repos = Array.isArray(doc.exemptRepos) ? doc.exemptRepos.filter(r => typeof r === 'string') : []
-  // No fields at all: there is no exemption to evaluate. Reached on every
-  // ordinary deny, so it must not be mistaken for a vacuously satisfied one.
-  if (repos.length === 0 || typeof doc.exemptUntil !== 'string') return false
-  const until = Date.parse(doc.exemptUntil)
-  if (!Number.isFinite(until) || until <= now) return false
-  return [facts.topLevel, facts.topLevelAlias].some(top => top !== undefined && repos.includes(top))
+  const grants = Array.isArray(doc.exemptions) ? doc.exemptions : []
+  // No records at all: there is no exemption to evaluate. Reached on every
+  // ordinary deny, so it must not be mistaken for a vacuously satisfied one —
+  // `some` over an empty list is false, which is the fail-closed answer.
+  const here = [facts.topLevel, facts.topLevelAlias].filter(top => typeof top === 'string' && top.length > 0)
+  if (grants.length === 0 || here.length === 0) return false
+  return grants.some((grant) => {
+    if (grant === null || typeof grant !== 'object') return false
+    // Scope AND lifetime, per record. Never an OR: see the bug above.
+    if (typeof grant.repo !== 'string' || !here.includes(grant.repo)) return false
+    const until = typeof grant.until === 'string' ? Date.parse(grant.until) : Number.NaN
+    return Number.isFinite(until) && until > now
+  })
 }
 
 /**

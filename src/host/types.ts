@@ -122,6 +122,16 @@ export interface PracticeConfig {
   readonly params: Record<string, unknown>
 }
 
+/** One operator-granted exemption from the `worktree` hard gate: its own scope, its own clock, its own reason. */
+export interface WorktreeExemption {
+  /** Repository top-level path this grant covers. */
+  readonly repo: string
+  /** ISO timestamp; this grant is dead after this instant. */
+  readonly until: string
+  /** Why it was granted, kept for the audit trail. */
+  readonly reason: string
+}
+
 /** The practices file. */
 export interface PracticesDoc {
   readonly version: 1
@@ -135,9 +145,23 @@ export interface PracticesDoc {
   /** Stale-skill / missing-skill hint thresholds. */
   readonly pruning: { minSessions: number, maxLoadRate: number, minUnknown: number }
   readonly practices: readonly PracticeConfig[]
-  /** Repositories (by top-level path) exempt from the `worktree` hard gate. */
+  /**
+   * Live and expired `worktree` gate exemptions. One grant is one record,
+   * expiring independently.
+   *
+   * INVARIANT: the RULE fails open (an unknown or malformed fact ALLOWS,
+   * because a gate that throws blocks all work) but the OVERRIDE fails closed
+   * (a grant that cannot be FULLY established — no scope, or no parseable
+   * future expiry — is NO grant, because an unaccountable override is
+   * indistinguishable from a broken gate). Per-record expiry is what makes
+   * appending correct: with one shared clock across all grants, appending a
+   * new one would reset that clock and resurrect every earlier repo's
+   * already-expired grant.
+   */
+  readonly exemptions?: readonly WorktreeExemption[]
+  /** @deprecated Legacy single-grant shape, still READ and migrated by `validatePractices`; never written. Remove one release after 0.1.0. */
   readonly exemptRepos?: readonly string[]
-  /** ISO timestamp; the exemption above expires after this instant. */
+  /** @deprecated Legacy expiry paired with `exemptRepos`. Read-only; see above. */
   readonly exemptUntil?: string
 }
 

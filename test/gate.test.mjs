@@ -158,36 +158,50 @@ test('worktree gate: migration - retains advisory mode if configured, defaults t
   assert.equal(decideWorktreeGate(facts(), pendingEdit, emptyDoc).allow, true, 'missing entry in practices list degrades to allow')
 })
 
-test('worktree gate: exemption - exemptRepos and exemptUntil composite state', () => {
+test('worktree gate: exemption - exemptions array composite state', () => {
   const now = Date.now();
   const futureIso = new Date(now + 100000).toISOString();
   const pastIso = new Date(now - 100000).toISOString();
   
   const combinations = [
-    { desc: 'active + repo listed', exemptUntil: futureIso, exemptRepos: [REPO], expectAllow: true },
-    { desc: 'active + repo not listed', exemptUntil: futureIso, exemptRepos: ['/other'], expectAllow: false },
-    { desc: 'active + list absent', exemptUntil: futureIso, exemptRepos: undefined, expectAllow: false },
+    { desc: 'active + repo listed', exemptions: [{ repo: REPO, until: futureIso, reason: 'test' }], expectAllow: true },
+    { desc: 'active + repo not listed', exemptions: [{ repo: '/other', until: futureIso, reason: 'test' }], expectAllow: false },
+    { desc: 'active + array empty', exemptions: [], expectAllow: false },
+    { desc: 'active + array absent', exemptions: undefined, expectAllow: false },
     
-    { desc: 'expired + repo listed', exemptUntil: pastIso, exemptRepos: [REPO], expectAllow: false },
-    { desc: 'expired + repo not listed', exemptUntil: pastIso, exemptRepos: ['/other'], expectAllow: false },
-    { desc: 'expired + list absent', exemptUntil: pastIso, exemptRepos: undefined, expectAllow: false },
+    { desc: 'expired + repo listed', exemptions: [{ repo: REPO, until: pastIso, reason: 'test' }], expectAllow: false },
+    { desc: 'expired + repo not listed', exemptions: [{ repo: '/other', until: pastIso, reason: 'test' }], expectAllow: false },
     
-    { desc: 'absent + repo listed', exemptUntil: undefined, exemptRepos: [REPO], expectAllow: false },
-    { desc: 'absent + repo not listed', exemptUntil: undefined, exemptRepos: ['/other'], expectAllow: false },
-    { desc: 'absent + list absent', exemptUntil: undefined, exemptRepos: undefined, expectAllow: false },
+    { desc: 'absent + repo listed (missing until)', exemptions: [{ repo: REPO, reason: 'test' }], expectAllow: false },
+
+    // TWO repos exempt AT ONCE with DIFFERENT expiries
+    { desc: 'A live + B live -> both allow (testing A)', exemptions: [{ repo: REPO, until: futureIso, reason: 'test' }, { repo: '/other', until: futureIso, reason: 'test' }], facts: facts(), expectAllow: true },
+    { desc: 'A live + B live -> both allow (testing B)', exemptions: [{ repo: REPO, until: futureIso, reason: 'test' }, { repo: '/other', until: futureIso, reason: 'test' }], facts: facts({ topLevel: '/other' }), expectAllow: true },
+    
+    { desc: 'A live + B expired -> A allows', exemptions: [{ repo: REPO, until: futureIso, reason: 'test' }, { repo: '/other', until: pastIso, reason: 'test' }], facts: facts(), expectAllow: true },
+    { desc: 'A live + B expired -> B denies', exemptions: [{ repo: REPO, until: futureIso, reason: 'test' }, { repo: '/other', until: pastIso, reason: 'test' }], facts: facts({ topLevel: '/other' }), expectAllow: false },
+
+    // fail-closed cases
+    { desc: 'until absent/empty', exemptions: [{ repo: REPO, until: '', reason: 'test' }], expectAllow: false },
+    { desc: 'until unparseable', exemptions: [{ repo: REPO, until: 'not-a-date', reason: 'test' }], expectAllow: false },
+    { desc: 'repo absent/empty', exemptions: [{ repo: '', until: futureIso, reason: 'test' }], expectAllow: false },
+
+    // topLevelAlias coverage
+    { desc: 'repo matches topLevelAlias', exemptions: [{ repo: '/private/tmp/repo', until: futureIso, reason: 'test' }], facts: facts({ topLevel: '/tmp/repo', topLevelAlias: '/private/tmp/repo' }), expectAllow: true },
+    { desc: 'repo matches topLevel (alias exists)', exemptions: [{ repo: '/tmp/repo', until: futureIso, reason: 'test' }], facts: facts({ topLevel: '/tmp/repo', topLevelAlias: '/private/tmp/repo' }), expectAllow: true },
   ];
   
   for (const c of combinations) {
     const testDoc = doc({
-      ...(c.exemptUntil !== undefined ? { exemptUntil: c.exemptUntil } : {}),
-      ...(c.exemptRepos !== undefined ? { exemptRepos: c.exemptRepos } : {})
+      ...(c.exemptions !== undefined ? { exemptions: c.exemptions } : {})
     });
     
-    const result = decideWorktreeGate(facts(), pendingEdit, testDoc, now);
+    const f = c.facts || facts();
+    const result = decideWorktreeGate(f, pendingEdit, testDoc, now);
     assert.equal(result.allow, c.expectAllow, `exemption composite: ${c.desc}`);
   }
 
-  const malformedDoc = doc({ exemptUntil: 'not-a-date', exemptRepos: [REPO] });
+  const malformedDoc = doc({ exemptions: [{ repo: REPO, until: 'not-a-date', reason: 'test' }] });
   assert.equal(decideWorktreeGate(facts(), pendingEdit, malformedDoc, now).allow, false, 'exemption composite: malformed exemptUntil should DENY');
 })
 

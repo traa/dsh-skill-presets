@@ -496,21 +496,24 @@ export class SkillPresetsService {
    * it is scoped to one repository, it carries a reason, and it dies on its
    * own, so "just this once" cannot quietly become the permanent state.
    *
-   * EACH GRANT REPLACES THE PREVIOUS ONE — SO ONLY ONE REPOSITORY CAN BE
-   * EXEMPT AT A TIME. Exempting repo B REVOKES an existing exemption on repo
-   * A. There is no way to hold two at once through this method; do not expect
-   * one.
+   * APPENDS A RECORD; OTHER REPOSITORIES' LIVE GRANTS SURVIVE. Each grant is
+   * one `{ repo, until, reason }` record with its own clock, so exempting repo
+   * B no longer revokes repo A. It used to: scope and lifetime lived in a
+   * document-level `exemptRepos` + `exemptUntil` pair that could express only
+   * one expiry for the whole list, which forced every new grant to REPLACE the
+   * list — appending under one shared clock would have reset it and resurrected
+   * every earlier repo's already-expired exemption. Per-record expiry is what
+   * makes appending correct, and removes the old "only one repository can be
+   * exempt at a time" limit entirely.
    *
-   * That is forced by the schema, not chosen: `PracticesDoc` carries a single
-   * `exemptUntil` timestamp for the whole `exemptRepos` list, so the list
-   * cannot express per-grant lifetimes. Appending would therefore have been
-   * worse than replacing — every new grant would silently reset the shared
-   * clock and resurrect every earlier repo's EXPIRED exemption. Given one
-   * clock, replacing is the only form that keeps "expiring" true.
-   *
-   * The honest model is a list of `{ repo, until, reason }` records, which
-   * would let grants coexist and expire independently. That is a follow-up: it
-   * changes `PracticesDoc`, which this PR treats as frozen.
+   * TWO KINDS OF RECORD ARE DROPPED ON THE WAY IN, and neither is a revocation
+   * of anything still meaningful:
+   * - an existing grant for THIS repo, because this call supersedes it (a
+   *   re-exemption is an extension, not a second entry, and two live records
+   *   for one repo would make the audit trail ambiguous about which reason was
+   *   in force);
+   * - any record already expired at `now`, as garbage collection — expired
+   *   records authorise nothing, and without this the file grows forever.
    *
    * @param repo - repository top level the exemption covers.
    * @param hours - lifetime; the exemption is dead after it elapses.
@@ -519,11 +522,23 @@ export class SkillPresetsService {
    */
   async exemptWorktree(repo: string, hours: number, reason: string): Promise<PracticesDoc> {
     const doc = await this.practices()
-    const until = new Date(this.now().getTime() + hours * 3_600_000).toISOString()
-    const replaced = (doc.exemptRepos ?? []).filter(r => r !== repo)
-    if (replaced.length > 0) this.log(`worktree exemption replaced for ${replaced.join(', ')}`)
+    const now = this.now().getTime()
+    const until = new Date(now + hours * 3_600_000).toISOString()
+    const existing = doc.exemptions ?? []
+    const superseded = existing.filter(e => e.repo === repo)
+    const kept = existing.filter((e) => {
+      if (e.repo === repo) return false
+      const expires = Date.parse(e.until)
+      // An unparseable expiry is not kept: it can never authorise anything
+      // (`exemptionLive` fails closed on it), so carrying it forward would only
+      // preserve a record that looks like a grant and is not one.
+      return Number.isFinite(expires) && expires > now
+    })
+    const dropped = existing.length - kept.length - superseded.length
+    if (superseded.length > 0) this.log(`worktree exemption superseded for ${repo}`)
+    if (dropped > 0) this.log(`worktree exemptions expired, dropped ${dropped}`)
     this.log(`worktree exemption for ${repo} until ${until}: ${reason}`)
-    return await this.savePractices({ ...doc, exemptRepos: [repo], exemptUntil: until })
+    return await this.savePractices({ ...doc, exemptions: [...kept, { repo, until, reason }] })
   }
 
   async savePractices(doc: PracticesDoc): Promise<PracticesDoc> {

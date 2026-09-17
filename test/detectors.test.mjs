@@ -141,7 +141,7 @@ test('conductor: a command mixing plumbing with real mutation is not pure plumbi
   assert.equal(selfMutation(r).length, 1)
 })
 
-test('isVcsPlumbing classifies commit/push/PR plumbing apart from working-tree writes', { skip: typeof detectors.isVcsPlumbing === 'function' ? false : 'detectors.js exports no isVcsPlumbing' }, () => {
+test('isVcsPlumbing classifies commit/push/PR plumbing apart from working-tree writes', () => {
   const { isVcsPlumbing } = detectors
   for (const command of ['git add -A', 'git commit -m "msg"', 'git push -u origin br', 'gh pr create --title x', "git commit -F - <<'EOF'\nsubject\nEOF"]) {
     assert.equal(isVcsPlumbing(command), true, command)
@@ -149,6 +149,76 @@ test('isVcsPlumbing classifies commit/push/PR plumbing apart from working-tree w
   for (const command of ['git checkout -- src/a.ts', 'git restore src/a.ts', 'git apply patch.diff', 'git stash pop', 'git revert HEAD', 'git cherry-pick abc', 'git merge other', 'git rebase main', 'git add -A && npm run build && rm -rf dist']) {
     assert.equal(isVcsPlumbing(command), false, command)
   }
+})
+
+test('isVcsPlumbing: pipe fixes and regressions', () => {
+  const { isVcsPlumbing } = detectors
+
+  // GROUP A — disqualified: launders a real mutation past the check
+  assert.equal(isVcsPlumbing('git push | sed -i.bak s/a/b/ src/x.ts'), false, 'attached short-flag value')
+  assert.equal(isVcsPlumbing('git push | sed -ibak s/a/b/ x.ts'), false, 'no separator')
+  assert.equal(isVcsPlumbing('git push | sed -ni.bak s/a/b/ x.ts'), false, 'CLUSTERED short flags')
+  assert.equal(isVcsPlumbing('git push | sort -oout.txt'), false, 'attached -o value')
+  assert.equal(isVcsPlumbing('git push | sed -n \'w out.txt\''), false, 'standalone w command')
+  assert.equal(isVcsPlumbing('git push | sed \'1,5w out.txt\''), false, 'w after an address')
+  assert.equal(isVcsPlumbing('git push | sed \'s/a/b/wout.txt\''), false, 's///w flag, no space')
+  assert.equal(isVcsPlumbing('git push | uniq - out.txt'), false, '\'-\' is stdin; out.txt is the write target')
+  assert.equal(isVcsPlumbing('git push | awk \'BEGIN{system("touch o.txt")}\''), false, 'awk removed from the allow-list')
+  assert.equal(isVcsPlumbing('git push | less'), false, 'less executes from argv, and -o writes')
+  assert.equal(isVcsPlumbing('git push | rg --pre ./x.sh foo'), false, 'names an external program')
+  assert.equal(isVcsPlumbing('git push | sort --compress-program ./x.sh'), false, 'same')
+  assert.equal(isVcsPlumbing('git push | sed -f script.sed x.txt'), false, 'script contents are invisible')
+
+  // GROUP B — stay read-only: the false positive that must not return
+  assert.equal(isVcsPlumbing('git push -u origin feat/x 2>&1 | tail -4'), true, 'pipe into pager must not defeat plumbing exclusion')
+  assert.equal(isVcsPlumbing('cd /repo && git commit -q -m x | tail -1'), true, 'pipe into pager must not defeat plumbing exclusion (commit)')
+  assert.equal(isVcsPlumbing('git push | grep -i error'), true, 'THE POOLED-FLAG TRAP: for grep, -i is ignore-case')
+  assert.equal(isVcsPlumbing('git push | grep -o pattern'), true, 'and -o is only-matching, NOT an output file')
+  assert.equal(isVcsPlumbing('git log | sed \'s/warn/W/\''), true, 'a \'w\' in payload text is not a w COMMAND')
+  assert.equal(isVcsPlumbing('git status | sed -n 1p'), true, 'status with sed')
+  assert.equal(isVcsPlumbing('git log | head -5'), true, 'log with head')
+  assert.equal(isVcsPlumbing('git log | wc -l'), true, 'log with wc')
+  assert.equal(isVcsPlumbing('git log --oneline | sort | uniq'), true, 'multiple safe filters')
+
+  // GROUP C — must still be FLAGGED as conductor self-mutation
+  const assertSelfMutation = (command, msg) => {
+    const r = detectConductor(conducted([bash(command, undefined, 2)]))
+    assert.equal(r.status, 'red', msg)
+    assert.equal(selfMutation(r).length, 1, msg)
+  }
+  assertSelfMutation('sed -i s/a/b/ src/x.ts | tail -1', 'sed -i in pipe must not be laundered')
+  assertSelfMutation('git commit -m x && rm -rf build | tail -1', 'rm in segment must not be laundered')
+  assertSelfMutation('git push | tee log.txt', 'tee is not a read-only consumer')
+  assertSelfMutation('git log > out.txt', 'redirection to file is not plumbing')
+  assertSelfMutation('git log | tail > out.txt', 'redirection to file after pipe is not plumbing')
+  
+  // It pins the BOUNDARY of redirectsToFile in src/host/practices/detectors.ts.
+  // A redirect to /dev/null writes nothing and must stay plumbing; a redirect to a real path must disqualify.
+  // The two surviving cases only pin the disqualifying side. Without this one, someone simplifying 
+  // redirectsToFile to treat every >/2> as a file write would keep the suite green while resurrecting 
+  // the original false positive: a git command harmlessly silencing stderr (git push … 2>&1 | tail -4 is 
+  // exactly the shape this whole branch fixed) would again be reported as the conductor editing files.
+  assert.equal(isVcsPlumbing('git log 2>/dev/null'), true, 'redirection to /dev/null is still plumbing')
+  
+  for (const command of [
+    'git restore -- p',
+    'git apply p.patch',
+    'git checkout -- p',
+    'git stash pop',
+    'git revert x',
+    'git cherry-pick x',
+    'git merge x',
+    'git rebase main',
+  ]) {
+    assertSelfMutation(command, `working-tree subcommand ${command}`)
+    assertSelfMutation(`${command} | tail -1`, `working-tree subcommand ${command} piped`)
+  }
+
+  // GROUP D — chain with no VCS invocation must not become plumbing
+  assert.equal(isVcsPlumbing('ls | tail'), false, 'chain with no VCS invocation')
+
+  // KNOWN (Issue #19): isMutatingCommand decides on the FIRST segment only.
+  // git ls-files | xargs rm and git log | sed -i.bak s/a/b/ x.ts currently report NO mutation.
 })
 
 // --- RULE 2: never assert a false location.
