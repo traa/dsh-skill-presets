@@ -407,9 +407,9 @@ async function main(): Promise<number> {
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',
         '  check <practice> [--cwd d] [--json] [--hook <dialect>]   replay one detector; exit 2 when red AND hard',
-        '  exempt worktree [--repo p] [--hours N] --reason <text>   time-boxed, recorded override of the worktree hard gate',
-        '  exempt list                                              every exemption on record, live or expired',
-        '  exempt revoke --repo <path>                              end a repository\'s exemption now',
+        '  exempt worktree [--repo <path>] [--hours N] --reason <text>   time-boxed, recorded override of the worktree hard gate',
+        '  exempt list                                                   every exemption on record, live or expired',
+        '  exempt revoke --repo <path>                                   end a repository\'s exemption now; exit 1 if no grant matched',
       ].join('\n'))
       return command === undefined ? 0 : 2
   }

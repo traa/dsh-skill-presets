@@ -1,8 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import os from 'node:os'
+import { exec } from 'node:child_process'
+import { promisify } from 'node:util'
+
 import { validatePractices } from '../lib/host/store.js'
 import { defaultPractices } from '../lib/host/curated.js'
 import { SkillPresetsService } from '../lib/host/service.js'
+import { decideWorktreeGate } from '../lib/host/practices/gate.js'
+
+const execAsync = promisify(exec)
 
 test('store: validatePractices migrates legacy exemptRepos/exemptUntil to exemptions array', () => {
   const now = Date.now();
@@ -25,7 +34,7 @@ test('store: validatePractices migrates legacy exemptRepos/exemptUntil to exempt
   assert.equal(migrated.exemptions[0].reason, '(migrated from legacy exemption)');
 })
 
-test('store: validatePractices does not migrate already-expired legacy grants', () => {
+test('store: validatePractices losslessly migrates expired legacy grants without resurrecting them', () => {
   const now = Date.now();
   const pastIso = new Date(now - 100000).toISOString();
   
@@ -35,17 +44,22 @@ test('store: validatePractices does not migrate already-expired legacy grants', 
     exemptUntil: pastIso
   };
 
-  // Wait, wait... the brief says:
-  // "a legacy doc whose expiry already passed does not produce a LIVE grant"
-  // Does validatePractices take `now` as an argument? Let me check validatePractices signature.
-  // Oh, `validatePractices(raw, fallback)`. It doesn't take `now`.
-  // Wait, Date.parse() against Date.now() inside validatePractices? That is impure!
-  // If it's impure, I can just use Date.now() + offset.
-  // Let's assert it produces NO grant or an expired grant. The brief says "does not produce a LIVE grant". If it drops it, `exemptions` should be undefined or empty.
-
+  // The store migration must remain pure and lossless, keeping the expired timestamp.
+  // The gate decision must then read this past timestamp against an injected `now` and correctly deny the mutating operation.
   const migrated = validatePractices(legacyDoc, defaultPractices);
-  const hasLiveGrant = migrated.exemptions?.some(e => Date.parse(e.until) > Date.now());
-  assert.equal(hasLiveGrant, false, 'should not produce a live grant from an expired legacy exemption');
+  assert.equal(Array.isArray(migrated.exemptions), true, 'should create exemptions array');
+  assert.equal(migrated.exemptions.length, 1, 'should migrate the expired grant');
+  assert.equal(migrated.exemptions[0].until, pastIso, 'should losslessly preserve the legacy expiry in the past');
+
+  const pendingEdit = { name: 'edit', filePath: 'src/x.ts' };
+  const gitFacts = {
+    inRepo: true, gitAvailable: true, isWorktree: false, branch: 'main', ahead: 0,
+    hasUpstream: true, dirty: false, ghAvailable: true, topLevel: '/my/repo',
+    artifacts: [], instructionFiles: [], readAt: 'r'
+  };
+
+  const decision = decideWorktreeGate(gitFacts, pendingEdit, migrated, now);
+  assert.equal(decision.allow, false, 'the migrated already-expired grant should NOT open the gate');
 })
 
 test('store: validatePractices round-trips new exemptions without losing them', () => {
@@ -115,12 +129,6 @@ test('service: exemptWorktree appends, drops same repos prior grant, and drops e
   assert.equal(myGrant.until, expectedUntil, 'should calculate until correctly from hours');
 })
 
-import fs from 'node:fs/promises'
-import path from 'node:path'
-import os from 'node:os'
-import { exec } from 'node:child_process'
-import { promisify } from 'node:util'
-const execAsync = promisify(exec)
 
 test('cli: exempt list and exempt revoke', async () => {
   const tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-test-'))
