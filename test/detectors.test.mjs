@@ -52,6 +52,40 @@ test('mutating command classifier', () => {
   }
 })
 
+test('xargs operand parsing: a flag value is never the operand command', () => {
+  const mutating = [
+    'xargs --replace rm',
+    'xargs --eof rm',
+    'xargs --max-lines rm',
+    'git ls-files | xargs -J % rm %',
+    'xargs -R 5 rm',
+    'xargs rm',
+    'xargs -0 rm',
+    'xargs -n1 rm -f',
+    'xargs -i rm {}',
+    'xargs -I{} mv {} /tmp'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  // `mutatesFiles` wraps `isMutatingCommand` and feeds `decideWorktreeGate` (src/host/practices/gate.ts line 149),
+  // which DENIES tool calls — so a false positive here blocks a real user's session rather than merely making a panel noisy.
+  const readOnly = [
+    'xargs -J rm echo',
+    'xargs -R rm cat',
+    'git ls-files | xargs cat',
+    'git ls-files | xargs'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+
+  // Known-deferred — tracked in https://github.com/traa/dsh-skill-presets/issues/21
+  // 'sed --in-place s/a/b/ x.ts', 'git log | sed -ni s/a/b/ x.ts', '/bin/rm -rf foo',
+  // 'xargs /bin/rm', 'git -C /wt commit -m x', 'xargs -I"" rm', 'xargs -d"" rm'
+})
+
 test('pull-request: green from gh pr create, a PR URL from any forge, or facts.pr; red at end when ahead without a PR', () => {
   assert.equal(detectPullRequest({ ...base, calls: [edit(), bash('gh pr create --fill', 'https://github.com/o/r/pull/12')] , facts: facts() }).status, 'green')
   assert.match(detectPullRequest({ ...base, calls: [edit(), bash('glab mr create', 'https://gitlab.com/g/p/-/merge_requests/3')], facts: facts() }).evidence[0], /merge_requests\/3/)

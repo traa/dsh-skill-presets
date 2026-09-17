@@ -179,15 +179,33 @@ const MUTATING_SEGMENT = /^(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merg
  * `xargs` flags that consume the NEXT token as their value, so the token after
  * them is an argument and not the operand command.
  *
- * Only flags whose argument is MANDATORY are listed. GNU's `-i`/`-e` take an
- * OPTIONAL attached argument (`-i{}`, `-e_end_`), so `xargs -i rm {}` really
- * does have `rm` as its operand; treating them as value-taking would swallow
- * the `rm` and miss the mutation. `-0`, `-r`, `-t`, `-p`, `-x` take nothing.
+ * ONE RULE GOVERNS BOTH LISTS: a flag belongs here only when its argument is
+ * MANDATORY and SEPARATE. A flag whose argument is OPTIONAL carries it
+ * ATTACHED (`-i{}`, `--replace=X`), because that is the only spelling an
+ * optional argument has — so a BARE occurrence consumes nothing and the very
+ * next token is the operand command. Listing one of those swallows the
+ * operand: `xargs --replace rm` would read as no command at all and the `rm`
+ * would go unreported.
+ *
+ * So `-i`/`-e`/`-l` are OUT, and review found their GNU long forms
+ * `--replace`/`--eof`/`--max-lines` had been left IN, contradicting this very
+ * comment; they are now out too. `-0`, `-r`, `-t`, `-p`, `-x` take nothing.
+ *
+ * BSD/macOS `-J`, `-R` and `-S` are here because their arguments are
+ * mandatory and separate (`-J %`, `-R 5`, `-S 4096`). Omitting them was worse
+ * than a miss: `xargs -J rm echo` stopped at the flag's value and read
+ * `rm echo` as the operand, reporting a read-only `echo` as a mutation on the
+ * path that DENIES tool calls. Adding a flag here fixes a false positive and a
+ * false negative at once — `xargs -J % rm %` now reports the `rm`.
+ *
+ * The long list omits `--null`, `--no-run-if-empty`, `--verbose`,
+ * `--interactive` and `--exit` for the same reason as their short forms: they
+ * take no argument.
  */
-const XARGS_VALUE_FLAGS = new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s'])
+const XARGS_VALUE_FLAGS = new Set(['-a', '-d', '-E', '-I', '-J', '-L', '-n', '-P', '-R', '-s', '-S'])
 const XARGS_LONG_VALUE_FLAGS = new Set([
-  '--arg-file', '--delimiter', '--eof', '--replace', '--max-lines',
-  '--max-args', '--max-procs', '--max-chars', '--process-slot-var',
+  '--arg-file', '--delimiter', '--max-args', '--max-procs', '--max-chars',
+  '--process-slot-var',
 ])
 
 /**
