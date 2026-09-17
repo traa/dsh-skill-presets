@@ -81,9 +81,37 @@ test('xargs operand parsing: a flag value is never the operand command', () => {
     assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
   }
 
-  // Known-deferred — tracked in https://github.com/traa/dsh-skill-presets/issues/21
-  // 'sed --in-place s/a/b/ x.ts', 'git log | sed -ni s/a/b/ x.ts', '/bin/rm -rf foo',
-  // 'xargs /bin/rm', 'git -C /wt commit -m x', 'xargs -I"" rm', 'xargs -d"" rm'
+})
+
+test('mutating classifier: a command is recognised by its normalised name, not its spelling', () => {
+  // RULE: a command must be recognised by its NORMALISED name (basename, past git global flags, across flag spellings),
+  // because /bin/rm and rm are the same command, while a flag's VALUE (-J rm) is never a command at all.
+
+  const mutating = [
+    'sed --in-place s/a/b/ x.ts',
+    'git log | sed -ni s/a/b/ x.ts',
+    '/bin/rm -rf foo',
+    'xargs /bin/rm',
+    'git -C /wt commit -m x',
+    'xargs -I"" rm',
+    'xargs -d"" rm'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'git -C /wt status',
+    'git -C /wt log',
+    'xargs -J rm echo',
+    'xargs -R rm cat',
+    'xargs -J % echo %',
+    'git ls-files | xargs cat',
+    'gh issue comment -b "done; rm -rf tmp"'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
 })
 
 test('pull-request: green from gh pr create, a PR URL from any forge, or facts.pr; red at end when ahead without a PR', () => {

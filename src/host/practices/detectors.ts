@@ -162,18 +162,131 @@ export function redirectsToFile(command: string): boolean {
 const READONLY_SEGMENT = /^(?:git\s+(?:status|log|diff|show|branch(?:\s+--show-current|\s+-a|\s+-r|\s*$)|rev-parse|remote\s+-v|worktree\s+list)|ls|cat|head|tail|grep|rg|find|pwd|echo|which|node\s+-e|npm\s+(?:test|run\s+\w+|ls)|pnpm\s+(?:test|run\s+\w+))\b/u
 
 /**
- * Segment shapes that WRITE.
+ * Commands whose NAME alone is a write, wherever they live on PATH.
  *
- * Anchored at `^` only, because `shellSegments` has already cut the command on
- * `;`, `&&`, `||` and `|` — and it does so QUOTE-AWARE, which the old
- * `(?:^|[;&|]\s*)` alternative was not: that one matched a separator inside a
- * commit message, so `gh issue comment -b "done; rm -rf tmp"` read as a write.
- *
- * No `>`/`>>` alternative here: redirection is decided ONCE for the whole
- * command by `redirectsToFile`. Repeating it raw would re-admit
- * `cmd; ls 2>/dev/null`, whose redirection writes nothing.
+ * Membership is tested against the segment's NORMALISED leading token
+ * (`parts[0].split('/').pop()`), never against raw segment text — see
+ * `segmentWrites` for why that distinction is the whole of Issue #21.
  */
-const MUTATING_SEGMENT = /^(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u
+const MUTATING_TOOLS = new Set(['rm', 'mv', 'cp', 'mkdir', 'touch', 'tee'])
+
+/**
+ * Dependency managers and the subcommands of theirs that install or remove.
+ *
+ * Keyed BY TOOL for the same reason as `FILTER_WRITE_FLAGS`: `install` writes
+ * under `npm` and `pip`, while `pnpm remove` and `npm uninstall` are the same
+ * act spelled differently. The subcommand is the first NON-FLAG argument, so
+ * `npm --prefix /tmp install x` is still an install.
+ */
+const PACKAGE_WRITE_SUBS: Record<string, readonly string[]> = {
+  npm: ['install', 'i', 'uninstall'],
+  pnpm: ['add', 'install', 'remove'],
+  yarn: ['add'],
+  cargo: ['add'],
+  // `pip` and `pip3` are one tool under two names, and `PACKAGE_TOOLS` already
+  // lists both — the regex this replaced knew only `pip`, which is the same
+  // one-half-of-the-file blindness as `/bin/rm`.
+  pip: ['install'],
+  pip3: ['install'],
+}
+
+/** `git` subcommands that record history or rewrite the working tree. */
+const GIT_MUTATING_SUBS = new Set([
+  'add', 'commit', 'merge', 'rebase', 'reset', 'rm', 'mv', 'stash', 'apply',
+  'cherry-pick', 'push',
+])
+
+/** Whether a `git` subcommand, already peeled past global flags, writes. */
+function gitSubcommandWrites(sub: string, rest: readonly string[]): boolean {
+  if (GIT_MUTATING_SUBS.has(sub)) return true
+  // Only the branch-CREATING forms; a plain `checkout`/`switch` moves HEAD and
+  // is classified by `writesWorkingTree` for the callers that care.
+  if (sub === 'checkout') return rest.includes('-b')
+  if (sub === 'switch') return rest.includes('-c')
+  return false
+}
+
+/**
+ * Whether a `sed` invocation edits a file rather than filtering stdin.
+ *
+ * Uses the SAME `SED_IN_PLACE_FLAGS` + `hasFlag` pair as the exclusion side, so
+ * `--in-place`, `-i.bak`, `-ibak` and the clustered `-ni.bak` all land on one
+ * verdict; the literal `sed\s+-i` this replaced saw only the first of those.
+ *
+ * `-f`/`--file` is deliberately NOT read as a write here even though
+ * `FILTER_WRITE_FLAGS` lists it: there it means "the script is INVISIBLE, do
+ * not suppress a report", which is the fail-closed direction. On THIS side a
+ * verdict DENIES a tool call, so an unreadable script is not evidence of a
+ * write — and its presence instead means the first positional argument is an
+ * input file rather than the program, which is what `program` below encodes.
+ */
+function sedWrites(args: readonly string[]): boolean {
+  if (args.some(a => SED_IN_PLACE_FLAGS.some(f => hasFlag(a, f)))) return true
+  const scripts: string[] = []
+  let fromFile = false
+  let sawExpression = false
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (hasFlag(arg, '-f') || hasFlag(arg, '--file')) { fromFile = true; continue }
+    if (arg === '-e' || arg === '--expression') {
+      const value = args[i + 1]
+      if (value !== undefined) { scripts.push(value); sawExpression = true; i += 1 }
+      continue
+    }
+    if (arg.startsWith('--expression=') || (arg.startsWith('-e') && arg.length > 2)) {
+      scripts.push(arg)
+      sawExpression = true
+    }
+  }
+  // With no `-e` and no `-f`, sed takes its PROGRAM from the first positional
+  // argument; with either, every positional is an input FILE. Getting this
+  // wrong is how `sed -f clean.sed w.ts` would read a filename as a program.
+  if (!sawExpression && !fromFile) {
+    const first = args.find(a => !a.startsWith('-'))
+    if (first !== undefined) scripts.push(first)
+  }
+  return scripts.some(sedProgramWrites)
+}
+
+/**
+ * Whether ONE segment's own command writes, judged from its NORMALISED name.
+ *
+ * THIS IS THE ISSUE #21 FIX. The regex this replaced matched RAW segment text,
+ * while `vcsParts`, `attributesLocation`, `isReadOnlyFilter` and `xargsOperand`
+ * all normalise with `parts[0].split('/').pop()` — so one half of this file
+ * understood `/bin/rm -rf foo` and `git -C /wt commit` and the other half did
+ * not, and the half that reports mutations was the blind one. Classifying from
+ * the same normalised token everywhere closes that asymmetry, and it widens by
+ * RECOGNISING a command already named as a writer, never by loosening an
+ * anchor: `/bin/rm`, `/usr/bin/rm` and a bare `rm` are one command.
+ *
+ * It also makes `xargs /bin/rm` work for free — `xargsOperand` hands its
+ * operand string back through `segmentMutates`, which arrives here.
+ *
+ * No `>`/`>>` test here: redirection is decided ONCE for the whole command by
+ * `redirectsToFile`. Repeating it would re-admit `cmd; ls 2>/dev/null`, whose
+ * redirection writes nothing. Segment splitting is QUOTE-AWARE upstream, which
+ * is what keeps `gh issue comment -b "done; rm -rf tmp"` a single read-only
+ * segment rather than a hidden `rm`.
+ */
+function segmentWrites(segment: string): boolean {
+  const parts = tokens(segment)
+  const lead = parts[0]?.split('/').pop()
+  if (lead === undefined || lead.length === 0) return false
+  if (MUTATING_TOOLS.has(lead)) return true
+  if (lead === 'sed') return sedWrites(parts.slice(1))
+  const packageSubs = PACKAGE_WRITE_SUBS[lead]
+  if (packageSubs !== undefined) {
+    const sub = parts.slice(1).find(a => !a.startsWith('-'))
+    return sub !== undefined && packageSubs.includes(sub)
+  }
+  // `vcsParts` already knows how to skip `-C /wt`, `-c k=v`, `--git-dir …` to
+  // reach the real subcommand, so `git -C /wt commit` is seen as `git commit`
+  // while `git -C /wt status` and `git -C /wt log` stay read-only.
+  const vcs = vcsParts(segment)
+  if (vcs?.tool !== 'git' || vcs.sub === undefined) return false
+  return gitSubcommandWrites(vcs.sub, vcs.rest)
+}
 
 /**
  * `xargs` flags that consume the NEXT token as their value, so the token after
@@ -227,8 +340,14 @@ const XARGS_LONG_VALUE_FLAGS = new Set([
  * false positives in a function that DENIES tool calls.
  */
 function xargsOperand(segment: string): string | undefined {
-  const parts = tokens(segment)
-  if (parts[0]?.split('/').pop() !== 'xargs') return undefined
+  // The flag walk reads RAW tokens: `tokens()` strips quotes, and `-I""` then
+  // collapses to a bare `-I` that swallows the following `rm` as its value —
+  // `xargs -I"" rm` and `xargs -d"" rm` both reported no mutation at all
+  // (Issue #21). An ATTACHED value, even an empty one, means the flag consumes
+  // nothing more, and only the quote still says so. Quotes are stripped when
+  // the operand is BUILT, below, so `tokens()`'s own contract is untouched.
+  const parts = rawTokens(segment)
+  if (stripQuotes(parts[0] ?? '').split('/').pop() !== 'xargs') return undefined
   let i = 1
   while (i < parts.length) {
     const token = parts[i]
@@ -239,10 +358,10 @@ function xargsOperand(segment: string): string | undefined {
       continue
     }
     // A short flag longer than two characters carries its value attached
-    // (`-n1`, `-I{}`, `-d\n`), so it consumes nothing further.
+    // (`-n1`, `-I{}`, `-d\n`, `-I""`), so it consumes nothing further.
     i += token.length === 2 && XARGS_VALUE_FLAGS.has(token) ? 2 : 1
   }
-  const operand = parts.slice(i).join(' ')
+  const operand = parts.slice(i).map(stripQuotes).join(' ')
   return operand.length > 0 ? operand : undefined
 }
 
@@ -257,7 +376,7 @@ function segmentMutates(segment: string, depth = 0): boolean {
   if (READONLY_SEGMENT.test(segment)) return false
   const operand = xargsOperand(segment)
   if (operand !== undefined) return depth < 4 && segmentMutates(operand, depth + 1)
-  return MUTATING_SEGMENT.test(segment)
+  return segmentWrites(segment)
 }
 
 /**
@@ -273,8 +392,8 @@ function segmentMutates(segment: string, depth = 0): boolean {
  * so it is now skipped rather than being an early exit for the whole command.
  *
  * Redirection is still decided ONCE, for the whole command, by
- * `redirectsToFile` — see the comment on `MUTATING_SEGMENT` for why the
- * segment test must not carry a raw `>` alternative of its own.
+ * `redirectsToFile` — see the comment on `segmentWrites` for why the segment
+ * test must not carry a raw `>` alternative of its own.
  *
  * THE INVARIANT THAT SETS THE ERROR BUDGET, and it points both ways:
  * - As a RULE this fails OPEN. `mutatesFiles` wraps it and `decideWorktreeGate`
@@ -504,10 +623,23 @@ export function commandCwd(command: string, cwd: string | undefined): string | u
   return cwd !== undefined ? resolve(cwd, found) : undefined
 }
 
+/**
+ * Split a segment into tokens, honouring quotes but KEEPING them.
+ *
+ * Needed because a quote is sometimes the only remaining evidence of a token's
+ * shape: `-I""` and `-I` are the same 2 characters once quotes are gone, yet
+ * the first carries an (empty) attached value and consumes nothing while the
+ * second swallows the next token. See `xargsOperand`.
+ */
+function rawTokens(segment: string): string[] {
+  return segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
+}
+
+const stripQuotes = (token: string): string => token.replace(/["']/gu, '')
+
 /** Split a segment into tokens, honouring quotes and stripping them. */
 function tokens(segment: string): string[] {
-  const found = segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
-  return found.map(t => t.replace(/["']/gu, ''))
+  return rawTokens(segment).map(stripQuotes)
 }
 
 /** Version-control / forge CLIs whose history commands are the conductor's own job. */
@@ -563,8 +695,20 @@ const READONLY_FILTERS = new Set([
  * command line: an external sed script may hold `w out.txt`, and a preprocessor
  * is an arbitrary executable.
  */
+/**
+ * The `sed` flags that edit the INPUT FILE rather than stdout — the one part of
+ * `FILTER_WRITE_FLAGS.sed` that is positive evidence of a write.
+ *
+ * Named separately because BOTH sides of this file need it and they need
+ * different amounts of it: the exclusion below also distrusts `-f`/`--file`
+ * (an unreadable script must not suppress a report), while `sedWrites` may use
+ * only these — see its comment. `FILTER_WRITE_FLAGS.sed` is composed from this
+ * so the two can never drift into disagreeing about how `-i` is spelled.
+ */
+const SED_IN_PLACE_FLAGS = ['-i', '--in-place'] as const
+
 const FILTER_WRITE_FLAGS: Record<string, readonly string[]> = {
-  sed: ['-i', '--in-place', '-f', '--file'],
+  sed: [...SED_IN_PLACE_FLAGS, '-f', '--file'],
   sort: ['-o', '--output', '--compress-program'],
   uniq: ['-o'],
   rg: ['--pre', '--hostname-bin'],
