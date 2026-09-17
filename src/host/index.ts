@@ -37,12 +37,14 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { decideWorktreeGate, exemptionHint } from './practices/gate.ts'
+import { mutatesFiles } from './practices/detectors.ts'
 import { Rpc, optStr, str } from './rpc.ts'
 import { SkillPresetsService } from './service.ts'
 import { resolveWorkbenchFallback } from './store.ts'
 import { Telemetry, practiceDeltaAround } from './telemetry.ts'
 import { buildTools } from './tools.ts'
-import type { Overlay, PracticesDoc, Preset, SkillSource } from './types.ts'
+import type { Overlay, PendingCall, PracticesDoc, Preset, SkillSource } from './types.ts'
 
 /** Plugin config. Everything is optional; the store follows the workbench. */
 export interface Config {
@@ -73,6 +75,29 @@ interface AgentLike {
 function sessionOf(agent: AgentLike | undefined): { id?: string, agentPreset?: string } | undefined {
   if (agent?.session?.id === undefined) return undefined
   return { id: agent.session.id, ...(agent.session.header.agentPreset !== undefined ? { agentPreset: agent.session.header.agentPreset } : {}) }
+}
+
+/**
+ * Read one pending tool call into the tool-shape-neutral `PendingCall` the
+ * gates take.
+ *
+ * WHY A HELPER: the pre-execute handler used to reach into `arguments` three
+ * different ways in three different branches — `args.file_path` here,
+ * `args.path` there, `args.command` in a third — so whether a practice saw the
+ * path at all depended on which branch happened to read it. Tool arguments are
+ * a provider-shaped surface (`file_path` in one dialect, `path` in another);
+ * that mapping belongs in ONE place, stated once, or the gates quietly enforce
+ * different things.
+ */
+function pendingCallOf(name: string, args: Record<string, unknown>): PendingCall {
+  const filePath = typeof args.file_path === 'string' ? args.file_path
+    : typeof args.path === 'string' ? args.path
+      : undefined
+  return {
+    name,
+    ...(filePath !== undefined ? { filePath } : {}),
+    ...(typeof args.command === 'string' ? { command: args.command } : {}),
+  }
 }
 
 /** Whether `team_delegate` is visible to an agent — the seam that says "a team is attached". */
@@ -452,22 +477,38 @@ export function apply(ctx: Context, config: Config = {}): void {
     let doc: PracticesDoc
     try { doc = await service.practices() } catch { return await next() }
     const hard = new Set(doc.practices.filter(p => p.mode === 'hard').map(p => p.id))
-    if (hard.size === 0) return await next()
     const current = tracker.results(sessionId)
     const args = (typeof exec.arguments === 'object' && exec.arguments !== null ? exec.arguments : {}) as Record<string, unknown>
-    const mutating = ['write', 'edit', 'Write', 'Edit', 'multi_edit'].includes(exec.name)
-      || (['bash', 'Bash'].includes(exec.name) && typeof args.command === 'string' && /\b(?:rm|mv|cp|sed -i|>|git (?:commit|add|push|reset))\b/u.test(args.command))
+    const pending = pendingCallOf(exec.name, args)
+    // One definition of "mutating", shared with the detectors and the CLI. The
+    // ad-hoc regex that used to live here counted `ls > /dev/null` as a write
+    // and missed `npm install`.
+    const mutating = mutatesFiles(pending.name, pending.filePath ?? pending.command)
     const deny = (reason: string): { kind: 'deny', reason: string } => {
       telemetry.record(sessionId, { kind: 'denied', tool: exec.name, reason })
       return { kind: 'deny', reason }
     }
-    if (mutating && hard.has('worktree')) {
-      const r = current?.results.find(x => x.id === 'worktree')
-      const facts = current?.facts
-      if (facts?.inRepo === true && facts.isWorktree === false && facts.branch !== undefined && doc.protectedBranches.includes(facts.branch)) {
-        return deny(`practice "Work in a worktree" is enforced: you are on protected branch ${facts.branch} in the primary checkout. Load the \`worktree-first\` skill and create a worktree before editing.${r?.evidence[0] !== undefined ? ` (${r.evidence[0]})` : ''}`)
+    // The `worktree` gate answers from the shared pure decision, NOT from the
+    // tracker verdict. The tracker is retroactive by construction — it reports
+    // mutations already observed — so asking it whether to allow the NEXT call
+    // meant the gate could never fire on the first edit, which is the only one
+    // worth stopping. Its evidence is still quoted, as evidence, never as the
+    // decision. The mode check lives inside `decideWorktreeGate`, so this is
+    // deliberately not behind `hard.has('worktree')`.
+    const facts = current?.facts
+    if (facts !== undefined) {
+      const decision = decideWorktreeGate(facts, pending, doc)
+      if (!decision.allow) {
+        const evidence = current?.results.find(x => x.id === 'worktree')?.evidence[0]
+        return deny([
+          decision.reason,
+          decision.remedy !== undefined ? `Run: ${decision.remedy}` : undefined,
+          exemptionHint(),
+          evidence !== undefined ? `(tracker: ${evidence})` : undefined,
+        ].filter(part => part !== undefined).join(' '))
       }
     }
+    if (hard.size === 0) return await next()
     if (mutating && hard.has('conductor') && current?.teamAttached === true) {
       return deny('practice "Follow the conductor protocol" is enforced: a team is attached, so file changes belong to a teammate. Load the `conductor-protocol` skill and use `team_delegate`.')
     }
@@ -480,7 +521,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     if (hard.has('plan-drift') && ['write', 'edit', 'Write', 'Edit'].includes(exec.name)) {
       const r = current?.results.find(x => x.id === 'plan-drift')
-      const path = typeof args.file_path === 'string' ? args.file_path : typeof args.path === 'string' ? args.path : undefined
+      const path = pending.filePath
       if (r?.status === 'amber' && path !== undefined && !/(?:^|\/)(?:docs\/sdlc\/.*\.md|plan\.md)$/u.test(path)) {
         return deny(`practice "Keep plan.md in step with the diff" is enforced: ${r.evidence[0]}. Update plan.md first (skill \`sdlc-stage-handoff\`), then continue.`)
       }

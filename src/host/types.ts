@@ -135,6 +135,32 @@ export interface PracticesDoc {
   /** Stale-skill / missing-skill hint thresholds. */
   readonly pruning: { minSessions: number, maxLoadRate: number, minUnknown: number }
   readonly practices: readonly PracticeConfig[]
+  /** Repositories (by top-level path) exempt from the `worktree` hard gate. */
+  readonly exemptRepos?: readonly string[]
+  /** ISO timestamp; the exemption above expires after this instant. */
+  readonly exemptUntil?: string
+}
+
+/**
+ * The single pure decision for one gated tool call, shared by the CLI hook
+ * (`src/bin/cli.ts`) and the native `tools/pre-execute` gate
+ * (`src/host/index.ts`), so both paths enforce identically instead of via two
+ * separate constructions.
+ */
+export interface GateDecision {
+  readonly allow: boolean
+  readonly practice: PracticeId
+  /** Present iff allow === false. Human-readable, names the skill to load. */
+  readonly reason?: string
+  /** The literal shell command that resolves it, for the deny message. */
+  readonly remedy?: string
+}
+
+/** The tool call under evaluation by a gate decision function, tool-shape-neutral. */
+export interface PendingCall {
+  readonly name: string
+  readonly filePath?: string
+  readonly command?: string
 }
 
 /** How a preset became active for a session. */

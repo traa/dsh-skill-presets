@@ -11,7 +11,7 @@
  */
 
 import { dirname, isAbsolute } from 'node:path'
-import { commandCwd, type ObservedCall } from './detectors.ts'
+import { commandCwd, isBashTool, isWriteTool, type ObservedCall } from './detectors.ts'
 
 // `commandCwd` moved into `detectors.ts` — the detectors need it to decide
 // whether a bash mutation landed inside the checkout being judged, and they
@@ -19,8 +19,10 @@ import { commandCwd, type ObservedCall } from './detectors.ts'
 // so its existing callers keep their import site.
 export { commandCwd } from './detectors.ts'
 
-const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
-const BASH_TOOLS = new Set(['bash', 'Bash', 'shell', 'terminal'])
+// Tool-name membership comes from `detectors.ts`. This module used to keep its
+// OWN copy of both sets, so which tools counted as writes depended on which
+// module you asked — the work root could ignore a `MultiEdit` the detectors
+// counted. One normalised definition, imported.
 
 /** Extract a leading `cd <dir>` from a shell command, if present. */
 export function leadingCd(command: string): string | undefined {
@@ -36,10 +38,10 @@ export function leadingCd(command: string): string | undefined {
  */
 export function workRootOf(call: ObservedCall, cwd: string | undefined): string | undefined {
   if (call.target === undefined) return undefined
-  if (WRITE_TOOLS.has(call.name)) {
+  if (isWriteTool(call.name)) {
     return isAbsolute(call.target) ? dirname(call.target) : undefined
   }
-  if (BASH_TOOLS.has(call.name)) return commandCwd(call.target, cwd)
+  if (isBashTool(call.name)) return commandCwd(call.target, cwd)
   return undefined
 }
 

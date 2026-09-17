@@ -82,8 +82,38 @@ export function short(text: string, max = 120): string {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat
 }
 
-const WRITE_TOOLS = new Set(['write', 'edit', 'Write', 'Edit', 'multi_edit', 'MultiEdit', 'notebook_edit'])
-const BASH_TOOLS = new Set(['bash', 'Bash', 'shell', 'terminal'])
+/**
+ * Tool-name membership, matched on a NORMALISED name.
+ *
+ * Tool names arrive spelled differently depending on the path: the native
+ * `tools/pre-execute` seam passes the harness's own name (`MultiEdit`), while
+ * the hook bridge lowercases whatever the provider sent (`multiedit`). The
+ * first version of these sets listed spellings by hand — `'multi_edit'`,
+ * `'MultiEdit'`, `'notebook_edit'` — and the two paths then DISAGREED about
+ * MultiEdit and notebook_edit: the native gate denied and the CLI allowed,
+ * which is precisely the divergence `gate.ts` was written to eliminate,
+ * surviving one layer down inside the fix.
+ *
+ * So normalisation happens in ONE place and the sets hold one canonical
+ * spelling each: case is folded and `_` is dropped, which collapses
+ * snake_case and camelCase onto the same key and makes a future
+ * `notebook_edit`/`notebookEdit` pair impossible to get wrong. Adding a tool
+ * means adding ONE entry, spelled lowercase and without separators.
+ */
+const normalizeTool = (name: string): string => name.toLowerCase().replace(/[_-]/gu, '')
+
+const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'notebookedit'])
+const BASH_TOOLS = new Set(['bash', 'shell', 'terminal'])
+
+/** Whether a tool name is a file-writing tool, in any spelling. */
+export function isWriteTool(name: string | undefined): boolean {
+  return name !== undefined && WRITE_TOOLS.has(normalizeTool(name))
+}
+
+/** Whether a tool name is a shell tool, in any spelling. */
+export function isBashTool(name: string | undefined): boolean {
+  return name !== undefined && BASH_TOOLS.has(normalizeTool(name))
+}
 
 /**
  * Redirection targets that are not files: a file descriptor (`2>&1`, `>&2`)
@@ -164,8 +194,8 @@ const DIRECTORY_DIRECTIVE = /(?:^|[;&|]\s*)cd\s+\S|\s-C\s+\S|--cwd[=\s]\S|--dire
  * whenever a verdict is about a specific repository.
  */
 export function attributesLocation(call: ObservedCall): boolean {
-  if (WRITE_TOOLS.has(call.name)) return call.target !== undefined
-  if (!BASH_TOOLS.has(call.name) || call.target === undefined) return false
+  if (isWriteTool(call.name)) return call.target !== undefined
+  if (!isBashTool(call.name) || call.target === undefined) return false
   if (DIRECTORY_DIRECTIVE.test(call.target)) return true
   return !shellSegments(call.target).every((segment) => {
     const tool = tokens(segment)[0]?.split('/').pop()
@@ -187,11 +217,11 @@ export function attributesLocation(call: ObservedCall): boolean {
  */
 export function mutationLandedIn(call: ObservedCall, cwd: string | undefined): string | undefined {
   if (call.target === undefined) return undefined
-  if (WRITE_TOOLS.has(call.name)) {
+  if (isWriteTool(call.name)) {
     if (isAbsolute(call.target)) return dirname(call.target)
     return cwd !== undefined ? dirname(resolve(cwd, call.target)) : undefined
   }
-  if (!BASH_TOOLS.has(call.name)) return undefined
+  if (!isBashTool(call.name)) return undefined
   return commandCwd(call.target, cwd) ?? cwd
 }
 
@@ -242,11 +272,29 @@ export function tiedToCheckout(call: ObservedCall, roots: readonly (string | und
   return landed !== undefined && known.some(root => isInside(root, landed))
 }
 
+/**
+ * Whether a tool NAME plus its target mutates files. The tool-shape-neutral
+ * core of `isMutatingCall`.
+ *
+ * Split out because the `worktree` hard gate judges a call that has not run
+ * yet, so it has a name and an argument but no `ObservedCall` (no timestamp,
+ * no turn, no result). Both callers must agree on what "mutating" means — the
+ * gate denying an edit the detector would not have counted, or the reverse, is
+ * exactly the divergence `gate.ts` exists to remove — so the membership tests
+ * live here once and every caller funnels through them.
+ *
+ * Tolerates an undefined name: a malformed payload is not a mutation.
+ */
+export function mutatesFiles(name: string | undefined, target: string | undefined): boolean {
+  if (name === undefined) return false
+  if (isWriteTool(name)) return true
+  if (isBashTool(name)) return isMutatingCommand(target)
+  return false
+}
+
 /** Whether a call mutates files (write/edit, or a mutating bash command). */
 export function isMutatingCall(call: ObservedCall): boolean {
-  if (WRITE_TOOLS.has(call.name)) return true
-  if (BASH_TOOLS.has(call.name)) return isMutatingCommand(call.target)
-  return false
+  return mutatesFiles(call.name, call.target)
 }
 
 /**
@@ -483,10 +531,62 @@ export function refuseAssumedRoot(id: PracticeId, view: SessionView, claim: stri
   return result(id, 'n/a', [`no tool call named a path; not judging ${claim} in ${view.facts?.topLevel ?? 'the session directory'}`])
 }
 
+/**
+ * Marks an `n/a` verdict that reports EXPOSURE rather than irrelevance.
+ *
+ * The client tells an at-risk `n/a` from a quiet one by testing this prefix on
+ * the evidence, because `PracticeResult` carries no structural flag for it and
+ * that type is frozen.
+ *
+ * THIS DECLARATION IS THE SOURCE OF TRUTH, and `atRiskEvidence` below builds
+ * its line from it instead of repeating the literal — otherwise the coupling
+ * merely moves from the reader to the writer.
+ *
+ * The browser half does NOT import this. It keeps its own copy in
+ * `src/client/api.ts`, mirrored like every other host shape, because the
+ * client bundle takes nothing from `src/host/` at runtime; a test asserts the
+ * two literals are equal, so the mirror cannot drift silently. Do not
+ * "simplify" that into a direct import: it would work — the bundler drops the
+ * rest of this module, `node:path` included — right up until an unrelated
+ * top-level side effect here leaked a Node builtin into a browser artifact,
+ * and that failure would not announce itself.
+ */
+export const AT_RISK_PREFIX = 'at risk — '
+
+/**
+ * "Nothing judged yet" rendered as the same silent `n/a` as "nothing to
+ * report" is how a panel tells a user everything is fine right up to the
+ * moment their edit is denied.
+ *
+ * Status stays `n/a` — no violation HAS occurred, and claiming otherwise would
+ * make the practice lie in the other direction. Only the evidence changes: it
+ * names the exposure, so the state the gate is about to act on is visible
+ * BEFORE the denial rather than explained after it.
+ *
+ * Subject to `refuseAssumedRoot` like every other fact-derived line here: when
+ * no tool call ever named a path, these facts may describe a repository the
+ * session never opened, and "the next edit will be denied" about the wrong
+ * repository is precisely the confident-but-wrong claim that guard exists to
+ * prevent. The caller applies the guard first.
+ */
+function atRiskEvidence(facts: GitFacts | undefined, protectedBranches: readonly string[]): string | undefined {
+  if (facts === undefined || !facts.gitAvailable || !facts.inRepo) return undefined
+  if (facts.isWorktree !== false) return undefined
+  const branch = facts.branch
+  if (branch === undefined || !protectedBranches.includes(branch)) return undefined
+  return `${AT_RISK_PREFIX}on protected branch ${branch} in the primary checkout; the next edit will be denied`
+}
+
 export function detectWorktree(view: SessionView): PracticeResult {
   const facts = view.facts
   const mutating = view.calls.filter(isMutatingCall)
-  if (mutating.length === 0) return result('worktree', 'n/a', ['no file mutations yet'])
+  if (mutating.length === 0) {
+    // The assumed-root guard applies to the at-risk line too — it is a claim
+    // about a specific checkout. Without it the verdict stays the plain,
+    // truthful "nothing observed".
+    const risk = view.workRootAssumed === true ? undefined : atRiskEvidence(facts, view.protectedBranches)
+    return result('worktree', 'n/a', risk !== undefined ? ['no file mutations yet', risk] : ['no file mutations yet'])
+  }
   if (facts === undefined || !facts.gitAvailable) return result('worktree', 'amber', ['git facts unavailable'])
   if (!facts.inRepo) return result('worktree', 'n/a', ['cwd is not inside a git repository'])
   // Branch, worktree-ness and checkout identity all come from the work root,
@@ -527,7 +627,7 @@ export function detectWorktree(view: SessionView): PracticeResult {
 
 export function detectPullRequest(view: SessionView): PracticeResult {
   const facts = view.facts
-  const created = view.calls.find(call => BASH_TOOLS.has(call.name) && !call.isError && isPrCreateCommand(call.target))
+  const created = view.calls.find(call => isBashTool(call.name) && !call.isError && isPrCreateCommand(call.target))
   const url = view.calls.map(call => findPrUrl(call.resultHead)).find((u): u is string => u !== undefined)
     ?? (created !== undefined ? findPrUrl(created.resultHead) : undefined)
   // Call-derived evidence first, and it outranks `facts.pr`: a PR URL this
@@ -567,8 +667,8 @@ export function detectPullRequest(view: SessionView): PracticeResult {
  * `isMutatingCommand` does not list that subcommand.
  */
 export function isConductorSelfMutation(call: ObservedCall): boolean {
-  if (WRITE_TOOLS.has(call.name)) return true
-  if (!BASH_TOOLS.has(call.name)) return false
+  if (isWriteTool(call.name)) return true
+  if (!isBashTool(call.name)) return false
   if (writesWorkingTreeViaVcs(call.target)) return true
   return isMutatingCommand(call.target) && !isVcsPlumbing(call.target)
 }
@@ -657,7 +757,7 @@ export function detectArtifactChain(view: SessionView): PracticeResult {
 export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   if (view.activeStage !== 'build') return result('plan-before-code', 'n/a', ['applies in the Build stage'])
   const facts = view.facts
-  const first = view.calls.find(call => WRITE_TOOLS.has(call.name))
+  const first = view.calls.find(call => isWriteTool(call.name))
   if (first === undefined) return result('plan-before-code', 'n/a', ['no file edits yet'])
   if (facts === undefined || !facts.inRepo) return result('plan-before-code', 'n/a', ['not inside a git repository'])
   // "no plan.md in the repository" names a repository, and `facts.artifacts`

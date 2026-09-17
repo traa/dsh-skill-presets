@@ -487,6 +487,45 @@ export class SkillPresetsService {
     return applied
   }
 
+  /**
+   * Record an explicit, EXPIRING exemption from the `worktree` hard gate.
+   *
+   * A gate with no legitimate override is a gate the user turns off entirely
+   * the first time it is wrong about their situation — and a practice set to
+   * `off` never comes back on. This keeps the escape hatch inside the system:
+   * it is scoped to one repository, it carries a reason, and it dies on its
+   * own, so "just this once" cannot quietly become the permanent state.
+   *
+   * EACH GRANT REPLACES THE PREVIOUS ONE — SO ONLY ONE REPOSITORY CAN BE
+   * EXEMPT AT A TIME. Exempting repo B REVOKES an existing exemption on repo
+   * A. There is no way to hold two at once through this method; do not expect
+   * one.
+   *
+   * That is forced by the schema, not chosen: `PracticesDoc` carries a single
+   * `exemptUntil` timestamp for the whole `exemptRepos` list, so the list
+   * cannot express per-grant lifetimes. Appending would therefore have been
+   * worse than replacing — every new grant would silently reset the shared
+   * clock and resurrect every earlier repo's EXPIRED exemption. Given one
+   * clock, replacing is the only form that keeps "expiring" true.
+   *
+   * The honest model is a list of `{ repo, until, reason }` records, which
+   * would let grants coexist and expire independently. That is a follow-up: it
+   * changes `PracticesDoc`, which this PR treats as frozen.
+   *
+   * @param repo - repository top level the exemption covers.
+   * @param hours - lifetime; the exemption is dead after it elapses.
+   * @param reason - why, kept for the audit trail in the log.
+   * @returns the saved document.
+   */
+  async exemptWorktree(repo: string, hours: number, reason: string): Promise<PracticesDoc> {
+    const doc = await this.practices()
+    const until = new Date(this.now().getTime() + hours * 3_600_000).toISOString()
+    const replaced = (doc.exemptRepos ?? []).filter(r => r !== repo)
+    if (replaced.length > 0) this.log(`worktree exemption replaced for ${replaced.join(', ')}`)
+    this.log(`worktree exemption for ${repo} until ${until}: ${reason}`)
+    return await this.savePractices({ ...doc, exemptRepos: [repo], exemptUntil: until })
+  }
+
   async savePractices(doc: PracticesDoc): Promise<PracticesDoc> {
     await this.ensure()
     const valid = validatePractices(doc, defaultPractices)

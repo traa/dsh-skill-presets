@@ -67,17 +67,24 @@ test('`check` exits 0 in advisory mode and 2 only when red AND hard, with the re
     if (input !== undefined) child.stdin.end(input); else child.stdin.end()
   })
   const payload = JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: join(repo, 'a') }, cwd: repo })
-  // Advisory (default): red but exit 0.
+
+  await run(['status']) // bootstrap the store
+  const practicesPath = join(wb, 'skills', 'practices.json')
+  const fsPromises = await import('node:fs/promises')
+  const docAdvisory = JSON.parse(await fsPromises.readFile(practicesPath, 'utf8'))
+  docAdvisory.practices = docAdvisory.practices.map(p => p.id === 'worktree' ? { ...p, mode: 'advisory' } : p)
+  await writeFile(practicesPath, JSON.stringify(docAdvisory))
+
+  // Advisory (explicit): red but exit 0.
   const advisory = await run(['check', 'worktree', '--hook', 'claude-code', '--json'], payload)
   assert.equal(advisory.code, 0, advisory.stderr)
   const parsed = JSON.parse(advisory.stdout.trim().split('\n').pop())
   assert.equal(parsed.status, 'red'); assert.equal(parsed.block, false)
+
   // Hard: exit 2 with the reason.
-  await run(['status']) // bootstrap the store
-  const practicesPath = join(wb, 'skills', 'practices.json')
-  const doc = JSON.parse(await (await import('node:fs/promises')).readFile(practicesPath, 'utf8'))
-  doc.practices = doc.practices.map(p => p.id === 'worktree' ? { ...p, mode: 'hard' } : p)
-  await writeFile(practicesPath, JSON.stringify(doc))
+  const docHard = JSON.parse(await fsPromises.readFile(practicesPath, 'utf8'))
+  docHard.practices = docHard.practices.map(p => p.id === 'worktree' ? { ...p, mode: 'hard' } : p)
+  await writeFile(practicesPath, JSON.stringify(docHard))
   const hard = await run(['check', 'worktree', '--hook', 'claude-code'], payload)
   assert.equal(hard.code, 2)
   assert.match(hard.stderr, /Work in a worktree.*enforced/)

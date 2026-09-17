@@ -423,3 +423,28 @@ test('a genuine success notice still renders as the green paragraph it always wa
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))
 })
+
+test('AT_RISK_PREFIX: the client mirror matches the host constant', async () => {
+  // src/client/api.ts deliberately MIRRORS this constant instead of importing
+  // it: a runtime import from src/host would drag `node:path` into the browser
+  // bundle. The mirror is only safe if drift fails here — otherwise changing
+  // either literal alone silently disables at-risk styling in the UI.
+  const { AT_RISK_PREFIX: host } = await import('../lib/host/practices/detectors.js')
+  const { AT_RISK_PREFIX: client } = await import('../lib/client/api.js')
+  assert.equal(client, host, 'src/client/api.ts mirrors this constant; divergence silently disables at-risk styling')
+})
+
+test('client bundle imports no Node built-ins', async () => {
+  // The client is bundled for the browser. Any require/import of a `node:`
+  // built-in means a host module leaked in — which breaks the page at runtime,
+  // not at build time. Matched on the import FORM, never the bare substring
+  // `node:`, which appears harmlessly inside unrelated strings.
+  const bundle = await readFile(ARTIFACT, 'utf8')
+  // Any form that can pull a Node built-in into a browser bundle: static or
+  // dynamic, either quote style. `createRequire` is flagged separately — it is
+  // the escape hatch that would smuggle one past a specifier-only match.
+  const specifier = /(?:require|import)\s*\(\s*["']node:[^"']+["']\s*\)|from\s*["']node:[^"']+["']/gu
+  const smuggler = /createRequire\s*\(/gu
+  const hits = [...(bundle.match(specifier) ?? []), ...(bundle.match(smuggler) ?? [])]
+  assert.equal(hits.length, 0, `client bundle pulls in Node built-ins: ${hits.join(', ')}`)
+})

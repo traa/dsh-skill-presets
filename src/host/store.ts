@@ -217,7 +217,21 @@ export function pruneSessions(doc: ActiveDoc, now: Date, retentionDays = 7): Act
   return { ...doc, sessions }
 }
 
-/** Validate the practices document, filling defaults for missing fields. */
+/**
+ * Validate the practices document, filling defaults for missing fields.
+ *
+ * MIGRATION RULE, and the reason this function is the only place it lives: a
+ * practices.json that EXISTS keeps every mode it declares. Only an absent file
+ * (handled by `readJson` falling back to `defaultPractices`) or an entry absent
+ * from an existing file takes the current shipped default.
+ *
+ * This matters because phase 6 flipped `worktree` from `advisory` to `hard`. A
+ * user who deliberately chose `advisory` must not start getting their edits
+ * DENIED because they upgraded the plugin — silently tightening enforcement
+ * under someone is how a guardrail gets uninstalled. The per-entry merge below
+ * gives exactly that: `found` wins when it parses, `entry` (the default) fills
+ * the gap when the file never mentioned the practice.
+ */
 export function validatePractices(raw: unknown, fallback: () => PracticesDoc): PracticesDoc {
   const base = fallback()
   const doc = raw as Partial<PracticesDoc>
@@ -247,5 +261,12 @@ export function validatePractices(raw: unknown, fallback: () => PracticesDoc): P
       ? doc.protectedBranches
       : base.protectedBranches,
     practices,
+    // Exemptions survive a round-trip. Every write goes through here, so
+    // dropping these would delete an operator's `exempt worktree` grant the
+    // next time any unrelated practice setting was saved.
+    ...(Array.isArray(doc.exemptRepos) && doc.exemptRepos.every(r => typeof r === 'string')
+      ? { exemptRepos: doc.exemptRepos }
+      : {}),
+    ...(typeof doc.exemptUntil === 'string' ? { exemptUntil: doc.exemptUntil } : {}),
   }
 }

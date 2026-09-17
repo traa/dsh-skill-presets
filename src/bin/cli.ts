@@ -13,7 +13,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { renderHookFile, parseHookStdin } from '../host/hooks.ts'
 import { readGitFacts } from '../host/practices/git.ts'
-import { DETECTORS, isMutatingCommand } from '../host/practices/detectors.ts'
+import { DETECTORS, mutatesFiles } from '../host/practices/detectors.ts'
+import { decideWorktreeGate, exemptionHint } from '../host/practices/gate.ts'
 import { PRACTICE_INFO } from '../host/curated.ts'
 import type { PracticeId } from '../host/types.ts'
 import { runEvals } from '../host/evals.ts'
@@ -124,7 +125,7 @@ async function main(): Promise<number> {
       const pending = hookMode && stdin.toolName !== undefined
         ? [{ t: new Date().toISOString(), turn: 1, name: stdin.toolName.toLowerCase(), target: stdin.filePath ?? stdin.command, isError: false }]
         : []
-      const isMutating = pending.length > 0 && (['write', 'edit'].includes(pending[0].name) || isMutatingCommand(pending[0].target))
+      const isMutating = pending.length > 0 && mutatesFiles(pending[0].name, pending[0].target)
       const stage = await service.activeStage(stdin.sessionId !== undefined ? { id: stdin.sessionId } : undefined)
       const result = DETECTORS[id]({
         calls: isMutating ? pending : [],
@@ -138,13 +139,48 @@ async function main(): Promise<number> {
         ended: id === 'pull-request',
         ...(stage !== undefined ? { activeStage: stage } : {}),
       })
-      const block = result.status === 'red' && cfg?.mode === 'hard'
+      // `worktree` is decided by the shared pure gate, never by this detector's
+      // status. The detector is retroactive — with a hook payload it is fed a
+      // SYNTHESISED past call — so two paths judging "is this call allowed?"
+      // two different ways is exactly the divergence `gate.ts` removes. Every
+      // other practice keeps the red+hard rule, which is still right for them:
+      // they describe state, not a pending call.
+      const gate = id === 'worktree'
+        ? decideWorktreeGate(facts, { name: stdin.toolName?.toLowerCase() ?? '', ...(stdin.filePath !== undefined ? { filePath: stdin.filePath } : {}), ...(stdin.command !== undefined ? { command: stdin.command } : {}) }, doc)
+        : undefined
+      const block = gate !== undefined ? !gate.allow : result.status === 'red' && cfg?.mode === 'hard'
       if (rest.includes('--json')) console.log(JSON.stringify({ practice: id, ...result, mode: cfg?.mode ?? 'off', block }))
       else console.log(`${PRACTICE_INFO[id].title}: ${result.status}${result.evidence[0] !== undefined ? ` — ${result.evidence[0]}` : ''}${block ? ' (BLOCK)' : ''}`)
       if (block) {
-        console.error(`practice "${PRACTICE_INFO[id].title}" is enforced: ${result.evidence[0] ?? result.status}. Load the \`${PRACTICE_INFO[id].skill}\` skill.`)
+        if (gate !== undefined) {
+          console.error([gate.reason, gate.remedy !== undefined ? `Run: ${gate.remedy}` : undefined, exemptionHint()].filter(p => p !== undefined).join(' '))
+        } else {
+          console.error(`practice "${PRACTICE_INFO[id].title}" is enforced: ${result.evidence[0] ?? result.status}. Load the \`${PRACTICE_INFO[id].skill}\` skill.`)
+        }
         return 2
       }
+      return 0
+    }
+    case 'exempt': {
+      // exempt worktree [--repo <path>] [--hours N] --reason <text>
+      // The sanctioned override for the `worktree` hard gate. Deliberately
+      // requires a reason and always expires: see `service.exemptWorktree`.
+      const which = rest[0]
+      if (which !== 'worktree') { console.error('usage: exempt worktree [--repo <path>] [--hours N] --reason <text>'); return 2 }
+      const flag = (name: string): string | undefined => {
+        const i = rest.indexOf(`--${name}`)
+        return i !== -1 ? rest[i + 1] : undefined
+      }
+      const reason = flag('reason')
+      if (reason === undefined || reason.length === 0) { console.error('exempt: --reason <text> is required; an exemption with no recorded reason is indistinguishable from the gate being broken'); return 2 }
+      const hoursRaw = flag('hours')
+      const hours = hoursRaw !== undefined ? Number(hoursRaw) : 4
+      if (!Number.isFinite(hours) || hours <= 0) { console.error(`exempt: --hours must be a positive number, got ${String(hoursRaw)}`); return 2 }
+      const cwd = flag('repo') ?? process.cwd()
+      const facts = await readGitFacts(cwd, { instructionFiles: [] })
+      const repo = facts.topLevel ?? cwd
+      const doc = await service.exemptWorktree(repo, hours, reason)
+      console.log(`worktree gate exempt for ${repo} until ${doc.exemptUntil ?? '(unset)'} — ${reason}`)
       return 0
     }
     case 'eval': {
@@ -330,6 +366,7 @@ async function main(): Promise<number> {
         '  eval [dir] [--update] [--only name]   replay recorded sessions through the detectors',
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',
         '  check <practice> [--cwd d] [--json] [--hook <dialect>]   replay one detector; exit 2 when red AND hard',
+        '  exempt worktree [--repo p] [--hours N] --reason <text>   time-boxed, recorded override of the worktree hard gate',
       ].join('\n'))
       return command === undefined ? 0 : 2
   }
