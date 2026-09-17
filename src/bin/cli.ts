@@ -163,13 +163,50 @@ async function main(): Promise<number> {
     }
     case 'exempt': {
       // exempt worktree [--repo <path>] [--hours N] --reason <text>
+      // exempt list
+      // exempt revoke --repo <path>
       // The sanctioned override for the `worktree` hard gate. Deliberately
       // requires a reason and always expires: see `service.exemptWorktree`.
+      // `list` and `revoke` exist because grants now accumulate per repository:
+      // an override nobody can enumerate or end early is the unaccountable
+      // state the gate's fail-closed rule is there to prevent.
+      const usage = 'usage: exempt worktree [--repo <path>] [--hours N] --reason <text> | exempt list | exempt revoke --repo <path>'
       const which = rest[0]
-      if (which !== 'worktree') { console.error('usage: exempt worktree [--repo <path>] [--hours N] --reason <text>'); return 2 }
+      if (which !== 'worktree' && which !== 'list' && which !== 'revoke') { console.error(usage); return 2 }
       const flag = (name: string): string | undefined => {
         const i = rest.indexOf(`--${name}`)
         return i !== -1 ? rest[i + 1] : undefined
+      }
+      if (which === 'list') {
+        const doc = await service.practices()
+        const grants = doc.exemptions ?? []
+        if (grants.length === 0) { console.log('no exemptions'); return 0 }
+        const now = Date.now()
+        for (const g of grants) {
+          const expires = Date.parse(g.until)
+          // Anything unparseable is reported as expired, matching what the gate
+          // actually does with it, so this listing can never claim an override
+          // is in force when it grants nothing.
+          const live = Number.isFinite(expires) && expires > now
+          console.log(`${live ? 'live   ' : 'expired'} ${g.repo} until ${g.until} — ${g.reason}`)
+        }
+        return 0
+      }
+      if (which === 'revoke') {
+        const target = flag('repo')
+        if (target === undefined || target.length === 0) { console.error('exempt revoke: --repo <path> is required'); return 2 }
+        const facts = await readGitFacts(target, { instructionFiles: [] })
+        // Match the grant by either spelling of the top level, for the same
+        // reason the gate compares both: `--repo /tmp/x` must revoke a grant
+        // recorded as `/private/tmp/x`, or the operator cannot end it at all.
+        const spellings = [target, facts.topLevel, facts.topLevelAlias].filter((p): p is string => typeof p === 'string' && p.length > 0)
+        const doc = await service.practices()
+        const grants = doc.exemptions ?? []
+        const kept = grants.filter(g => !spellings.includes(g.repo))
+        if (kept.length === grants.length) { console.error(`exempt revoke: no exemption recorded for ${target}`); return 1 }
+        await service.savePractices({ ...doc, exemptions: kept })
+        console.log(`revoked ${grants.length - kept.length} worktree exemption(s) for ${target}`)
+        return 0
       }
       const reason = flag('reason')
       if (reason === undefined || reason.length === 0) { console.error('exempt: --reason <text> is required; an exemption with no recorded reason is indistinguishable from the gate being broken'); return 2 }
@@ -180,7 +217,11 @@ async function main(): Promise<number> {
       const facts = await readGitFacts(cwd, { instructionFiles: [] })
       const repo = facts.topLevel ?? cwd
       const doc = await service.exemptWorktree(repo, hours, reason)
-      console.log(`worktree gate exempt for ${repo} until ${doc.exemptUntil ?? '(unset)'} — ${reason}`)
+      // Report the saved record's own expiry, read back from the doc rather
+      // than from the local `hours` computation, so the line cannot claim a
+      // lifetime the store did not actually persist.
+      const granted = (doc.exemptions ?? []).find(e => e.repo === repo)
+      console.log(`worktree gate exempt for ${repo} until ${granted?.until ?? '(unset)'} — ${reason}`)
       return 0
     }
     case 'eval': {
@@ -367,6 +408,8 @@ async function main(): Promise<number> {
         '  hooks generate [dir]   write hook files for dsh-hooks-claude-code and dsh-hooks-codex',
         '  check <practice> [--cwd d] [--json] [--hook <dialect>]   replay one detector; exit 2 when red AND hard',
         '  exempt worktree [--repo p] [--hours N] --reason <text>   time-boxed, recorded override of the worktree hard gate',
+        '  exempt list                                              every exemption on record, live or expired',
+        '  exempt revoke --repo <path>                              end a repository\'s exemption now',
       ].join('\n'))
       return command === undefined ? 0 : 2
   }

@@ -10,7 +10,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import type { ActiveDoc, Lock, PracticesDoc } from './types.ts'
+import type { ActiveDoc, Lock, PracticesDoc, WorktreeExemption } from './types.ts'
 
 /** Environment shape read by the resolver. Injected so tests never mutate globals. */
 export type Env = Readonly<Record<string, string | undefined>>
@@ -232,6 +232,45 @@ export function pruneSessions(doc: ActiveDoc, now: Date, retentionDays = 7): Act
  * gives exactly that: `found` wins when it parses, `entry` (the default) fills
  * the gap when the file never mentioned the practice.
  */
+/** A non-empty string, which is what every field of a grant has to be to mean anything. */
+function filled(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+/**
+ * Normalize the exemption list, migrating the legacy single-grant shape.
+ *
+ * DROPS MALFORMED RECORDS RATHER THAN THROWING, because this runs on the load
+ * path: one hand-edited grant must not take the whole practices file — and with
+ * it every practice mode — down to the shipped defaults. Dropping is also the
+ * safe direction. A dropped record is NO grant, so the worst case is that the
+ * gate enforces where an operator meant it not to, and they see the denial and
+ * re-run `exempt worktree`. The opposite failure — a half-parsed record read as
+ * a live override — is silent, and silently-off enforcement is the thing
+ * `exemptionLive` fails closed to prevent.
+ *
+ * MIGRATION IS ONE-WAY AND LOSSLESS PER REPO. `exemptRepos` + `exemptUntil`
+ * were one grant's scope and lifetime, so each listed repo becomes its own
+ * record carrying that shared expiry — which is exactly the state the old pair
+ * encoded. It only runs when no well-formed `exemptions` exist: once the new
+ * field is authoritative, a stale legacy pair left in a hand-edited file must
+ * not resurrect grants the operator already superseded.
+ */
+function normalizeExemptions(doc: Partial<PracticesDoc>): readonly WorktreeExemption[] {
+  const records = Array.isArray(doc.exemptions)
+    ? doc.exemptions.flatMap((e): WorktreeExemption[] => (
+        e !== null && typeof e === 'object' && filled(e.repo) && filled(e.until) && filled(e.reason)
+          ? [{ repo: e.repo, until: e.until, reason: e.reason }]
+          : []
+      ))
+    : []
+  if (records.length > 0) return records
+  const legacyRepos = Array.isArray(doc.exemptRepos) ? doc.exemptRepos.filter(filled) : []
+  if (legacyRepos.length === 0 || !filled(doc.exemptUntil)) return []
+  const until = doc.exemptUntil
+  return legacyRepos.map(repo => ({ repo, until, reason: '(migrated from legacy exemption)' }))
+}
+
 export function validatePractices(raw: unknown, fallback: () => PracticesDoc): PracticesDoc {
   const base = fallback()
   const doc = raw as Partial<PracticesDoc>
@@ -245,6 +284,7 @@ export function validatePractices(raw: unknown, fallback: () => PracticesDoc): P
         return { id: entry.id, mode, params }
       })
     : base.practices
+  const exemptions = normalizeExemptions(doc)
   return {
     version: 1,
     strictSkills: doc.strictSkills === true,
@@ -262,11 +302,15 @@ export function validatePractices(raw: unknown, fallback: () => PracticesDoc): P
       : base.protectedBranches,
     practices,
     // Exemptions survive a round-trip. Every write goes through here, so
-    // dropping these would delete an operator's `exempt worktree` grant the
-    // next time any unrelated practice setting was saved.
-    ...(Array.isArray(doc.exemptRepos) && doc.exemptRepos.every(r => typeof r === 'string')
-      ? { exemptRepos: doc.exemptRepos }
-      : {}),
-    ...(typeof doc.exemptUntil === 'string' ? { exemptUntil: doc.exemptUntil } : {}),
+    // dropping a valid grant would delete an operator's `exempt worktree`
+    // override the next time any unrelated practice setting was saved.
+    //
+    // The legacy `exemptRepos`/`exemptUntil` pair is READ (above) and never
+    // written back: migration completes on the first save, and keeping the old
+    // keys alongside the new list would leave two sources of truth for the same
+    // grant that drift apart the moment one is revoked. The key is omitted
+    // entirely when nothing valid survives, so a file with no exemptions stays
+    // free of an empty-array artefact.
+    ...(exemptions.length > 0 ? { exemptions } : {}),
   }
 }
