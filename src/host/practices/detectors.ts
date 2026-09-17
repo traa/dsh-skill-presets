@@ -155,7 +155,122 @@ export function redirectsToFile(command: string): boolean {
   return false
 }
 
-/** Whether a bash command plausibly mutates the working tree or repository. */
+/**
+ * Segment shapes that only READ. Matched against ONE segment, never the whole
+ * command: see `isMutatingCommand` for why that distinction is the whole fix.
+ */
+const READONLY_SEGMENT = /^(?:git\s+(?:status|log|diff|show|branch(?:\s+--show-current|\s+-a|\s+-r|\s*$)|rev-parse|remote\s+-v|worktree\s+list)|ls|cat|head|tail|grep|rg|find|pwd|echo|which|node\s+-e|npm\s+(?:test|run\s+\w+|ls)|pnpm\s+(?:test|run\s+\w+))\b/u
+
+/**
+ * Segment shapes that WRITE.
+ *
+ * Anchored at `^` only, because `shellSegments` has already cut the command on
+ * `;`, `&&`, `||` and `|` — and it does so QUOTE-AWARE, which the old
+ * `(?:^|[;&|]\s*)` alternative was not: that one matched a separator inside a
+ * commit message, so `gh issue comment -b "done; rm -rf tmp"` read as a write.
+ *
+ * No `>`/`>>` alternative here: redirection is decided ONCE for the whole
+ * command by `redirectsToFile`. Repeating it raw would re-admit
+ * `cmd; ls 2>/dev/null`, whose redirection writes nothing.
+ */
+const MUTATING_SEGMENT = /^(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u
+
+/**
+ * `xargs` flags that consume the NEXT token as their value, so the token after
+ * them is an argument and not the operand command.
+ *
+ * Only flags whose argument is MANDATORY are listed. GNU's `-i`/`-e` take an
+ * OPTIONAL attached argument (`-i{}`, `-e_end_`), so `xargs -i rm {}` really
+ * does have `rm` as its operand; treating them as value-taking would swallow
+ * the `rm` and miss the mutation. `-0`, `-r`, `-t`, `-p`, `-x` take nothing.
+ */
+const XARGS_VALUE_FLAGS = new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s'])
+const XARGS_LONG_VALUE_FLAGS = new Set([
+  '--arg-file', '--delimiter', '--eof', '--replace', '--max-lines',
+  '--max-args', '--max-procs', '--max-chars', '--process-slot-var',
+])
+
+/**
+ * The command `xargs` will RUN, or undefined when this segment is not an
+ * `xargs` invocation (or names no operand, in which case xargs defaults to
+ * `echo` and writes nothing).
+ *
+ * WHY: `xargs` is not a writer, it is a LAUNCHER — `git ls-files | xargs rm`
+ * deletes every tracked file while the segment's leading token is `xargs`, so
+ * an anchored mutation test sees nothing. `READONLY_FILTERS` already records
+ * the mirror-image rule ("deliberately EXCLUDED … because it executes an
+ * arbitrary command chosen by its operands"); that exclusion only stops xargs
+ * from LAUNDERING a mutation, and this is the half that reports one.
+ *
+ * Quotes are stripped by `tokens`, so an operand that only exists inside a
+ * quoted program (`xargs -I{} sh -c "rm -rf $1"`) is NOT reconstructed as a
+ * command. That is deliberate: `sh`/`bash`/`node` are unclassifiable anyway,
+ * and inventing a verdict from fragments of a quoted script would produce
+ * false positives in a function that DENIES tool calls.
+ */
+function xargsOperand(segment: string): string | undefined {
+  const parts = tokens(segment)
+  if (parts[0]?.split('/').pop() !== 'xargs') return undefined
+  let i = 1
+  while (i < parts.length) {
+    const token = parts[i]
+    if (!token.startsWith('-') || token === '-') break
+    if (token === '--') { i += 1; break }
+    if (token.startsWith('--')) {
+      i += !token.includes('=') && XARGS_LONG_VALUE_FLAGS.has(token) ? 2 : 1
+      continue
+    }
+    // A short flag longer than two characters carries its value attached
+    // (`-n1`, `-I{}`, `-d\n`), so it consumes nothing further.
+    i += token.length === 2 && XARGS_VALUE_FLAGS.has(token) ? 2 : 1
+  }
+  const operand = parts.slice(i).join(' ')
+  return operand.length > 0 ? operand : undefined
+}
+
+/**
+ * Whether ONE already-split segment writes.
+ *
+ * A read-only segment returns false for ITSELF only — the caller keeps
+ * scanning. `depth` bounds the `xargs xargs …` unwrap; a pathological nest
+ * simply stops being classified rather than looping.
+ */
+function segmentMutates(segment: string, depth = 0): boolean {
+  if (READONLY_SEGMENT.test(segment)) return false
+  const operand = xargsOperand(segment)
+  if (operand !== undefined) return depth < 4 && segmentMutates(operand, depth + 1)
+  return MUTATING_SEGMENT.test(segment)
+}
+
+/**
+ * Whether a bash command plausibly mutates the working tree or repository.
+ *
+ * EVERY segment is scanned, the way `isVcsPlumbing` already scans them. The
+ * previous version tested both regexes against the WHOLE trimmed command and
+ * returned false the moment a READ-ONLY PREFIX matched, which handed the
+ * verdict to the FIRST command in the chain: `git ls-files | xargs rm` and
+ * `git log | sed -i.bak s/a/b/ x.ts` both deleted or rewrote files and both
+ * reported nothing, because `git ls-files`/`git log` answered first (Issue
+ * #19). A read-only segment is evidence about THAT segment and nothing else,
+ * so it is now skipped rather than being an early exit for the whole command.
+ *
+ * Redirection is still decided ONCE, for the whole command, by
+ * `redirectsToFile` — see the comment on `MUTATING_SEGMENT` for why the
+ * segment test must not carry a raw `>` alternative of its own.
+ *
+ * THE INVARIANT THAT SETS THE ERROR BUDGET, and it points both ways:
+ * - As a RULE this fails OPEN. `mutatesFiles` wraps it and `decideWorktreeGate`
+ *   DENIES a tool call on the strength of it, so a false positive blocks a
+ *   user's real session. An unrecognised shape is therefore left alone rather
+ *   than guessed at — see the quoted-operand note on `xargsOperand`.
+ * - As DETECTION it fails CLOSED. `isConductorSelfMutation` uses it to answer
+ *   "did the conductor do a teammate's job?", and there a MISSED mutation is
+ *   the expensive error: the report is simply never made, and nobody learns
+ *   that the practice was silent. Anything that demonstrably writes — a later
+ *   segment, an `xargs` operand — must be reported.
+ * Where the two pull against each other, precision wins: widen by naming a
+ * concrete writing command, never by loosening an anchor.
+ */
 export function isMutatingCommand(command: string | undefined): boolean {
   if (command === undefined) return false
   const c = command.trim()
@@ -163,13 +278,7 @@ export function isMutatingCommand(command: string | undefined): boolean {
   // Output redirection mutates regardless of the command in front of it —
   // but only when it lands in a file.
   if (redirectsToFile(c)) return true
-  // Read-only prefixes.
-  if (/^(?:git\s+(?:status|log|diff|show|branch(?:\s+--show-current|\s+-a|\s+-r|\s*$)|rev-parse|remote\s+-v|worktree\s+list)|ls|cat|head|tail|grep|rg|find|pwd|echo|which|node\s+-e|npm\s+(?:test|run\s+\w+|ls)|pnpm\s+(?:test|run\s+\w+))\b/u.test(c)) {
-    return false
-  }
-  // No `>`/`>>` alternative here: redirection is decided once, above, by
-  // `redirectsToFile`. Repeating it raw would re-admit `cmd; ls 2>/dev/null`.
-  return /(?:^|[;&|]\s*)(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u.test(c)
+  return shellSegments(c).some(segment => segmentMutates(segment))
 }
 
 /**

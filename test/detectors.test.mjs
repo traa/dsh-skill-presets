@@ -29,14 +29,27 @@ test('worktree: n/a before mutations; red on protected branch in primary checkou
 })
 
 test('mutating command classifier', () => {
-  assert.ok(isMutatingCommand('git commit -m x'))
-  assert.ok(isMutatingCommand('rm -rf lib'))
-  assert.ok(isMutatingCommand('npm install foo'))
-  assert.ok(isMutatingCommand('echo x > file'))
-  assert.ok(!isMutatingCommand('git status'))
-  assert.ok(!isMutatingCommand('ls -la'))
-  assert.ok(!isMutatingCommand('npm test'))
-  assert.ok(!isMutatingCommand(undefined))
+  // THE NON-REGRESSION SIDE.
+  // Widening this function is dangerous: `mutatesFiles` wraps `isMutatingCommand` and feeds `decideWorktreeGate`, which DENIES tool calls.
+  // A false positive blocks a real user session. Assert these stay NON-mutating:
+  const readOnly = [
+    'git status', 'ls -la', 'npm test', undefined,
+    'git log | wc -l', 'git log --oneline | sort | uniq', 'git status && npm test', 'ls | tail', 'git log 2>/dev/null',
+    'git ls-files | xargs cat', 'git ls-files | xargs grep foo'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+
+  const mutating = [
+    'git commit -m x', 'rm -rf lib', 'npm install foo', 'echo x > file',
+    'git ls-files | xargs rm',
+    'git log | sed -i.bak s/a/b/ x.ts',
+    'xargs rm', 'xargs -0 rm', 'xargs -n1 rm -f'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
 })
 
 test('pull-request: green from gh pr create, a PR URL from any forge, or facts.pr; red at end when ahead without a PR', () => {
@@ -217,8 +230,10 @@ test('isVcsPlumbing: pipe fixes and regressions', () => {
   // GROUP D — chain with no VCS invocation must not become plumbing
   assert.equal(isVcsPlumbing('ls | tail'), false, 'chain with no VCS invocation')
 
-  // KNOWN (Issue #19): isMutatingCommand decides on the FIRST segment only.
-  // git ls-files | xargs rm and git log | sed -i.bak s/a/b/ x.ts currently report NO mutation.
+  // Issue #19: isMutatingCommand was deciding on the FIRST segment only.
+  // These must be reported as conductor self-mutations.
+  assertSelfMutation('git ls-files | xargs rm', 'xargs rm must be flagged as self-mutation')
+  assertSelfMutation('git log | sed -i.bak s/a/b/ x.ts', 'sed -i later in pipe must be flagged')
 })
 
 // --- RULE 2: never assert a false location.
