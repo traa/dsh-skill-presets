@@ -29,14 +29,89 @@ test('worktree: n/a before mutations; red on protected branch in primary checkou
 })
 
 test('mutating command classifier', () => {
-  assert.ok(isMutatingCommand('git commit -m x'))
-  assert.ok(isMutatingCommand('rm -rf lib'))
-  assert.ok(isMutatingCommand('npm install foo'))
-  assert.ok(isMutatingCommand('echo x > file'))
-  assert.ok(!isMutatingCommand('git status'))
-  assert.ok(!isMutatingCommand('ls -la'))
-  assert.ok(!isMutatingCommand('npm test'))
-  assert.ok(!isMutatingCommand(undefined))
+  // THE NON-REGRESSION SIDE.
+  // Widening this function is dangerous: `mutatesFiles` wraps `isMutatingCommand` and feeds `decideWorktreeGate`, which DENIES tool calls.
+  // A false positive blocks a real user session. Assert these stay NON-mutating:
+  const readOnly = [
+    'git status', 'ls -la', 'npm test', undefined,
+    'git log | wc -l', 'git log --oneline | sort | uniq', 'git status && npm test', 'ls | tail', 'git log 2>/dev/null',
+    'git ls-files | xargs cat', 'git ls-files | xargs grep foo'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+
+  const mutating = [
+    'git commit -m x', 'rm -rf lib', 'npm install foo', 'echo x > file',
+    'git ls-files | xargs rm',
+    'git log | sed -i.bak s/a/b/ x.ts',
+    'xargs rm', 'xargs -0 rm', 'xargs -n1 rm -f'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+})
+
+test('xargs operand parsing: a flag value is never the operand command', () => {
+  const mutating = [
+    'xargs --replace rm',
+    'xargs --eof rm',
+    'xargs --max-lines rm',
+    'git ls-files | xargs -J % rm %',
+    'xargs -R 5 rm',
+    'xargs rm',
+    'xargs -0 rm',
+    'xargs -n1 rm -f',
+    'xargs -i rm {}',
+    'xargs -I{} mv {} /tmp'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  // `mutatesFiles` wraps `isMutatingCommand` and feeds `decideWorktreeGate` (src/host/practices/gate.ts line 149),
+  // which DENIES tool calls — so a false positive here blocks a real user's session rather than merely making a panel noisy.
+  const readOnly = [
+    'xargs -J rm echo',
+    'xargs -R rm cat',
+    'git ls-files | xargs cat',
+    'git ls-files | xargs'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+
+})
+
+test('mutating classifier: a command is recognised by its normalised name, not its spelling', () => {
+  // RULE: a command must be recognised by its NORMALISED name (basename, past git global flags, across flag spellings),
+  // because /bin/rm and rm are the same command, while a flag's VALUE (-J rm) is never a command at all.
+
+  const mutating = [
+    'sed --in-place s/a/b/ x.ts',
+    'git log | sed -ni s/a/b/ x.ts',
+    '/bin/rm -rf foo',
+    'xargs /bin/rm',
+    'git -C /wt commit -m x',
+    'xargs -I"" rm',
+    'xargs -d"" rm'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'git -C /wt status',
+    'git -C /wt log',
+    'xargs -J rm echo',
+    'xargs -R rm cat',
+    'xargs -J % echo %',
+    'git ls-files | xargs cat',
+    'gh issue comment -b "done; rm -rf tmp"'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
 })
 
 test('pull-request: green from gh pr create, a PR URL from any forge, or facts.pr; red at end when ahead without a PR', () => {
@@ -217,8 +292,10 @@ test('isVcsPlumbing: pipe fixes and regressions', () => {
   // GROUP D — chain with no VCS invocation must not become plumbing
   assert.equal(isVcsPlumbing('ls | tail'), false, 'chain with no VCS invocation')
 
-  // KNOWN (Issue #19): isMutatingCommand decides on the FIRST segment only.
-  // git ls-files | xargs rm and git log | sed -i.bak s/a/b/ x.ts currently report NO mutation.
+  // Issue #19: isMutatingCommand was deciding on the FIRST segment only.
+  // These must be reported as conductor self-mutations.
+  assertSelfMutation('git ls-files | xargs rm', 'xargs rm must be flagged as self-mutation')
+  assertSelfMutation('git log | sed -i.bak s/a/b/ x.ts', 'sed -i later in pipe must be flagged')
 })
 
 // --- RULE 2: never assert a false location.
@@ -459,4 +536,89 @@ test('evaluate and worst', () => {
   assert.equal(worst(results), 'red')
   assert.equal(worst([{ status: 'n/a' }, { status: 'green' }]), 'green')
   assert.equal(worst([]), 'n/a')
+})
+
+test('package manager subcommands survive a global flag', () => {
+  // RULE: a subcommand is found by SKIPPING FLAGS BY ARITY, never by searching the line for the word "install"
+  // otherwise a script named `install-hooks` denies innocent work.
+  
+  const mutating = [
+    'npm ci',
+    'npm --prefix /tmp install x',
+    'npm -g install x',
+    'npm install foo'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'npm run install-hooks',
+    'npm --prefix /tmp run build',
+    'npm test',
+    'npm ls',
+    'npm run build',
+    'pnpm test'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+})
+
+test('package manager subcommands are matched by exact spelling, not prefix or substring', () => {
+  // RULE: membership is a test of the SUBCOMMAND SPELLING, not a prefix or substring match — 
+  // which is why ci and uninstall each have to be listed by name, and why a read-only verb 
+  // like list must never be added to that table.
+
+  const mutating = [
+    'yarn remove x',
+    'cargo remove x',
+    'cargo install x',
+    'pip uninstall x',
+    'pip3 uninstall x'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'cargo build',
+    'cargo test',
+    'yarn run build',
+    'pip list',
+    'npm run install-hooks'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
+})
+
+test('a global flag never hides a package manager subcommand', () => {
+  // RULE: a flag consumes the next token ONLY when its argument is MANDATORY and SEPARATE, and the flag sets are keyed PER TOOL because the same spelling disagrees between tools — -w takes a value under npm but is a boolean under pnpm, -d is composer's working-dir but a boolean elsewhere. A boolean wrongly treated as value-taking EATS the subcommand and turns a real write into a silent miss.
+
+  const mutating = [
+    'cargo --color always install x',
+    'composer --working-dir /tmp require x',
+    'poetry -C /tmp add x',
+    'gem --config-file /tmp/f install x',
+    'bundle --gemfile /tmp/Gemfile install',
+    'uv --directory /tmp add x',
+    'yarn --cwd /tmp remove x',
+    'pnpm --filter pkg remove x'
+  ]
+  for (const cmd of mutating) {
+    assert.ok(isMutatingCommand(cmd), `should be mutating: ${cmd}`)
+  }
+
+  const readOnly = [
+    'cargo --color always build',
+    'poetry -C /tmp show',
+    'composer --working-dir /tmp show',
+    'uv --directory /tmp tree',
+    'bundle --gemfile /tmp/Gemfile exec rspec',
+    'npm --prefix /tmp run build'
+  ]
+  for (const cmd of readOnly) {
+    assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
+  }
 })

@@ -155,7 +155,406 @@ export function redirectsToFile(command: string): boolean {
   return false
 }
 
-/** Whether a bash command plausibly mutates the working tree or repository. */
+/**
+ * Segment shapes that only READ. Matched against ONE segment, never the whole
+ * command: see `isMutatingCommand` for why that distinction is the whole fix.
+ */
+const READONLY_SEGMENT = /^(?:git\s+(?:status|log|diff|show|branch(?:\s+--show-current|\s+-a|\s+-r|\s*$)|rev-parse|remote\s+-v|worktree\s+list)|ls|cat|head|tail|grep|rg|find|pwd|echo|which|node\s+-e|npm\s+(?:test|run\s+\w+|ls)|pnpm\s+(?:test|run\s+\w+))\b/u
+
+/**
+ * Commands whose NAME alone is a write, wherever they live on PATH.
+ *
+ * Membership is tested against the segment's NORMALISED leading token
+ * (`parts[0].split('/').pop()`), never against raw segment text — see
+ * `segmentWrites` for why that distinction is the whole of Issue #21.
+ */
+const MUTATING_TOOLS = new Set(['rm', 'mv', 'cp', 'mkdir', 'touch', 'tee'])
+
+/**
+ * Dependency managers and the subcommands of theirs that install or remove.
+ *
+ * Keyed BY TOOL for the same reason as `FILTER_WRITE_FLAGS`: `install` writes
+ * under `npm` and `pip`, while `pnpm remove` and `npm uninstall` are the same
+ * act spelled differently. The subcommand is the first non-flag argument left
+ * once `packageSubcommand` has skipped the global flags that take a value, so
+ * `npm --prefix /tmp install x` is still an install.
+ *
+ * Every ALIAS of an install has to be listed by name, because this is a
+ * membership test and not a prefix match: `npm ci` rewrites `node_modules`
+ * from the lockfile exactly as `npm install` does — it deletes the directory
+ * first — yet it shares no letters with `install`. Same for `pnpm i` and
+ * `bun i`. The read-only spellings (`ls`, `test`, `run <script>`) are absent by
+ * construction, which is what keeps `npm run install-hooks` a read.
+ *
+ * MEMBERSHIP RULE: a subcommand belongs here when running it changes
+ * DEPENDENCY STATE — the installed package set, a lockfile, a linked package —
+ * or rewrites files already in the project. Not "touches the disk at all":
+ * `cargo build` and `gem build` write, but only into build OUTPUT (`target/`,
+ * a `.gem`), which is ignored by the tracked tree and is not what this
+ * practice is asking about. Keeping build verbs out is also what stops this
+ * table from classifying every compile as a mutation on the path that DENIES
+ * tool calls.
+ *
+ * BY THAT RULE these are deliberately ABSENT, and each was considered:
+ * - build/compile verbs: `cargo build`, `cargo test`, `gem build`,
+ *   `poetry build`, `uv build` — output only.
+ * - read verbs: `ls`, `list`, `search`, `info`, `show`, `outdated`, `why`,
+ *   `view`, `freeze`, `licenses`, `audit`/`outdated` WITHOUT a fixing flag.
+ * - SCAFFOLDING verbs (`npm init`, `cargo new`, `cargo init`, `poetry new`,
+ *   `uv init`): they create a project rather than change one, and admitting
+ *   them would need the same care as a build verb. Left out as ONE class, on
+ *   purpose, so the omission is visible rather than accidental.
+ *
+ * TWO KNOWN BLIND SPOTS, both structural rather than missing entries — the
+ * subcommand is not where the write is decided, so neither can be fixed by
+ * adding a row here:
+ * - a write hidden behind a FLAG: `npm audit fix` and `pip-audit --fix` write
+ *   while bare `audit` does not, so listing `audit` would be a false positive
+ *   on the DENY path.
+ * - a NESTED subcommand: `uv pip install x` and `uv tool install x` write
+ *   while `uv pip list` does not; `packageSubcommand` reads only the first
+ *   token, so `pip`/`tool` are left out rather than admitted wholesale.
+ */
+const PACKAGE_WRITE_SUBS: Record<string, readonly string[]> = {
+  npm: ['install', 'i', 'ci', 'add', 'uninstall', 'remove', 'rm', 'un', 'update', 'up', 'prune', 'dedupe', 'rebuild', 'link', 'unlink'],
+  pnpm: ['add', 'install', 'i', 'remove', 'rm', 'uninstall', 'un', 'update', 'up', 'prune', 'dedupe', 'link', 'unlink', 'import', 'patch', 'patch-commit', 'rebuild'],
+  yarn: ['add', 'install', 'remove', 'up', 'upgrade', 'link', 'unlink', 'import'],
+  // `bun` was in `PACKAGE_TOOLS` but had NO entry here, so every `bun add`
+  // and `bun install` was read as a non-mutation — the same one-half-of-the-
+  // file blindness recorded on `pip` below.
+  bun: ['add', 'install', 'i', 'remove', 'rm', 'update', 'link', 'unlink', 'patch'],
+  // `cargo install` puts a BINARY in the cargo home rather than in the working
+  // tree. It is still a write, and this function answers "does this write" —
+  // whether a LOCATION can be named is `attributesLocation`'s separate job,
+  // and it already declines to place any `PACKAGE_TOOLS` command. `cargo fix`
+  // is here for the opposite reason: it rewrites SOURCE FILES in place.
+  cargo: ['add', 'remove', 'rm', 'install', 'uninstall', 'update', 'fix'],
+  // `pip` and `pip3` are one tool under two names, and `PACKAGE_TOOLS` already
+  // lists both — the regex this replaced knew only `pip`, which is the same
+  // one-half-of-the-file blindness as `/bin/rm`.
+  pip: ['install', 'uninstall', 'download'],
+  pip3: ['install', 'uninstall', 'download'],
+  gem: ['install', 'uninstall', 'update', 'cleanup', 'pristine'],
+  composer: ['install', 'i', 'update', 'u', 'upgrade', 'require', 'remove', 'create-project', 'dump-autoload', 'dumpautoload'],
+  poetry: ['add', 'install', 'remove', 'update', 'lock', 'sync'],
+  uv: ['add', 'remove', 'sync', 'lock', 'venv', 'export'],
+  bundle: ['install', 'i', 'update', 'add', 'remove', 'lock', 'binstubs', 'pristine', 'cache', 'package', 'clean'],
+}
+
+/**
+ * Global flags of a package manager that swallow the NEXT token, so the
+ * subcommand sits after their value rather than being the first non-flag
+ * argument.
+ *
+ * THE SAME RULE AS `XARGS_VALUE_FLAGS` AND `GIT_GLOBAL_VALUE_FLAGS`: a flag
+ * belongs here only when its argument is MANDATORY and SEPARATE. A boolean
+ * flag consumes nothing and must stay out — `-g`, `--global`, `--silent`,
+ * `--force`, `--save-dev`/`-D` are all boolean, and listing one would eat the
+ * subcommand behind it (`npm -g install x` would read as no subcommand at
+ * all). An ATTACHED value (`--prefix=/tmp`, `-C/tmp`) already consumes
+ * nothing further, which is why the `=` form is excluded at the call site and
+ * why membership is an EXACT token match.
+ *
+ * Keyed BY TOOL, and that is not decoration: `-w` takes a workspace NAME under
+ * npm and is the BOOLEAN `--workspace-root` under pnpm. A pooled set would
+ * make `pnpm -w add x` skip the `add`.
+ *
+ * WHY NOT just look for `install` anywhere in the segment: this function feeds
+ * `decideWorktreeGate`, which DENIES a tool call, and `npm run install-hooks`
+ * would then be reported as a mutation. Skipping by ARITY reaches the real
+ * subcommand without ever reading a token out of position — exactly what
+ * `vcsParts` already does for `git -C /wt commit`.
+ *
+ * ARITY IS THE ONLY QUESTION — NOT whether the tool calls the flag "global".
+ * An earlier version of this set also demanded that a flag be accepted BEFORE
+ * the subcommand, and dropped `gem --config-file`, `bundle --gemfile` and
+ * `uv --python` because the installed binaries reject or ignore them in that
+ * position (`gem --config-file f install` → "Invalid option";
+ * `bundle --gemfile G install` → "called with arguments [install]";
+ * `uv --python 3.11 tree` → "unexpected argument"). That rule was WRONG HERE,
+ * and the reasoning is worth keeping because it looks right:
+ * - This walk sees whatever tokens the CALLER actually wrote. It steps over a
+ *   leading `--flag value` pair before the tool ever runs, so a flag the tool
+ *   would only accept later still displaces the subcommand IN THIS PARSE.
+ *   Refusing to list it leaves the value itself read as the subcommand — the
+ *   precise false negative this whole mechanism exists to remove.
+ * - Neither error direction costs anything. Listing a value-taking flag can
+ *   only ever REVEAL the subcommand behind it; it cannot invent one, because
+ *   the token it lands on still has to be in `PACKAGE_WRITE_SUBS`. And where
+ *   the real tool errors out, the command writes nothing either way, so the
+ *   verdict is unobservable rather than a false positive on a live session.
+ * The asymmetry that DOES matter is unchanged: a BOOLEAN wrongly listed eats
+ * the subcommand and silently turns a real write into a miss. So the bar to
+ * add a flag is only "its value is mandatory and separate", and the bar to
+ * leave one out is any doubt about that.
+ */
+const PACKAGE_GLOBAL_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  npm: new Set(['--prefix', '-C', '--workspace', '-w', '--userconfig', '--globalconfig', '--cache']),
+  pnpm: new Set(['--dir', '-C', '--filter']),
+  yarn: new Set(['--cwd']),
+  bun: new Set(['--cwd']),
+  // `-Z` is nightly-only and `-C` is unstable, but both take a mandatory
+  // separate value when present, which is the only question this set asks.
+  cargo: new Set(['--color', '--config', '--explain', '-Z', '-C', '--manifest-path', '--target']),
+  // `-d` is composer's short `--working-dir`. Per-tool keying matters here for
+  // the same reason as npm's `-w`: `-d` is a BOOLEAN in other tools.
+  composer: new Set(['--working-dir', '-d']),
+  poetry: new Set(['-C', '--directory', '-P', '--project']),
+  // `-C` is gem's only flag accepted before the subcommand; `--config-file` is
+  // a per-COMMAND option and gem rejects it there. Listed anyway, per the
+  // arity rule above — it takes a mandatory separate value, so a caller who
+  // writes it first would otherwise have `/tmp/f` read as the subcommand.
+  gem: new Set(['-C', '--config-file']),
+  uv: new Set(['--color', '--directory', '--project', '--config-file', '--allow-insecure-host', '--python']),
+  // Bundler's pre-command globals are `--no-color`/`--verbose`, both BOOLEAN
+  // and correctly absent. `--gemfile` and `--path` are per-command options
+  // that take a mandatory separate value, listed for the same reason as gem's
+  // `--config-file`. `--retry`/`--jobs` also take values but are omitted:
+  // the short forms are ambiguous across bundler versions and an unverified
+  // guess here is the one error that costs a missed write.
+  bundle: new Set(['--gemfile', '--path']),
+}
+
+/**
+ * The subcommand a package manager will run, past its value-taking global
+ * flags — or undefined when the invocation names none (`npm` alone, or the
+ * malformed `npm --prefix` whose value is missing, which npm itself rejects
+ * without writing anything).
+ */
+function packageSubcommand(tool: string, args: readonly string[]): string | undefined {
+  const valueFlags = PACKAGE_GLOBAL_VALUE_FLAGS[tool]
+  let i = 0
+  while (i < args.length) {
+    const token = args[i]
+    if (!token.startsWith('-') || token === '-') break
+    if (token === '--') { i += 1; break }
+    i += valueFlags?.has(token) === true ? 2 : 1
+  }
+  return args[i]
+}
+
+/** `git` subcommands that record history or rewrite the working tree. */
+const GIT_MUTATING_SUBS = new Set([
+  'add', 'commit', 'merge', 'rebase', 'reset', 'rm', 'mv', 'stash', 'apply',
+  'cherry-pick', 'push',
+])
+
+/** Whether a `git` subcommand, already peeled past global flags, writes. */
+function gitSubcommandWrites(sub: string, rest: readonly string[]): boolean {
+  if (GIT_MUTATING_SUBS.has(sub)) return true
+  // Only the branch-CREATING forms; a plain `checkout`/`switch` moves HEAD and
+  // is classified by `writesWorkingTree` for the callers that care.
+  if (sub === 'checkout') return rest.includes('-b')
+  if (sub === 'switch') return rest.includes('-c')
+  return false
+}
+
+/**
+ * Whether a `sed` invocation edits a file rather than filtering stdin.
+ *
+ * Uses the SAME `SED_IN_PLACE_FLAGS` + `hasFlag` pair as the exclusion side, so
+ * `--in-place`, `-i.bak`, `-ibak` and the clustered `-ni.bak` all land on one
+ * verdict; the literal `sed\s+-i` this replaced saw only the first of those.
+ *
+ * `-f`/`--file` is deliberately NOT read as a write here even though
+ * `FILTER_WRITE_FLAGS` lists it: there it means "the script is INVISIBLE, do
+ * not suppress a report", which is the fail-closed direction. On THIS side a
+ * verdict DENIES a tool call, so an unreadable script is not evidence of a
+ * write — and its presence instead means the first positional argument is an
+ * input file rather than the program, which is what `program` below encodes.
+ */
+function sedWrites(args: readonly string[]): boolean {
+  if (args.some(a => SED_IN_PLACE_FLAGS.some(f => hasFlag(a, f)))) return true
+  const scripts: string[] = []
+  let fromFile = false
+  let sawExpression = false
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]
+    if (hasFlag(arg, '-f') || hasFlag(arg, '--file')) { fromFile = true; continue }
+    if (arg === '-e' || arg === '--expression') {
+      const value = args[i + 1]
+      if (value !== undefined) { scripts.push(value); sawExpression = true; i += 1 }
+      continue
+    }
+    if (arg.startsWith('--expression=') || (arg.startsWith('-e') && arg.length > 2)) {
+      scripts.push(arg)
+      sawExpression = true
+    }
+  }
+  // With no `-e` and no `-f`, sed takes its PROGRAM from the first positional
+  // argument; with either, every positional is an input FILE. Getting this
+  // wrong is how `sed -f clean.sed w.ts` would read a filename as a program.
+  if (!sawExpression && !fromFile) {
+    const first = args.find(a => !a.startsWith('-'))
+    if (first !== undefined) scripts.push(first)
+  }
+  return scripts.some(sedProgramWrites)
+}
+
+/**
+ * Whether ONE segment's own command writes, judged from its NORMALISED name.
+ *
+ * THIS IS THE ISSUE #21 FIX. The regex this replaced matched RAW segment text,
+ * while `vcsParts`, `attributesLocation`, `isReadOnlyFilter` and `xargsOperand`
+ * all normalise with `parts[0].split('/').pop()` — so one half of this file
+ * understood `/bin/rm -rf foo` and `git -C /wt commit` and the other half did
+ * not, and the half that reports mutations was the blind one. Classifying from
+ * the same normalised token everywhere closes that asymmetry, and it widens by
+ * RECOGNISING a command already named as a writer, never by loosening an
+ * anchor: `/bin/rm`, `/usr/bin/rm` and a bare `rm` are one command.
+ *
+ * It also makes `xargs /bin/rm` work for free — `xargsOperand` hands its
+ * operand string back through `segmentMutates`, which arrives here.
+ *
+ * No `>`/`>>` test here: redirection is decided ONCE for the whole command by
+ * `redirectsToFile`. Repeating it would re-admit `cmd; ls 2>/dev/null`, whose
+ * redirection writes nothing. Segment splitting is QUOTE-AWARE upstream, which
+ * is what keeps `gh issue comment -b "done; rm -rf tmp"` a single read-only
+ * segment rather than a hidden `rm`.
+ */
+function segmentWrites(segment: string): boolean {
+  const parts = tokens(segment)
+  const lead = parts[0]?.split('/').pop()
+  if (lead === undefined || lead.length === 0) return false
+  if (MUTATING_TOOLS.has(lead)) return true
+  if (lead === 'sed') return sedWrites(parts.slice(1))
+  const packageSubs = PACKAGE_WRITE_SUBS[lead]
+  if (packageSubs !== undefined) {
+    // NOT `find(a => !a.startsWith('-'))`: that returns the VALUE of a global
+    // flag, so `npm --prefix /tmp install x` classified `/tmp` as the
+    // subcommand and never reached the `install`. `packageSubcommand` skips a
+    // value-taking flag by arity, the way `vcsParts` does for `git -C /wt`.
+    const sub = packageSubcommand(lead, parts.slice(1))
+    return sub !== undefined && packageSubs.includes(sub)
+  }
+  // `vcsParts` already knows how to skip `-C /wt`, `-c k=v`, `--git-dir …` to
+  // reach the real subcommand, so `git -C /wt commit` is seen as `git commit`
+  // while `git -C /wt status` and `git -C /wt log` stay read-only.
+  const vcs = vcsParts(segment)
+  if (vcs?.tool !== 'git' || vcs.sub === undefined) return false
+  return gitSubcommandWrites(vcs.sub, vcs.rest)
+}
+
+/**
+ * `xargs` flags that consume the NEXT token as their value, so the token after
+ * them is an argument and not the operand command.
+ *
+ * ONE RULE GOVERNS BOTH LISTS: a flag belongs here only when its argument is
+ * MANDATORY and SEPARATE. A flag whose argument is OPTIONAL carries it
+ * ATTACHED (`-i{}`, `--replace=X`), because that is the only spelling an
+ * optional argument has — so a BARE occurrence consumes nothing and the very
+ * next token is the operand command. Listing one of those swallows the
+ * operand: `xargs --replace rm` would read as no command at all and the `rm`
+ * would go unreported.
+ *
+ * So `-i`/`-e`/`-l` are OUT, and review found their GNU long forms
+ * `--replace`/`--eof`/`--max-lines` had been left IN, contradicting this very
+ * comment; they are now out too. `-0`, `-r`, `-t`, `-p`, `-x` take nothing.
+ *
+ * BSD/macOS `-J`, `-R` and `-S` are here because their arguments are
+ * mandatory and separate (`-J %`, `-R 5`, `-S 4096`). Omitting them was worse
+ * than a miss: `xargs -J rm echo` stopped at the flag's value and read
+ * `rm echo` as the operand, reporting a read-only `echo` as a mutation on the
+ * path that DENIES tool calls. Adding a flag here fixes a false positive and a
+ * false negative at once — `xargs -J % rm %` now reports the `rm`.
+ *
+ * The long list omits `--null`, `--no-run-if-empty`, `--verbose`,
+ * `--interactive` and `--exit` for the same reason as their short forms: they
+ * take no argument.
+ */
+const XARGS_VALUE_FLAGS = new Set(['-a', '-d', '-E', '-I', '-J', '-L', '-n', '-P', '-R', '-s', '-S'])
+const XARGS_LONG_VALUE_FLAGS = new Set([
+  '--arg-file', '--delimiter', '--max-args', '--max-procs', '--max-chars',
+  '--process-slot-var',
+])
+
+/**
+ * The command `xargs` will RUN, or undefined when this segment is not an
+ * `xargs` invocation (or names no operand, in which case xargs defaults to
+ * `echo` and writes nothing).
+ *
+ * WHY: `xargs` is not a writer, it is a LAUNCHER — `git ls-files | xargs rm`
+ * deletes every tracked file while the segment's leading token is `xargs`, so
+ * an anchored mutation test sees nothing. `READONLY_FILTERS` already records
+ * the mirror-image rule ("deliberately EXCLUDED … because it executes an
+ * arbitrary command chosen by its operands"); that exclusion only stops xargs
+ * from LAUNDERING a mutation, and this is the half that reports one.
+ *
+ * Quotes are stripped by `tokens`, so an operand that only exists inside a
+ * quoted program (`xargs -I{} sh -c "rm -rf $1"`) is NOT reconstructed as a
+ * command. That is deliberate: `sh`/`bash`/`node` are unclassifiable anyway,
+ * and inventing a verdict from fragments of a quoted script would produce
+ * false positives in a function that DENIES tool calls.
+ */
+function xargsOperand(segment: string): string | undefined {
+  // The flag walk reads RAW tokens: `tokens()` strips quotes, and `-I""` then
+  // collapses to a bare `-I` that swallows the following `rm` as its value —
+  // `xargs -I"" rm` and `xargs -d"" rm` both reported no mutation at all
+  // (Issue #21). An ATTACHED value, even an empty one, means the flag consumes
+  // nothing more, and only the quote still says so. Quotes are stripped when
+  // the operand is BUILT, below, so `tokens()`'s own contract is untouched.
+  const parts = rawTokens(segment)
+  if (stripQuotes(parts[0] ?? '').split('/').pop() !== 'xargs') return undefined
+  let i = 1
+  while (i < parts.length) {
+    const token = parts[i]
+    if (!token.startsWith('-') || token === '-') break
+    if (token === '--') { i += 1; break }
+    if (token.startsWith('--')) {
+      i += !token.includes('=') && XARGS_LONG_VALUE_FLAGS.has(token) ? 2 : 1
+      continue
+    }
+    // A short flag longer than two characters carries its value attached
+    // (`-n1`, `-I{}`, `-d\n`, `-I""`), so it consumes nothing further.
+    i += token.length === 2 && XARGS_VALUE_FLAGS.has(token) ? 2 : 1
+  }
+  const operand = parts.slice(i).map(stripQuotes).join(' ')
+  return operand.length > 0 ? operand : undefined
+}
+
+/**
+ * Whether ONE already-split segment writes.
+ *
+ * A read-only segment returns false for ITSELF only — the caller keeps
+ * scanning. `depth` bounds the `xargs xargs …` unwrap; a pathological nest
+ * simply stops being classified rather than looping.
+ */
+function segmentMutates(segment: string, depth = 0): boolean {
+  if (READONLY_SEGMENT.test(segment)) return false
+  const operand = xargsOperand(segment)
+  if (operand !== undefined) return depth < 4 && segmentMutates(operand, depth + 1)
+  return segmentWrites(segment)
+}
+
+/**
+ * Whether a bash command plausibly mutates the working tree or repository.
+ *
+ * EVERY segment is scanned, the way `isVcsPlumbing` already scans them. The
+ * previous version tested both regexes against the WHOLE trimmed command and
+ * returned false the moment a READ-ONLY PREFIX matched, which handed the
+ * verdict to the FIRST command in the chain: `git ls-files | xargs rm` and
+ * `git log | sed -i.bak s/a/b/ x.ts` both deleted or rewrote files and both
+ * reported nothing, because `git ls-files`/`git log` answered first (Issue
+ * #19). A read-only segment is evidence about THAT segment and nothing else,
+ * so it is now skipped rather than being an early exit for the whole command.
+ *
+ * Redirection is still decided ONCE, for the whole command, by
+ * `redirectsToFile` — see the comment on `segmentWrites` for why the segment
+ * test must not carry a raw `>` alternative of its own.
+ *
+ * THE INVARIANT THAT SETS THE ERROR BUDGET, and it points both ways:
+ * - As a RULE this fails OPEN. `mutatesFiles` wraps it and `decideWorktreeGate`
+ *   DENIES a tool call on the strength of it, so a false positive blocks a
+ *   user's real session. An unrecognised shape is therefore left alone rather
+ *   than guessed at — see the quoted-operand note on `xargsOperand`.
+ * - As DETECTION it fails CLOSED. `isConductorSelfMutation` uses it to answer
+ *   "did the conductor do a teammate's job?", and there a MISSED mutation is
+ *   the expensive error: the report is simply never made, and nobody learns
+ *   that the practice was silent. Anything that demonstrably writes — a later
+ *   segment, an `xargs` operand — must be reported.
+ * Where the two pull against each other, precision wins: widen by naming a
+ * concrete writing command, never by loosening an anchor.
+ */
 export function isMutatingCommand(command: string | undefined): boolean {
   if (command === undefined) return false
   const c = command.trim()
@@ -163,13 +562,7 @@ export function isMutatingCommand(command: string | undefined): boolean {
   // Output redirection mutates regardless of the command in front of it —
   // but only when it lands in a file.
   if (redirectsToFile(c)) return true
-  // Read-only prefixes.
-  if (/^(?:git\s+(?:status|log|diff|show|branch(?:\s+--show-current|\s+-a|\s+-r|\s*$)|rev-parse|remote\s+-v|worktree\s+list)|ls|cat|head|tail|grep|rg|find|pwd|echo|which|node\s+-e|npm\s+(?:test|run\s+\w+|ls)|pnpm\s+(?:test|run\s+\w+))\b/u.test(c)) {
-    return false
-  }
-  // No `>`/`>>` alternative here: redirection is decided once, above, by
-  // `redirectsToFile`. Repeating it raw would re-admit `cmd; ls 2>/dev/null`.
-  return /(?:^|[;&|]\s*)(?:git\s+(?:add|commit|checkout\s+-b|switch\s+-c|merge|rebase|reset|rm|mv|stash|apply|cherry-pick|push)|rm\b|mv\b|cp\b|mkdir\b|touch\b|sed\s+-i|tee\b|npm\s+(?:install|i|uninstall)|pnpm\s+(?:add|install|remove)|yarn\s+add|cargo\s+add|pip\s+install)/u.test(c)
+  return shellSegments(c).some(segment => segmentMutates(segment))
 }
 
 /**
@@ -377,10 +770,23 @@ export function commandCwd(command: string, cwd: string | undefined): string | u
   return cwd !== undefined ? resolve(cwd, found) : undefined
 }
 
+/**
+ * Split a segment into tokens, honouring quotes but KEEPING them.
+ *
+ * Needed because a quote is sometimes the only remaining evidence of a token's
+ * shape: `-I""` and `-I` are the same 2 characters once quotes are gone, yet
+ * the first carries an (empty) attached value and consumes nothing while the
+ * second swallows the next token. See `xargsOperand`.
+ */
+function rawTokens(segment: string): string[] {
+  return segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
+}
+
+const stripQuotes = (token: string): string => token.replace(/["']/gu, '')
+
 /** Split a segment into tokens, honouring quotes and stripping them. */
 function tokens(segment: string): string[] {
-  const found = segment.match(/(?:"[^"]*"|'[^']*'|\S)+/gu) ?? []
-  return found.map(t => t.replace(/["']/gu, ''))
+  return rawTokens(segment).map(stripQuotes)
 }
 
 /** Version-control / forge CLIs whose history commands are the conductor's own job. */
@@ -436,8 +842,20 @@ const READONLY_FILTERS = new Set([
  * command line: an external sed script may hold `w out.txt`, and a preprocessor
  * is an arbitrary executable.
  */
+/**
+ * The `sed` flags that edit the INPUT FILE rather than stdout — the one part of
+ * `FILTER_WRITE_FLAGS.sed` that is positive evidence of a write.
+ *
+ * Named separately because BOTH sides of this file need it and they need
+ * different amounts of it: the exclusion below also distrusts `-f`/`--file`
+ * (an unreadable script must not suppress a report), while `sedWrites` may use
+ * only these — see its comment. `FILTER_WRITE_FLAGS.sed` is composed from this
+ * so the two can never drift into disagreeing about how `-i` is spelled.
+ */
+const SED_IN_PLACE_FLAGS = ['-i', '--in-place'] as const
+
 const FILTER_WRITE_FLAGS: Record<string, readonly string[]> = {
-  sed: ['-i', '--in-place', '-f', '--file'],
+  sed: [...SED_IN_PLACE_FLAGS, '-f', '--file'],
   sort: ['-o', '--output', '--compress-program'],
   uniq: ['-o'],
   rg: ['--pre', '--hostname-bin'],
