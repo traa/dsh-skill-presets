@@ -397,34 +397,99 @@ const GIT_TREE_WRITERS = new Set(['restore', 'apply', 'am', 'revert', 'cherry-pi
  * receiving end of a pipe cannot turn a read into a mutation.
  *
  * Membership is decided by one question: can this command, by itself, create or
- * modify a file? Every entry here writes to stdout only. Deliberately EXCLUDED
- * even though they are common pipe consumers:
+ * modify a file, or run a program that does? Every entry here writes to stdout
+ * only. Deliberately EXCLUDED even though they are common pipe consumers:
  * - `xargs`, because it executes an arbitrary command chosen by its operands —
  *   `… | xargs rm` is exactly the mutation this practice exists to catch;
  * - `tee` and `dd` and `split`, whose entire purpose is writing files;
- * - `sh`/`bash`/`node`/`python`, which run arbitrary programs.
- * `sed` and `awk` ARE here, but only survive the flag check below: both can
- * write when asked to, and the check is what distinguishes `sed -n` from
- * `sed -i`.
+ * - `sh`/`bash`/`node`/`python`, which run arbitrary programs;
+ * - `awk`, removed after review: it writes with NO shell operator and no flag
+ *   to key on, through `system("touch o.txt")`, `print | "tee out.txt"`, and
+ *   `printf > f` inside the program text, in a real language whose spellings
+ *   cannot be enumerated by a regex. Recognising a safe `git log | awk
+ *   '{print $1}'` is not worth a laundering path for an arbitrary command, so
+ *   `awk` costs a false positive rather than a missed mutation;
+ * - `less`, removed for the same reason: `less +'!rm -rf x'` runs a shell
+ *   command from argv alone, and `less -o log` saves its input to a file.
+ * `more`, `jq`, `column`, `strings`, `rev`, `nl` were re-audited and kept: none
+ * of them can spawn a process or open a file for writing from their arguments
+ * (`jq` only gained `--rawfile`/`--slurpfile`, which READ). `sed` stays, but
+ * only survives the write checks below — it is the one member whose read-only
+ * use is common enough to be worth parsing precisely.
  */
 const READONLY_FILTERS = new Set([
   'tail', 'head', 'cat', 'grep', 'rg', 'egrep', 'fgrep', 'wc', 'sort', 'uniq',
-  'tr', 'cut', 'less', 'more', 'nl', 'column', 'jq', 'sed', 'awk', 'rev', 'strings',
+  'tr', 'cut', 'more', 'nl', 'column', 'jq', 'sed', 'rev', 'strings',
 ])
 
 /**
- * Flags that turn a specific read-only filter into a writer.
+ * Flags that turn a specific read-only filter into a writer or an executor.
  *
  * Keyed BY COMMAND rather than pooled, because the same spelling means
  * opposite things per tool: `sed -i` edits the file in place, while `grep -i`
  * merely ignores case and `grep -o` prints only the match. A pooled list would
  * disqualify `git push | grep -i error` — re-introducing the very false
  * positive this change removes, just on a different flag.
+ *
+ * `sed -f` and `rg --pre` / `sort --compress-program` are here not because they
+ * write, but because the file or program they name is INVISIBLE from the
+ * command line: an external sed script may hold `w out.txt`, and a preprocessor
+ * is an arbitrary executable.
  */
 const FILTER_WRITE_FLAGS: Record<string, readonly string[]> = {
-  sed: ['-i', '--in-place'],
-  sort: ['-o', '--output'],
+  sed: ['-i', '--in-place', '-f', '--file'],
+  sort: ['-o', '--output', '--compress-program'],
   uniq: ['-o'],
+  rg: ['--pre', '--hostname-bin'],
+}
+
+/**
+ * Whether a token invokes `flag`, including the spellings that attach a value.
+ *
+ * WHY: the first version of this test was `writeFlags.includes(t.split('=')[0])`,
+ * which only matched a bare token or `--flag=value`. Review found three live
+ * launderings of a real write past the exclusion — `sed -i.bak s/a/b/ src/x.ts`,
+ * `sed -ibak …` and `sort -oout.txt` — because a SHORT flag carries its value
+ * attached with no separator, and may be clustered behind other short flags
+ * (`sed -ni.bak`). Do not simplify this back to an exact-token comparison.
+ */
+function hasFlag(token: string, flag: string): boolean {
+  if (token === flag) return true
+  if (flag.startsWith('--')) return token.startsWith(`${flag}=`)
+  if (!token.startsWith('-') || token.startsWith('--')) return false
+  // `-i.bak`, and `-ni.bak` where the letter hides in a short-flag cluster:
+  // scan the leading run of letters, which is where a bundled flag can sit.
+  const cluster = token.slice(1).match(/^[A-Za-z]*/u)?.[0] ?? ''
+  return cluster.includes(flag.slice(1))
+}
+
+/**
+ * Whether a quoted `sed` PROGRAM asks sed to write a file or run a command.
+ *
+ * `sed` creates files through its script, with no shell operator for the caller
+ * to see, so the previous `/\/w\s+\S/u` test — which demanded a leading `/` and
+ * whitespace — missed `sed -n 'w out.txt'`, `sed '1,5w out.txt'` and the POSIX
+ * `sed 's/a/b/wout.txt'` spelling with no space. All three laundered a write.
+ *
+ * COVERED: `w`/`W` as a command at the start of the program, after `;`, `{`,
+ * `}`, a newline or a `!`, or directly after a numeric / `$` / `/regex/`
+ * address, with or without space before the filename; the `w` and `e` FLAGS of
+ * `s///` for any delimiter; GNU `e` as a command.
+ * KNOWINGLY NOT COVERED: a program assembled at runtime, one read from `-f`
+ * (handled by FILTER_WRITE_FLAGS instead), and a filename supplied as a later
+ * separate token. Deliberately NOT matched, to keep ordinary edits read-only:
+ * a plain `sed 's/warn/W/'`, where the `w`/`W` is payload text rather than a
+ * command — a preceding letter cannot introduce an address, so the regex
+ * requires a command position.
+ */
+function sedProgramWrites(token: string): boolean {
+  // `--expression=`/`-e` carry the program in the same token; drop the prefix
+  // so the program is matched from its true start.
+  const program = token.replace(/^(?:--expression=|-e)/u, '')
+  const address = String.raw`(?:\d+(?:\s*,\s*(?:\d+|\$))?|\$|(?<![A-Za-z])\/(?:[^/\\]|\\.)*\/)`
+  if (new RegExp(String.raw`(?:^|[;{}\n!]|${address})\s*!?\s*[wWe](?![A-Za-z])`, 'u').test(program)) return true
+  // `s/a/b/w file`, `s|a|b|w file`, and the GNU `e` flag that shells out.
+  return /s(.)(?:[^\\]|\\.)*?\1(?:[^\\]|\\.)*?\1[0-9gpiImM]*[wWe]/u.test(program)
 }
 
 /**
@@ -440,9 +505,10 @@ const FILTER_WRITE_FLAGS: Record<string, readonly string[]> = {
  * not the mutation. This is the same false-positive class as the `bash ls
  * 2>/dev/null` case recorded on `redirectsToFile`.
  *
- * Conservative by construction: anything unrecognised returns false and the
- * chain stays disqualified, so a miss costs a false positive that was already
- * there, never a missed mutation.
+ * Conservative by construction, and it must STAY that way: this is an override
+ * that suppresses a report, so every uncertain case has to return false. A
+ * miss costs a false positive that was already there; a wrong `true` LAUNDERS
+ * a real mutation, which is the failure review caught in the first version.
  */
 function isReadOnlyFilter(segment: string): boolean {
   const parts = tokens(segment)
@@ -450,15 +516,25 @@ function isReadOnlyFilter(segment: string): boolean {
   if (lead === undefined || !READONLY_FILTERS.has(lead)) return false
   const args = parts.slice(1)
   const writeFlags = FILTER_WRITE_FLAGS[lead] ?? []
-  if (args.some(t => writeFlags.includes(t.split('=')[0]))) return false
+  if (args.some(t => writeFlags.some(f => hasFlag(t, f)))) return false
   // `uniq <in> <out>` writes its SECOND operand — the one shape in this set
   // where a plain positional argument is an output file rather than an input.
-  if (lead === 'uniq' && args.filter(t => !t.startsWith('-')).length >= 2) return false
-  // A `>` or a `sed`/`awk` write instruction that survived tokenisation was
-  // QUOTED, which is exactly where `redirectsToFile` blanks it out:
-  // `awk '{print > "out.txt"}'` and `sed 's/x/y/w out.txt'` create files
-  // through their PROGRAM text, with no shell operator for the caller to see.
-  return !args.some(t => t.includes('>') || /\/w\s+\S/u.test(t))
+  // `-` is the stdin OPERAND, not a flag: dropping it made `uniq - out.txt`
+  // count as one operand and laundered the write.
+  if (lead === 'uniq') {
+    let operands = 0
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i]
+      if (arg === '-' || !arg.startsWith('-')) { operands += 1; continue }
+      if (['-f', '-s', '-w'].includes(arg)) i += 1 // these consume a count
+    }
+    if (operands >= 2) return false
+  }
+  if (lead === 'sed' && args.some(sedProgramWrites)) return false
+  // A `>` that survived tokenisation was QUOTED, which is exactly where
+  // `redirectsToFile` blanks it out: a write through PROGRAM text, with no
+  // shell operator for the caller to see.
+  return !args.some(t => t.includes('>'))
 }
 
 /** Peel a VCS invocation into tool, subcommand and remaining arguments. */
@@ -517,6 +593,14 @@ function writesWorkingTree(sub: string, rest: readonly string[]): boolean {
  * At least one VCS invocation is still REQUIRED (`sawVcs`): `ls | tail` writes
  * nothing either, but it is not plumbing, and letting it through would hand a
  * blanket exemption to any command ending in a pipe.
+ *
+ * The filter exclusion is an OVERRIDE that suppresses a report, so it fails
+ * CLOSED by design. Review of the first version found `sed -i.bak`, `sort
+ * -oout.txt`, `sed -n 'w out.txt'`, `uniq - out.txt` and `awk 'BEGIN{system(…)}'`
+ * all laundered past it — the segment was skipped, the chain read as plumbing,
+ * and a real conductor self-mutation went unreported. When extending
+ * `READONLY_FILTERS`, the bar is that the command cannot write a file OR spawn
+ * a process from its arguments; if that is uncertain, leave it out.
  *
  * Subcommands that rewrite working-tree CONTENT (`git restore`, `git apply`,
  * `git checkout -- path`, `stash pop`, `revert`, `cherry-pick`, `merge`,
