@@ -212,7 +212,6 @@ export function makeStagePopover(React: ReactLike, controller: StageController):
           id: 'skp-flow', className: 'skp-flow-select', value: card.flow.id, disabled: busy,
           onChange: (e: { target: { value: string } }) => { void controller.move({ flow: e.target.value }) },
         }, ...card.flows.map(f => h('option', { key: f.id, value: f.id, title: f.summary }, f.title))),
-        card.flow.guardrails === 'off' ? h('span', { className: 'skp-stage-gate' }, 'guardrails off') : null,
       ),
       // Stages
       stages.length > 0 ? h('div', { className: 'skp-steps', role: 'group', 'aria-label': 'Stages' },
@@ -241,14 +240,11 @@ export function makeStagePopover(React: ReactLike, controller: StageController):
         'Several presets own this stage — pick one: ',
         ...card.owners.map(id => h('button', { key: id, type: 'button', className: 'skp-stage-btn', disabled: busy, onClick: () => { void controller.move({ stage: current, pin: id }) } }, id)),
       ) : null,
-      // Suggestion (start-only)
-      card.suggestion !== undefined && !snap.noticeDone ? h('div', { className: 'skp-report-line' },
-        h('div', { className: 'skp-report-what' }, h('b', { style: { color: 'var(--dsw-alias-label-primary)' } }, `${card.suggestion.why[0] ?? 'Artifacts'} — start in ${STAGE_TITLE[card.suggestion.to] ?? card.suggestion.to}?`)),
-        h('div', { className: 'skp-report-actions' },
-          h('button', { type: 'button', className: 'skp-stage-btn primary', disabled: busy, onClick: () => { void controller.acceptSuggestion() } }, 'Yes'),
-          h('button', { type: 'button', className: 'skp-stage-btn quiet', disabled: busy, onClick: () => { void controller.dismissSuggestion() } }, 'Not now'),
-        ),
-      ) : null,
+      // Suggestion (start-only). The Yes / Not now live in the notice under the
+      // composer — ONE place to decide. Here it is a quiet pointer: clicking the
+      // suggested stage in the step row above is the same move.
+      card.suggestion !== undefined && !snap.noticeDone ? h('div', { className: 'skp-stage-gate' },
+        `${card.suggestion.why[0] ?? 'Artifacts'} — `, h('b', null, STAGE_TITLE[card.suggestion.to] ?? card.suggestion.to), ' is suggested; pick it above, or answer under the composer.') : null,
       // Report: red + relevant only. Nothing when green.
       report.length > 0 ? h('hr', { className: 'skp-stage-sep' }) : null,
       report.length > 0 ? h('div', { role: 'list', 'aria-label': 'Practices needing action', style: { display: 'flex', flexDirection: 'column', gap: 6 } }, ...report.map(p => reportLine(h, p, controller, busy))) : null,
@@ -256,7 +252,7 @@ export function makeStagePopover(React: ReactLike, controller: StageController):
       h('hr', { className: 'skp-stage-sep' }),
       h('div', { className: 'skp-stage-foot' },
         h('span', null, card.presetId !== null ? `Preset: ${card.presetId}` : card.stage === null ? 'No preset' : 'No preset for this stage'),
-        h('span', null, card.source === 'session' ? 'this session' : card.source === 'legacy' ? 'this session (preset)' : card.source === 'agent-preset' ? 'agent-preset default' : 'workspace default'),
+        h('span', null, card.source === 'session' || card.source === 'legacy' ? 'this session' : card.source === 'agent-preset' ? 'agent-preset default' : 'workspace default'),
       ),
     )
   }

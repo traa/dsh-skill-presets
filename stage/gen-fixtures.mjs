@@ -148,7 +148,7 @@ await fixture('red-worktree', {
 
 // 3. No preset for the session (today's "overlays only"; tomorrow's Explore).
 await fixture('explore', {
-  preset: null,
+  position: { flow: 'explore' },
   scorecard: {
     stageGuess: { stage: 'plan', confidence: 0.2, why: ['no repository read yet; defaulting to Plan'] },
     worst: 'n/a',

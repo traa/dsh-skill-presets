@@ -89,6 +89,11 @@ controller is created — and `conversation.composer.dock@skill-presets-start`; 
 registration removed**), `src/client/views.ts` (`makeHeaderChip`, `exposedName`, `POP_SKILL_CAP`
 and the `.skp-hchip` CSS deleted; `.skp-pop*` kept for the sidebar), `stage/shell.css` (real
 theme token names), `stage/gen-fixtures.mjs` (emits `session/position` + `flows/list`).
+Review pass (round 3, Impeccable operate mode): the popover no longer repeats the
+notice's Yes / Not now — one place to decide, the notice; the popover carries a quiet
+pointer; the redundant "guardrails off" pill beside the Explore select is gone (the body
+line says it); `legacy` reads "this session". `stage/gen-fixtures.mjs`: explore via a
+position, not a null preset.
 Tests: `stage/tests/control.spec.mjs` (8: in the composer row; popover 100 % visible + in
 viewport + anchored above the control; stages with `aria-current`; click → `session/move`;
 outside click / Escape / toggle; keyboard arrows + Enter; flow select → Explore; Explore copy;
