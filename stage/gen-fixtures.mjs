@@ -68,8 +68,7 @@ async function fixture(name, { preset, position: pos, scorecard }) {
     report: annotated.filter(p => p.status === 'red' && p.relevant && p.kind !== 'unknown'),
     ...(card.suggestion !== undefined ? { suggestion: card.suggestion } : {}),
     skills: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}` })),
-    artifacts: scorecard.facts?.artifacts ?? [],
-    pr: scorecard.facts?.pr ?? null,
+    ...(scorecard.facts !== undefined ? { artifacts: scorecard.facts.artifacts ?? [], pr: scorecard.facts.pr ?? null } : {}),
   }
   card.practices = annotated
   card.flow = where.flow; card.stage = where.stage; card.positionSource = where.source
@@ -177,6 +176,16 @@ await fixture('start-suggestion', {
       { id: 'worktree-hygiene', status: 'green', evidence: ['no merged leftovers'] },
       { id: 'post-merge-sync', status: 'green', evidence: ['level with origin/main and built'] },
     ],
+  },
+})
+
+// 5. Build stage but no facts available (e.g. initial load before stats gathered)
+await fixture('no-facts', {
+  position: { stage: 'build' },
+  scorecard: {
+    stageGuess: { stage: 'build', confidence: 0.9, why: ['plan.md committed', '3 recent edit(s)'] },
+    worst: 'n/a',
+    practices: [],
   },
 })
 

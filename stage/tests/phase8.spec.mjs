@@ -135,6 +135,17 @@ test('3. Gate first and 4. Full checks list', async ({ page }, testInfo) => {
   }
   
   await pop4.screenshot({ path: testInfo.outputPath('phase8-popover-red.png') })
+  
+  // No facts
+  await openStage(page, 'no-facts')
+  await page.locator('.skp-ctl').click()
+  const pop5 = page.locator('.skp-stage-pop')
+  const gate5 = pop5.locator('> *:first-child')
+  await expect(gate5).toHaveClass(/skp-gate/)
+  await expect(gate5).toContainText('plan.md is committed')
+  await expect(gate5.locator('.skp-gate-state.unknown')).toBeVisible()
+  await expect(gate5.locator('.skp-gate-state.unknown')).toContainText(/unknown/i)
+  await expect(gate5.locator('.skp-gate-state.todo')).toHaveCount(0)
 })
 
 test('5. Skills in play', async ({ page }) => {
