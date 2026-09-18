@@ -179,12 +179,23 @@ export class PracticeTracker {
     const planRel = facts.artifacts.find(a => a.endsWith('plan.md'))
     if (planRel === undefined) { state.plan = undefined; return }
     const path = join(facts.topLevel, planRel)
+    // Re-read when the facts are fresh OR the plan was cleared (an edit to
+    // plan.md sets `state.plan = undefined`), never on every evaluate.
     if (state.plan?.path === path && state.plan.readAt === facts.readAt) return
     try {
       state.plan = { path, patterns: planPaths(await readFile(path, 'utf8')), readAt: facts.readAt }
     } catch {
       state.plan = undefined
+      return
     }
+    // Issue #23: the drift list must describe the plan AS IT IS NOW. Before,
+    // entries were appended as edits arrived and never re-checked, so a plan.md
+    // that grew to name them left "N files not in plan.md" standing — and the
+    // next unplanned edit brought the whole stale list back.
+    const patterns = state.plan.patterns
+    const before = state.drift.length
+    state.drift = state.drift.filter(d => isDocsPath(d.path) || !coveredByPlan(d.path, facts.topLevel, patterns))
+    if (state.drift.length === 0 && before > 0) state.planUpdated = false
   }
 
   /** The session is over; run the final checks and forget it. */

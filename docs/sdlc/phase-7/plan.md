@@ -20,6 +20,11 @@ Tests: `test/worktrees.test.mjs` (fresh 0-ahead worktree → keep; grace period;
 sweep keeps `wt-fresh`), `test/detectors.test.mjs` (read-only cd does not move the root;
 docs edits → plan-before-code n/a), `test/plan-drift.test.mjs` (`isDocsPath`; `planPaths`
 accepts dotfiles — `.gitignore` was reported as drift while dogfooding this very plan).
+ADDED (issue #23, found dogfooding): `src/host/practices/index.ts` `loadPlan()` prunes
+`state.drift` against the plan AS IT IS NOW on every re-read, so a plan.md that grows to
+name the drifted files clears them and the next unplanned edit lists only itself — before,
+the stale list stood ("19 files not in plan.md") and came back on every edit.
+Test: `test/plan-drift.test.mjs` "tracker: editing plan.md to name the drifted files…".
 
 ## Task 1 — Browser stage
 Files: `stage/server.mjs` (plain `node:http`: serves the shell, React 18 UMD from
