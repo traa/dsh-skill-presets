@@ -7,7 +7,7 @@
  * | Stage control    | `conversation.input.right` (id `skill-presets-stage`) | list/session |
  * | Stage popover    | `shell.overlay` (id `skill-presets-stage-pop`)        | list/root    |
  * | Start notice     | `conversation.composer.dock` (id `skill-presets-start`)| list/session |
- * | Session Skills tab| `sidebar.right.pane.tab` (key = tab id)   | keyed/session|
+ * | Session Skills tab| `sidebar.right.pane.tab` (key = tab id) — opened from the right sidebar's Guide page ("New tab" +) | keyed/session|
  * | Plugin card      | `settings.plugin.item` (key `skill-presets`)| keyed      |
  *
  * The header chip (`conversation.session.header.utilities`) is GONE since
@@ -16,8 +16,12 @@
  * shipping tool puts its mode toggle, and its popover goes through
  * `shell.overlay` — the frame-wide floating layer nothing can clip.
  *
- * `slots` is the only hard requirement; `sidebarRightTabs` and `styles` are
- * read defensively so a shell missing one still renders the rest.
+ * Everything this plugin reads from the shell must be listed in `inject`:
+ * `ctx.get(name)` returns `undefined` for a service that is not injected, even
+ * when the shell provides it. Phase 8 fixed exactly that bug — `sidebarRightTabs`
+ * was missing, so the tab type never registered and the Skills card never
+ * appeared on the Guide page. `slots` is the only hard requirement; the rest is
+ * still read defensively so a shell missing one still renders the rest.
  * @module dsh-skill-presets/client
  */
 
@@ -55,7 +59,7 @@ interface SidebarTabsLike {
 }
 
 export const name = 'client-ui-skill-presets'
-export const inject = ['slots']
+export const inject = ['slots', 'sidebarRightTabs']
 
 const TAB_ID = 'dsh-skill-presets'
 const TAB_KIND = 'skills'
@@ -165,7 +169,7 @@ export function apply(ctx: ClientLike): void {
       kind: TAB_KIND,
       priority: 'extension',
       title: () => 'Skills',
-      guide: [{ order: 40, title: () => 'Skills', description: () => 'Active preset, practice scorecard, and which skills the model loaded this session.' }],
+      guide: [{ order: 40, title: () => 'Skills', description: () => 'Flow, stage and what ends it; what is being checked; the skills in play; every skill the model loaded this session.' }],
     }), 'skill-presets: tab type')
     const Body = makeSidebarBody(React, scorecardFor)
     ctx.effect(() => slots.inject('sidebar.right.pane.tab', () => slots.register({
