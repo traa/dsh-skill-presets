@@ -48,6 +48,9 @@ interface SlotsLike {
 
 interface StylesLike { insert(css: string): () => void }
 
+/** The shell's layout service; only `openRightbar` is used. */
+interface LayoutLike { openRightbar(track: boolean, fullscreen: boolean): void }
+
 interface SidebarTabsLike {
   register(definition: {
     id: string
@@ -59,7 +62,7 @@ interface SidebarTabsLike {
 }
 
 export const name = 'client-ui-skill-presets'
-export const inject = ['slots', 'sidebarRightTabs']
+export const inject = ['slots', 'sidebarRightTabs', 'layout']
 
 const TAB_ID = 'dsh-skill-presets'
 const TAB_KIND = 'skills'
@@ -115,9 +118,12 @@ export function apply(ctx: ClientLike): void {
   // The root-scoped overlay must re-render when a session controller is
   // created after it mounted; this store's version bumps on every creation.
   const roster = new Store<{ n: number }>({ n: 0 })
+  // The popover's "Open Skills tab" needs the shell's layout service; absent
+  // in a shell without it, and the button then only closes the popover.
+  const layout = ctx.get('layout') as LayoutLike | undefined
   const stageFor = (sessionId: string): StageController => {
     let c = stages.get(sessionId)
-    if (c === undefined) { c = new StageController(sessionId); stages.set(sessionId, c); roster.set({ n: roster.get().n + 1 }) }
+    if (c === undefined) { c = new StageController(sessionId); c.attachLayout(layout); stages.set(sessionId, c); roster.set({ n: roster.get().n + 1 }) }
     return c
   }
   const perSession = (make: (c: StageController) => () => unknown): ((props: { sessionId?: string }) => unknown) => {

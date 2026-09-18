@@ -744,6 +744,31 @@ export class StageController extends Store<StageSnapshot> {
    */
   requestFix?: (practiceId: string, skill: string) => void
 
+  /**
+   * The shell's layout service, when the plugin got one. Optional because a
+   * shell without it must still render the popover — the button then just
+   * closes it.
+   */
+  private layout: { openRightbar(track: boolean, fullscreen: boolean): void } | undefined
+
+  attachLayout(layout: { openRightbar(track: boolean, fullscreen: boolean): void } | undefined): void {
+    this.layout = layout
+  }
+
+  /**
+   * Open the right sidebar so the Skills tab is reachable, and close the
+   * popover behind it.
+   *
+   * This opens the COLUMN, not our specific tab: focusing one tab needs
+   * `sidebarRight.openTab(kind)` from a different service than `layout`.
+   * Opening the column is enough for this round — from there the tab is one
+   * click away on the Guide page.
+   */
+  openSkillsTab(): void {
+    this.layout?.openRightbar(true, false)
+    this.toggle(false)
+  }
+
   async dismissPractice(id: string): Promise<void> {
     this.set({ hidden: [...this.get().hidden, id] })
     try { await rpc('practice/dismiss', { sessionId: this.sessionId, id }) } catch { /* advisory */ }
