@@ -209,8 +209,8 @@ test('acceptance: a fresh store puts a new session in Full/Plan; the workspace d
   assert.equal((await svc.positionFor({ id: 'x', agentPreset: 'standard' })).flow.id, 'explore')
 })
 
-// The bug was observed: the live prompt block read "Flow: Full · stage 1 of 5: Plan" directly above "Active skill preset: Build".
-test('positionFor: a pre-flows preset at the default or agent-preset rung reads as Full at that stage (legacy), until a position is set there', async () => {
+// The source is the rung. 'legacy' is only for a pre-flows session preset, because the UI labels it "this session".
+test('positionFor: a pre-flows preset at the default or agent-preset rung reads as Full at that stage; source is the rung, and \'legacy\' is reserved for a session-rung preset', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skp-legacy-'))
   const svc = new SkillPresetsService({ root: () => root, now: () => new Date('2026-09-18T12:00:00Z') })
   await svc.ensure()
@@ -220,18 +220,18 @@ test('positionFor: a pre-flows preset at the default or agent-preset rung reads 
   let pos = await svc.positionFor({ id: 'new-session' })
   assert.equal(pos.stage, 'build')
   assert.equal(pos.presetId, 'build')
-  assert.equal(pos.source, 'legacy')
+  assert.equal(pos.source, 'default')
 
   await svc.activate('test-review', 'ui', { scope: 'agent-preset', agentPreset: 'cordis' })
 
   pos = await svc.positionFor({ id: 'x', agentPreset: 'cordis' })
   assert.equal(pos.stage, 'test')
   assert.equal(pos.presetId, 'test-review')
-  assert.equal(pos.source, 'legacy')
+  assert.equal(pos.source, 'agent-preset')
 
   pos = await svc.positionFor({ id: 'x', agentPreset: 'standard' })
   assert.equal(pos.stage, 'build')
-  assert.equal(pos.source, 'legacy')
+  assert.equal(pos.source, 'default')
 
   await svc.setPosition({ scope: 'default' }, { stage: 'design' }, 'ui')
 
@@ -245,4 +245,9 @@ test('positionFor: a pre-flows preset at the default or agent-preset rung reads 
   pos = await svc.positionFor({ id: 'S', agentPreset: 'cordis' })
   assert.equal(pos.stage, 'test')
   assert.equal(pos.source, 'session')
+
+  // The one remaining 'legacy': a SESSION-rung preset with no position.
+  await svc.activate('deploy', 'ui', { sessionId: 'L' })
+  const legacy = await svc.positionFor({ id: 'L' })
+  assert.equal(legacy.stage, 'deploy'); assert.equal(legacy.presetId, 'deploy'); assert.equal(legacy.source, 'legacy')
 })
