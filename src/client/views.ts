@@ -6,7 +6,7 @@
  */
 
 import { AT_RISK_PREFIX } from './api.ts'
-import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, StageGuess, Status } from './api.ts'
+import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
 
 export interface ReactLike {
@@ -128,8 +128,6 @@ export const CSS = `
   border: 1px solid var(--dsw-alias-border-l2); white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .skp-edge { position: absolute; height: 1px; background: var(--dsw-alias-border-l2); transform-origin: 0 0; }
 .skp-lock { opacity: .7; }
-.skp-pulse { animation: skp-pulse 1.4s ease-in-out infinite; }
-@keyframes skp-pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent); } 50% { box-shadow: 0 0 0 5px transparent; } }
 `
 
 /** Bind `useState`+`useEffect` to a store. */
@@ -154,41 +152,9 @@ function pct(n: number): string {
  * Presentation only: `SUGGEST_AT` in host/stage.ts still decides, on its own,
  * when a preset switch is offered.
  */
-const STAGE_SHOW_AT = 0.6
-
-/**
- * The detected-stage line, shared by the popover and the sidebar so the two can
- * never drift apart.
- *
- * `confidence` is the detector's certainty in its GUESS, but a stage name
- * followed by a bare percentage reads as PROGRESS ("Plan (50%)" → the plan is
- * half done), which is the opposite of what it means. So the number is never
- * shown bare: it is spelled out as "N% confident", after the stage name and an
- * em dash, and the reasons move to their own muted line — which also keeps the
- * first line inside 340px no matter how long a `why` (a PR URL) runs.
- *
- * Under `STAGE_SHOW_AT` no stage is named at all: a coin-flip fallback rendered
- * with the weight of an 85% guess from an open PR is a wrong finding, not a
- * weak one. The muted "not yet clear" line keeps the surface honest and still
- * reachable — the guess and its number stay on hover rather than being dropped.
- * @param h - bound `React.createElement`.
- * @param guess - the host's stage guess.
- * @param cls - text class for this surface ('skp-pop-s' | 'skp-sub').
- */
-function stageLines(h: ReactLike['createElement'], guess: StageGuess, cls: string): unknown[] {
-  const label = STAGE_LABEL[guess.stage] ?? guess.stage
-  const why = guess.why.join(' · ')
-  if (guess.confidence < STAGE_SHOW_AT) {
-    return [h('div', {
-      className: `${cls} skp-why`,
-      title: `Best guess ${label} at ${pct(guess.confidence)} confidence — too low to name a stage${why.length > 0 ? ` · ${why}` : ''}`,
-    }, 'Detected stage: not yet clear')]
-  }
-  return [
-    h('div', { className: cls }, 'Detected stage: ', h('span', { className: 'skp-stage-name' }, label), ` — ${pct(guess.confidence)} confident`),
-    why.length > 0 ? h('div', { className: `${cls} skp-why`, title: why }, why) : null,
-  ]
-}
+// `stageLines` / `STAGE_SHOW_AT` (the "Detected stage: … — N% confident" line)
+// were removed in Phase 7: the sidebar never announces a guess. The start-only
+// suggestion in the composer control is the one place a guess is offered.
 
 /** Signed delta rendering: "+12 pt" / "−0.4". */
 function delta(v: number | undefined, kind: 'pct' | 'num'): string {
@@ -848,23 +814,18 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
     const facts = card.facts
     return h('div', { className: 'skp skp-side' },
       h('div', { className: 'skp-col' },
-        h('h3', null, 'Preset'),
+        h('h3', null, 'Flow'),
         h('div', { className: 'skp-row' },
-          h('span', { className: 'skp-swatch', style: { background: card.activePreset?.color ?? 'var(--dsw-alias-border-l2)' } }),
-          h('strong', null, card.activePreset?.title ?? 'none'),
-          card.activePreset !== undefined ? h('span', { className: 'skp-sub' }, STAGE_LABEL[card.activePreset.stage] ?? card.activePreset.stage) : null,
-          h('span', { className: 'skp-pill', title: 'Which rung set it: this session, the agent-preset default, or the workspace default' }, card.activeSource === 'session' ? 'this session' : card.activeSource === 'agent-preset' ? `agent preset` : 'workspace default'),
+          card.flow !== undefined ? h('strong', null, card.flow.title) : h('strong', null, card.activePreset?.title ?? 'none'),
+          card.flow !== undefined && card.stage !== undefined && card.stage !== null
+            ? h('span', { className: 'skp-sub' }, `${STAGE_LABEL[card.stage] ?? card.stage}${card.flow.stages.length > 0 ? ` · ${card.flow.stages.indexOf(card.stage) + 1} of ${card.flow.stages.length}` : ''}`)
+            : card.flow !== undefined ? h('span', { className: 'skp-sub' }, 'no stages · guardrails off') : null,
+          card.activePreset !== undefined ? h('span', { className: 'skp-pill', title: 'The preset this stage maps to' }, h('span', { className: 'skp-swatch', style: { background: card.activePreset.color ?? 'var(--dsw-alias-border-l2)', marginRight: 4 } }), card.activePreset.title) : null,
+          h('span', { className: 'skp-pill', title: 'Which rung set it: this session, the agent-preset default, or the workspace default' }, (card.positionSource ?? card.activeSource) === 'session' || card.positionSource === 'legacy' ? 'this session' : (card.positionSource ?? card.activeSource) === 'agent-preset' ? 'agent preset' : 'workspace default'),
           card.overlays.length > 0 ? h('span', { className: 'skp-pill' }, `+ ${card.overlays.join(', ')}`) : null,
-          !card.live ? h('span', { className: 'skp-pill amber' }, 'session not live') : null,
+          !card.live ? h('span', { className: 'skp-pill' }, 'session not live') : null,
         ),
-        ...stageLines(h, card.stageGuess, 'skp-sub'),
-        card.suggestion !== undefined ? h('div', { className: 'skp-card skp-pulse', style: { padding: '8px 10px' } },
-          h('div', { style: { fontWeight: 650 } }, `Switch to ${STAGE_LABEL[card.suggestion.to] ?? card.suggestion.to}?`),
-          h('div', { className: 'skp-row' },
-            card.suggestion.presetId !== undefined ? h('button', { className: 'skp-btn small primary', disabled: snap.busy !== undefined, onClick: () => { void controller.acceptSuggestion() } }, 'Switch') : null,
-            h('button', { className: 'skp-btn small', onClick: () => { void controller.dismissSuggestion() } }, 'Not now'),
-          ),
-        ) : null,
+        card.gate !== undefined && card.gate !== null ? h('div', { className: 'skp-sub' }, `Ends with ${card.gate}${card.next !== undefined && card.next !== null ? ` → then ${STAGE_LABEL[card.next] ?? card.next}` : ' — last stage of this flow'}. Change flow or stage from the control beside the composer.`) : null,
       ),
       h('div', { className: 'skp-col' },
         h('h3', null, 'Stage & artifacts'),
@@ -876,29 +837,49 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
                 h('span', { className: `skp-chip${facts.pr !== undefined ? '' : ' miss'}` }, facts.pr !== undefined ? `✓ PR ${facts.pr.state}` : facts.ghAvailable ? '✗ PR' : '? PR (no gh)')),
             ),
       ),
-      h('div', { className: 'skp-col' },
-        h('h3', null, 'Practices'),
-        ...(() => {
-          const { shown, hiddenCount, hiddenTitle } = splitApplicable(card.practices, id => status.practiceInfo[id]?.title ?? id)
-          return [
-            ...shown.map((p) => {
-              const risk = isAtRisk(p)
-              // Same de-duplication as the popover: the pill carries the
-              // marker, so the evidence lines below it must not repeat it.
-              const evidence = risk
-                ? p.evidence.map(e => e.startsWith(AT_RISK_PREFIX) ? e.slice(AT_RISK_PREFIX.length) : e)
-                : p.evidence
-              return h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
-                h('div', { className: 'skp-line' },
-                  h('i', { className: `skp-dot ${risk ? 'at-risk' : p.status}` }),
-                  h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: `skp-pill ${risk ? 'at-risk' : p.status}` }, risk ? 'at risk' : p.status))),
-                ...evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
-              )
-            }),
-            hiddenCount > 0 ? h('div', { key: 'skp-na', className: 'skp-na', title: hiddenTitle }, `+${hiddenCount} not applicable in this stage`) : null,
-          ]
-        })(),
-      ),
+      // Gate report: red + relevant + not unknown, one line each with the
+      // evidence and the skill that fixes it. Rendered ONLY when non-empty.
+      ...(() => {
+        const annotated = card.practices as (PracticeResult & { relevant?: boolean, kind?: 'violation' | 'unknown' })[]
+        const flowAware = annotated.some(p => p.relevant !== undefined)
+        const report = annotated.filter(p => p.status === 'red' && (p.relevant ?? true) && p.kind !== 'unknown')
+        const unknown = annotated.filter(p => p.kind === 'unknown' && (p.relevant ?? true))
+        const soft = annotated.filter(p => p.status === 'amber' && p.kind !== 'unknown' && (p.relevant ?? true))
+        const fine = annotated.filter(p => p.status === 'green' && (p.relevant ?? true))
+        const irrelevant = flowAware ? annotated.filter(p => p.relevant === false && p.status !== 'n/a') : []
+        const { hiddenCount, hiddenTitle } = splitApplicable(annotated.filter(p => p.status === 'n/a'), id => status.practiceInfo[id]?.title ?? id)
+        const na = hiddenCount + irrelevant.length
+        const naTitle = [hiddenTitle, ...irrelevant.map(p => `${status.practiceInfo[p.id]?.title ?? p.id}: not judged in this stage`)].filter(Boolean).join('\n')
+        return [
+          report.length > 0 ? h('div', { key: 'report', className: 'skp-col skp-report' },
+            h('h3', null, 'Needs action'),
+            ...report.map(p => h('div', { key: p.id, className: 'skp-report-line' },
+              h('div', { className: 'skp-report-what' },
+                h('b', null, status.practiceInfo[p.id]?.title ?? p.id),
+                h('span', { title: p.evidence.join(' · ') }, p.evidence[0] ?? ''),
+              ),
+              h('div', { className: 'skp-report-actions' },
+                status.practiceInfo[p.id]?.skill !== undefined ? h('span', { className: 'skp-stage-gate', title: 'The skill that fixes it' }, status.practiceInfo[p.id].skill) : null,
+              ),
+            )),
+          ) : null,
+          h('div', { key: 'practices', className: 'skp-col' },
+            h('h3', null, 'Practices'),
+            ...soft.map(p => h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
+              h('div', { className: 'skp-line' }, h('i', { className: 'skp-dot amber' }), h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: 'skp-sub' }, 'advisory'))),
+              ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
+            )),
+            ...fine.map(p => h('div', { key: p.id, className: 'skp-line' },
+              h('i', { className: 'skp-dot green' }),
+              h('span', { title: p.evidence.join(' · ') }, status.practiceInfo[p.id]?.title ?? p.id),
+            )),
+            unknown.length > 0 ? h('div', { key: 'nj', className: 'skp-na skp-not-judged', title: unknown.map(p => `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.evidence[0] ?? ''}`).join('\n') },
+              `Not judged (facts unavailable): ${unknown.map(p => status.practiceInfo[p.id]?.title ?? p.id).join(', ')}`) : null,
+            na > 0 ? h('div', { key: 'skp-na', className: 'skp-na', title: naTitle }, `+${na} not applicable in this stage`) : null,
+            report.length === 0 && soft.length === 0 && fine.length === 0 && unknown.length === 0 && na === 0 ? h('div', { className: 'skp-sub' }, card.flow?.guardrails === 'off' ? 'Guardrails are off in this flow.' : 'Nothing judged yet.') : null,
+          ),
+        ]
+      })(),
       snap.peers !== undefined && snap.peers.peerCount > 0 ? h('div', { className: 'skp-col' },
         h('h3', null, `This session vs your last ${snap.peers.peerCount} under ${card.activePreset?.title ?? 'no preset'}`),
         h('table', { className: 'skp-table' },

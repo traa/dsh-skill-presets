@@ -151,11 +151,11 @@ test('stage control renders nothing without a session id and reads the stage wit
   await new Promise(r => setTimeout(r, 30))
   tree = render(React, React.createElement(Control, { sessionId: 's-1' }))
   assert.match(text(tree).join(' '), /Build/)
-  const button = flatten(tree).find(n => (n.props?.className ?? '').includes('skp-stage'))
+  const button = flatten(tree).find(n => (n.props?.className ?? '').includes('skp-ctl'))
   assert.equal(button.props['aria-expanded'], 'false')
   assert.match(button.props.title, /Full flow · Build \(3 of 5\) · next gate: plan\.md/)
   // Green: no count, no dot.
-  assert.equal(nodesWithClass(tree, 'skp-stage-count').length, 0)
+  assert.equal(nodesWithClass(tree, 'skp-ctl-count').length, 0)
   assert.equal(nodesWithClass(tree, 'skp-dot').length, 0)
   // The overlay renders nothing while closed.
   const Overlay = registrations.find(r => r.options.name === 'shell.overlay').component
@@ -205,13 +205,15 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   assert.match(words, /ghost/)
   assert.match(words, /plan\.md/)
   assert.match(words, /1 of 2 loaded/)
-  // Phase 2 surfaces: preset source, detected stage + suggestion, drift, experiments.
+  // Phase 2 surfaces still here: preset source, drift, experiments.
   assert.match(words, /this session/)
-  // The stage name is named AND its number is spelled out as confidence, so a
-  // reader cannot take "Test & Review 85%" for progress through that stage.
-  assert.match(words.replace(/\s+/gu, ' '), /Detected stage: Test & Review — 85% confident/)
-  assert.doesNotMatch(words, /Test & Review\s*\(85%\)/)
-  assert.match(words, /Switch to Test & Review\?/)
+  // Phase 7: the sidebar no longer announces a DETECTED stage or a mid-session
+  // "Switch to …?" — the stage is the human's choice in the composer control,
+  // and the start-only suggestion lives there. A red, relevant practice is a
+  // "Needs action" line with the skill that fixes it.
+  assert.doesNotMatch(words, /Detected stage/)
+  assert.doesNotMatch(words, /Switch to Test & Review\?/)
+  assert.match(words, /Needs action Work in a worktree 2 file mutations on protected branch main/)
   assert.match(words, /unplanned\.ts/)
   assert.match(words, /s-3/)
   assert.match(words, /Why each load/)
@@ -331,35 +333,33 @@ test('when every practice is n/a the muted line stands alone rather than an empt
   await new Promise(r => setTimeout(r, 5))
 })
 
-test('a sub-threshold stage guess names no stage: the 0.5 fallback is muted, not announced like a finding', async () => {
+// Phase 7: the sidebar never shows the detector's guess. The stage is what the
+// human set in the composer control; a guess is offered ONLY as the start-only
+// suggestion there. So whatever detectStage returns — sub-threshold fallback or
+// a confident finding — the sidebar body is silent about it.
+test('the sidebar never announces a detected stage, whatever the guess', async () => {
   const { mod, React } = await load()
   const { ctx, registrations } = fakeCtx()
   const { scorecard, status } = mixedFixture()
-  // What detectStage returns when nothing matched at all.
-  scorecard.stageGuess = { stage: 'plan', confidence: 0.5, why: ['nothing observed yet; defaulting to Plan'] }
-  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
-  mod.apply(ctx)
-  const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
-  const props = { sessionId: 's-6', useTabInfo: () => ({ tab: { visible: true } }) }
-  render(React, React.createElement(Body, props))
-  React.__runEffects()
-  await new Promise(r => setTimeout(r, 30))
-  const tree = render(React, React.createElement(Body, props))
-  const words = text(tree).join(' ').replace(/\s+/gu, ' ')
-  assert.match(words, /Detected stage: not yet clear/)
-  // No stage is named and no percentage is shown on the line itself.
-  assert.doesNotMatch(words, /Detected stage: Plan/)
-  assert.doesNotMatch(words, /50%/)
-  // The guess is muted, not discarded: stage, exact figure and reason stay on hover.
-  const line = nodesWithClass(tree, 'skp-why').find(n => /not yet clear/u.test(text(n).join('')))
-  assert.ok(line, 'the muted stage line should carry the skp-why class')
-  assert.match(line.props.title, /Plan/)
-  assert.match(line.props.title, /50% confidence/)
-  assert.match(line.props.title, /nothing observed yet; defaulting to Plan/)
-  // It must not be counted as a "+N not applicable" practice line.
-  assert.equal(nodesWithClass(tree, 'skp-na').filter(n => /not yet clear/u.test(text(n).join(''))).length, 0)
-  React.__runEffects()
-  await new Promise(r => setTimeout(r, 5))
+  for (const guess of [
+    { stage: 'plan', confidence: 0.5, why: ['nothing observed yet; defaulting to Plan'] },
+    { stage: 'test', confidence: 0.85, why: ['PR open: u'] },
+  ]) {
+    scorecard.stageGuess = guess
+    globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
+    mod.apply(ctx)
+    const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
+    const props = { sessionId: `s-guess-${guess.confidence}`, useTabInfo: () => ({ tab: { visible: true } }) }
+    render(React, React.createElement(Body, props))
+    React.__runEffects()
+    await new Promise(r => setTimeout(r, 30))
+    const words = text(render(React, React.createElement(Body, props))).join(' ').replace(/\s+/gu, ' ')
+    assert.doesNotMatch(words, /Detected stage/)
+    assert.doesNotMatch(words, /confident/)
+    assert.equal(nodesWithClass(render(React, React.createElement(Body, props)), 'skp-why').length, 0)
+    React.__runEffects()
+    await new Promise(r => setTimeout(r, 5))
+  }
 })
 
 // "the popover hides n/a practices and shows the session scope as a neutral

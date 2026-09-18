@@ -167,8 +167,14 @@ export interface Scorecard {
   overlays: string[]
   offered: { name: string, via: string, description: string }[]
   unresolved: { ref: string, reason: string }[]
-  practices: PracticeResult[]
+  practices: (PracticeResult | AnnotatedPractice)[]
   worst: PracticeResult['status']
+  /** Phase 7: the session's position. */
+  flow?: Flow
+  stage?: string | null
+  positionSource?: 'session' | 'agent-preset' | 'default' | 'legacy'
+  gate?: string | null
+  next?: string | null
   facts?: GitFacts
   summary: SessionSummary
   loadTrace?: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean, deltas: { id: string, from?: string, to: string }[] }[]

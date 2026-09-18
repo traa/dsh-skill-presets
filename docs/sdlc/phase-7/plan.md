@@ -89,11 +89,21 @@ chip tests replaced by a closed-state control test). The BEFORE test is retired;
 and the AFTER are in `stage/shots/`.
 
 ## Task 5 — Gate report in the popover and sidebar
-Files: `src/client/views.ts` (red+relevant lines with one action each: `Create worktree`,
-`Open PR`, `Update plan.md`, `Sync`, `Remove worktree`; *Not judged* muted group in the
-sidebar; green → nothing), `src/client/controller.ts` (actions call existing RPCs).
-Tests: `stage/tests/health.spec.ts` (green fixture: zero lines; red-worktree fixture:
-exactly one line, one button; dismiss hides), screenshots per fixture.
+Files: `src/client/stage.ts` (report lines were built in Task 4; control classes renamed
+`skp-ctl*` — `.skp-stage` collided with the SETTINGS stage card's CSS (`flex-direction:
+column`) and stacked the pill vertically; the stage caught it, a fake React never would),
+`src/client/views.ts` (sidebar: "Preset" block → "Flow" line with stage n of m, gate, and
+the derived preset as a pill; "Practices" → a "Needs action" block (red + relevant, evidence
++ fixing skill) rendered ONLY when non-empty, then green lines, amber advisories, one muted
+"Not judged (facts unavailable): …" line, "+N not applicable"; `stageLines`/`STAGE_SHOW_AT`
+and the suggestion card + `.skp-pulse` deleted — the sidebar never announces a guess),
+`src/client/api.ts` (`Scorecard.flow/stage/positionSource/gate/next`, annotated practices).
+Tests: `stage/tests/health.spec.mjs` (5: green → no count/no lines/no amber; red worktree →
+count 1, one line, one fix + dismiss, unknown hygiene NOT listed; dismiss → hidden +
+`practice/dismiss`; sidebar → one report line, unknowns under "Not judged", no amber badges;
+green sidebar → no report block), `test/client.test.mjs` (scorecard test updated; "never
+announces a detected stage" replaces the muted-guess test). Screenshots: `stage/shots/after-
+red-worktree.png`, `after-sidebar.png`.
 
 ## Task 6 — Settings: Flows section
 Files: `src/client/views.ts` (Stages tab → Flows list: stages as ordered toggles,

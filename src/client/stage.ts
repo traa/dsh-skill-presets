@@ -36,15 +36,16 @@ const PRACTICE_FIX: Record<string, { label: string, skill: string }> = {
 }
 
 export const STAGE_CSS = `
-.skp-stage { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 600;
+.skp-ctl { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 600; line-height: 1; flex: none; width: auto; max-width: none;
   color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); cursor: pointer; white-space: nowrap;
   transition: background 150ms ease-out, border-color 150ms ease-out; }
-.skp-stage:hover { background: var(--dsw-alias-bg-overlay); }
-.skp-stage:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.skp-stage[aria-expanded="true"] { border-color: var(--dsw-alias-brand-primary); }
-.skp-stage .skp-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-.skp-stage-count { font-weight: 700; color: var(--dsw-alias-state-error-primary); }
-.skp-stage-caret { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+.skp-ctl:hover { background: var(--dsw-alias-bg-overlay); }
+.skp-ctl:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.skp-ctl[aria-expanded="true"] { border-color: var(--dsw-alias-brand-primary); }
+.skp-ctl .skp-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; margin: 0; }
+.skp-ctl > * { flex: none; }
+.skp-ctl-count { font-weight: 700; color: var(--dsw-alias-state-error-primary); white-space: nowrap; }
+.skp-ctl-caret { color: var(--dsw-alias-label-secondary); font-size: 10px; }
 .skp-stage-pop { position: fixed; width: 360px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box;
   background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,.28); color: var(--dsw-alias-label-primary); font-size: 13px; z-index: 1; }
@@ -111,7 +112,7 @@ export function makeStageControl(React: ReactLike, controller: StageController):
     return h('button', {
       ref,
       type: 'button',
-      className: 'skp skp-stage',
+      className: 'skp skp-ctl',
       'aria-haspopup': 'dialog',
       'aria-expanded': snap.open ? 'true' : 'false',
       title: card === undefined ? 'Stage' : card.stage === null
@@ -124,8 +125,8 @@ export function makeStageControl(React: ReactLike, controller: StageController):
     },
       h('span', { className: 'skp-swatch', style: { background: swatch ?? 'var(--dsw-alias-brand-primary)' } }),
       label,
-      count > 0 ? h('span', { className: 'skp-stage-count', 'aria-label': `${count} practices need action` }, `· ${count}`) : null,
-      h('span', { className: 'skp-stage-caret', 'aria-hidden': 'true' }, '▾'),
+      count > 0 ? h('span', { className: 'skp-ctl-count', 'aria-label': `${count} practices need action` }, `· ${count}`) : null,
+      h('span', { className: 'skp-ctl-caret', 'aria-hidden': 'true' }, '▾'),
     )
   }
 }

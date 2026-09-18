@@ -4,7 +4,7 @@
 import { test, expect } from '@playwright/test'
 import { openStage, rpcCalls, expectInViewport, visibleFraction } from './_helpers.mjs'
 
-const CONTROL = '[data-slot="conversation.input.right"] .skp-stage'
+const CONTROL = '[data-slot="conversation.input.right"] .skp-ctl'
 const POP = '[data-slot="shell.overlay"] .skp-stage-pop'
 
 test.describe('stage control', () => {
@@ -16,7 +16,7 @@ test.describe('stage control', () => {
     // No dot, no pulse, no count when everything is green.
     await expect(control.locator('.skp-dot')).toHaveCount(0)
     await expect(control).not.toHaveClass(/pulse/u)
-    await expect(control.locator('.skp-stage-count')).toHaveCount(0)
+    await expect(control.locator('.skp-ctl-count')).toHaveCount(0)
     // The header chip is gone.
     await expect(page.locator('[data-slot="conversation.session.header.utilities"] .skp-hchip')).toHaveCount(0)
   })
