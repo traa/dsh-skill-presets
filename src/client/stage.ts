@@ -69,10 +69,10 @@ export const STAGE_CSS = `
 .skp-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skp-ctl-count { flex: 0 0 auto; color: var(--dsw-alias-state-error-primary); }
 .skp-ctl-caret { flex: 0 0 auto; color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 1; }
-/* Same material as every other popup in the app (the Menu primitive surface). */
+/* Same material as the shell's Menu primitive (see dsh-agent-teams .dat-picker). */
 .skp-stage-pop { position: fixed; width: 360px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box;
-  background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
-  box-shadow: 0 8px 28px rgba(0,0,0,.18); color: var(--dsw-alias-label-primary); font-size: 13px; z-index: 1; }
+  background: var(--dsw-specific-menu); border: 1px solid var(--dsw-alias-border-inverted); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: var(--dsw-shadow-lv3); color: var(--dsw-alias-label-primary); font-size: 13px; z-index: 1; }
 .skp-stage-head { display: flex; align-items: center; gap: 8px; }
 .skp-stage-head label { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .skp-flow-select { font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: inherit; }
@@ -86,10 +86,6 @@ export const STAGE_CSS = `
 .skp-stage-gate { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .skp-stage-gate b { color: var(--dsw-alias-label-primary); font-weight: 600; }
 .skp-stage-sep { border-top: 1px solid var(--dsw-alias-border-l1); margin: 0; }
-.skp-report-line { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
-.skp-report-line .skp-report-what { font-size: 12px; min-width: 0; }
-.skp-report-line .skp-report-what b { color: var(--dsw-alias-state-error-primary); font-weight: 600; }
-.skp-report-line .skp-report-what span { display: block; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skp-report-actions { display: flex; gap: 4px; }
 .skp-stage-btn { font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); cursor: pointer; }
 .skp-stage-btn.primary { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: #0b1020; }
@@ -180,7 +176,7 @@ export function makeStageControl(React: ReactLike, controller: StageController):
  * (title, evidence) is rendered by `renderChecks` for every relevant
  * practice and this contributes just the buttons for the red ones.
  */
-export function reportLine(h: ReactLike['createElement'], p: AnnotatedPractice, controller: StageController, busy: boolean): unknown {
+function checkActions(h: ReactLike['createElement'], p: AnnotatedPractice, controller: StageController, busy: boolean): unknown {
   const fix = PRACTICE_FIX[p.id]
   return h('div', { className: 'skp-report-actions' },
       fix !== undefined && controller.requestFix !== undefined ? h('button', {
@@ -278,7 +274,7 @@ export function renderChecks(
     return h('div', { key: p.id, className: 'skp-check', role: 'listitem', 'data-status': status },
       h('i', { className: `skp-dot ${status}` }),
       h('span', { className: 'skp-check-title' }, titleOf(p.id)),
-      actionable ? reportLine(h, p, options.controller!, options.busy === true) : null,
+      actionable ? checkActions(h, p, options.controller!, options.busy === true) : null,
       h('span', { className: 'skp-check-note', title: p.evidence.join(' · ') }, note),
     )
   })
