@@ -12,6 +12,8 @@ tsconfig.tsbuildinfo
 node_modules
 
 # Browser stage artefacts (screenshots, traces)
-stage/shots/
+stage/shots/*
+!stage/shots/before-chip-clipped.png
+!stage/shots/.keep
 test-results/
 playwright-report/
