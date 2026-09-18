@@ -747,6 +747,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const isMuted = (id: string): boolean => hidden.has(id) || (muted.dismissed[`none→practice:${id}`]?.count ?? 0) >= 3
     const pos = position.stage !== null ? positionOf(position.flow, position.stage) : undefined
     const { suggestion } = await suggestionFor(sessionId)
+    const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
     return {
       sessionId,
       flow: position.flow,
@@ -760,6 +761,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       practices,
       /** Red + relevant + not unknown + not dismissed: the lines the control shows. */
       report: practices.filter(p => p.status === 'red' && p.relevant && p.kind !== 'unknown' && !isMuted(p.id)),
+      /** Committed stage artifacts, so the client can say whether the gate is met. */
+      artifacts: [...(score?.facts?.artifacts ?? [])],
+      /**
+       * Absent = we could not look (no forge CLI), so the gate renders "? unknown";
+       * null = we looked and found none; object = the open PR.
+       */
+      pr: score?.facts?.pr ?? (score?.facts?.ghAvailable === false ? undefined : null),
+      /** The skills actually offered this session, for the "Skills in play" chips. */
+      skills: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}` })),
       ...(suggestion !== undefined ? { suggestion } : {}),
     }
   }
