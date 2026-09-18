@@ -10,3 +10,14 @@ tsconfig.tsbuildinfo
 *.log
 .DS_Store
 node_modules
+
+# Browser stage artefacts (screenshots, traces)
+stage/shots/*
+!stage/shots/before-chip-clipped.png
+!stage/shots/after-control-open.png
+!stage/shots/after-red-worktree.png
+!stage/shots/after-sidebar.png
+!stage/shots/after-settings-flows.png
+!stage/shots/.keep
+test-results/
+playwright-report/

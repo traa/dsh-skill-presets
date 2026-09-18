@@ -69,6 +69,8 @@ export class StorePaths {
   get suggestions(): string { return join(this.skills, 'suggestions.json') }
   get experiments(): string { return join(this.skills, 'experiments.json') }
   get worktrees(): string { return join(this.skills, 'worktrees.json') }
+  get flows(): string { return join(this.skills, 'flows.json') }
+  get positions(): string { return join(this.skills, 'positions.json') }
   get usage(): string { return join(this.skills, 'usage') }
   get rollup(): string { return join(this.skills, 'usage-rollup.json') }
   get migrated(): string { return join(this.skills, 'MIGRATED.md') }
@@ -288,7 +290,7 @@ export function validatePractices(raw: unknown, fallback: () => PracticesDoc): P
   return {
     version: 1,
     strictSkills: doc.strictSkills === true,
-    autoCleanWorktrees: doc.autoCleanWorktrees !== false,
+    autoCleanWorktrees: doc.autoCleanWorktrees === true,
     pruning: {
       minSessions: typeof doc.pruning?.minSessions === 'number' ? doc.pruning.minSessions : base.pruning.minSessions,
       maxLoadRate: typeof doc.pruning?.maxLoadRate === 'number' ? doc.pruning.maxLoadRate : base.pruning.maxLoadRate,

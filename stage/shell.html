@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>dsh-skill-presets · stage</title>
+<link rel="stylesheet" href="/shell.css">
+</head>
+<body>
+<div id="frame" class="frame">
+  <aside class="sidebar" data-slot="sidebar">
+    <div class="brand">dsh · stage</div>
+    <nav class="nav"><a href="#" data-stage-nav="conversation" class="on">Session</a><a href="#" data-stage-nav="settings">Settings</a></nav>
+    <div class="fixtures" id="fixtures"></div>
+  </aside>
+  <main class="main">
+    <section id="view-conversation" class="view on">
+      <header class="header" data-slot="conversation.session.header">
+        <span class="crumb">workspace</span><span class="crumb sep">/</span><span class="crumb">stage session</span>
+        <div class="header-utilities" data-slot="conversation.session.header.utilities"></div>
+      </header>
+      <div class="body">
+        <div class="chat">
+          <div class="msg user">Make the popover escape the header.</div>
+          <div class="msg assistant">Working on it.</div>
+        </div>
+        <div class="composer-card">
+          <div data-slot="conversation.input.dock" class="dock top"></div>
+          <textarea class="input" rows="2" placeholder="Message…"></textarea>
+          <div class="toolrow">
+            <div class="left" data-slot="conversation.input.left"></div>
+            <div class="spacer"></div>
+            <button class="ctl" type="button">◇ claude-fable ▾</button>
+            <button class="ctl" type="button">⏸ plan</button>
+            <div class="right" data-slot="conversation.input.right"></div>
+            <button class="send" type="button">↑</button>
+          </div>
+        </div>
+        <div data-slot="conversation.composer.dock" class="dock bottom"></div>
+      </div>
+    </section>
+    <section id="view-settings" class="view">
+      <div class="settings-nav" id="settings-nav"></div>
+      <div class="settings-body" data-slot="settings.section"></div>
+    </section>
+  </main>
+  <aside class="rightbar">
+    <div class="tabs" id="right-tabs"></div>
+    <div class="pane" data-slot="sidebar.right.pane.tab"></div>
+  </aside>
+  <div class="overlay-layer" data-shell-overlay data-slot="shell.overlay"></div>
+</div>
+<script src="/vendor/react.js"></script>
+<script src="/vendor/react-dom.js"></script>
+<script src="/shell.js"></script>
+</body>
+</html>

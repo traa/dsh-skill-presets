@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "flows": [
+    {
+      "id": "full",
+      "title": "Full",
+      "stages": [
+        "plan",
+        "design",
+        "build",
+        "test",
+        "deploy"
+      ],
+      "guardrails": "on",
+      "summary": "Plan → Design → Build → Review → Ship. Anything larger than one PR.",
+      "builtin": true
+    },
+    {
+      "id": "explore",
+      "title": "Explore",
+      "stages": [],
+      "guardrails": "off",
+      "summary": "No stages, no guardrails. Spikes, prototypes, looking around.",
+      "builtin": true
+    }
+  ]
+}

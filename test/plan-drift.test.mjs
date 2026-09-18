@@ -64,3 +64,76 @@ test('work root follows absolute edits and leading cd, else the session cwd', ()
   assert.equal(currentWorkRoot(calls, '/cwd'), '/wt')
   assert.equal(currentWorkRoot([calls[0]], '/cwd'), '/cwd')
 })
+
+test('isDocsPath: docs/, Markdown, and the usual top-level prose files are documentation; source is not', async () => {
+  const { isDocsPath } = await import('../lib/host/practices/plan.js')
+  for (const p of ['docs/sdlc/phase-7/intent.md', '/repo/doc/guide.rst', 'README.md', 'README', 'LICENSE', 'CHANGELOG.md', 'notes/todo.txt', 'src/thing.mdx']) assert.ok(isDocsPath(p), p)
+  for (const p of ['src/x.ts', 'test/a.test.mjs', 'package.json', 'docs.ts', 'src/docs/render.ts'.replace('docs/', 'docz/'), 'Makefile']) assert.ok(!isDocsPath(p), p)
+})
+
+// Found while dogfooding Phase 7's own plan.md: two real files it named were
+// reported as drift because the parser did not see them.
+test('planPaths: dotfiles and a backticked path followed by punctuation are paths', async () => {
+  const { planPaths } = await import('../lib/host/practices/plan.js')
+  const p = planPaths([
+    '`.gitignore` (`stage/shots/*`), `.npmrc`, and `.github/workflows/ci.yml`.',
+    'Files: `src/host/flows.ts` (x), `src/host/index.ts`, (RPC',
+    'also `package.json`; then `lib/`',
+  ].join('\n'))
+  for (const want of ['.gitignore', '.npmrc', '.github/workflows/ci.yml', 'src/host/flows.ts', 'src/host/index.ts', 'package.json', 'lib/']) {
+    assert.ok(p.includes(want), `${want} missing from ${JSON.stringify(p)}`)
+  }
+  // Still not paths: abbreviations and prose.
+  for (const not of ['e.g', 'i.e', 'RPC']) assert.ok(!p.includes(not), `${not} should not be a path`)
+})
+
+// Issue #23. Observed while dogfooding Phase 7: the drift list said "19 files
+// not in plan.md" long after plan.md named every one of them. The tracker
+// appended to `state.drift` as edits arrived and never re-checked that list
+// against the CURRENT plan; a plan.md edit only set a flag, and the next edit
+// after it brought the whole stale list back. The list must always reflect the
+// plan as it is now.
+test('tracker: editing plan.md to name the drifted files clears them; only genuinely unplanned edits remain', async () => {
+  const { PracticeTracker } = await import('../lib/host/practices/index.js')
+  const { defaultPractices } = await import('../lib/host/curated.js')
+  const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const top = await mkdtemp(join(tmpdir(), 'skp-drift-'))
+  await mkdir(join(top, 'docs/sdlc/x'), { recursive: true })
+  await mkdir(join(top, 'src'), { recursive: true })
+  const plan = join(top, 'docs/sdlc/x/plan.md')
+  await writeFile(plan, '# Plan\nFiles: `src/a.ts`.\n')
+  let readAt = 1
+  const facts = () => ({ inRepo: true, gitAvailable: true, ghAvailable: false, isWorktree: true, branch: 'feat/x', topLevel: top, artifacts: ['docs/sdlc/x/plan.md'], instructionFiles: [], readAt: String(readAt++) })
+  const tracker = new PracticeTracker({ practices: async () => defaultPractices(), activeStage: async () => 'build', onResult: () => {}, factsOverride: facts })
+  const S = 's'
+  tracker.session(S, top)
+  const edit = (target, t) => tracker.onToolResult(S, { t, turn: 1, name: 'edit', target, isError: false })
+  const drift = () => tracker.results(S)?.results.find(r => r.id === 'plan-drift')
+
+  await tracker.refresh(S)
+  await edit(join(top, 'src/a.ts'), 't1')          // planned
+  await edit(join(top, 'src/b.ts'), 't2')          // NOT planned
+  await edit(join(top, 'src/c.ts'), 't3')          // NOT planned
+  await tracker.refresh(S)
+  assert.equal(drift().status, 'amber')
+  assert.match(drift().evidence[0], /2 files not in plan\.md/)
+
+  // The human updates plan.md to name b.ts and c.ts.
+  await writeFile(plan, '# Plan\nFiles: `src/a.ts`, `src/b.ts`, `src/c.ts`.\n')
+  await edit(plan, 't4')
+  await tracker.refresh(S)
+  assert.equal(drift().status, 'green', drift().evidence.join(' | '))
+
+  // A further PLANNED edit must not resurrect the old list…
+  await edit(join(top, 'src/b.ts'), 't5')
+  await tracker.refresh(S)
+  assert.equal(drift().status, 'green', drift().evidence.join(' | '))
+  // …and a genuinely unplanned one lists exactly that file, not the old ones.
+  await edit(join(top, 'src/d.ts'), 't6')
+  await tracker.refresh(S)
+  assert.equal(drift().status, 'amber')
+  assert.match(drift().evidence[0], /^1 file not in plan\.md: .*d\.ts/)
+  assert.doesNotMatch(drift().evidence[0], /b\.ts|c\.ts/)
+})

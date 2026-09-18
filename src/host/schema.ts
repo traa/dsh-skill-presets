@@ -8,6 +8,7 @@
  */
 
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, defaultPractices } from './curated.ts'
+import { BUILTIN_FLOWS, flowsDoc } from './flows.ts'
 import { BUILTIN_NORMALIZE_RULES } from './normalize.ts'
 
 const STAGES = ['plan', 'design', 'build', 'test', 'deploy', 'maintain', 'cross']
@@ -25,6 +26,34 @@ const skillRef = {
 }
 
 export const SCHEMAS: Record<string, unknown> = {
+  'flows.schema.json': {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    title: 'dsh-skill-presets flows',
+    description: 'Ordered subsets of stages a piece of work passes through. Persisted as <workbench>/skills/flows.json.',
+    type: 'object',
+    additionalProperties: false,
+    required: ['version', 'flows'],
+    properties: {
+      version: { const: 1 },
+      flows: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'title', 'stages', 'guardrails'],
+          properties: {
+            id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]*$' },
+            title: { type: 'string', minLength: 1 },
+            summary: { type: 'string' },
+            stages: { type: 'array', uniqueItems: true, items: { enum: [...STAGES] } },
+            guardrails: { enum: ['on', 'off'] },
+            pins: { type: 'object', additionalProperties: { type: 'string' }, propertyNames: { enum: [...STAGES] } },
+            builtin: { const: true },
+          },
+        },
+      },
+    },
+  },
   'sources.schema.json': {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'dsh-skill-presets sources',
@@ -140,6 +169,7 @@ export const EXAMPLES: Record<string, unknown> = {
   'overlays.json': CURATED_OVERLAYS,
   'practices.json': defaultPractices(),
   'normalize-rules.json': BUILTIN_NORMALIZE_RULES,
+  'flows.json': flowsDoc(BUILTIN_FLOWS),
 }
 
 /** Render one file the way the generator and the drift test both do. */

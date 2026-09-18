@@ -5,10 +5,14 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard, type Flow } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
+  /** Phase 7: flows (Full, Explore, custom). */
+  flows?: Flow[]
+  /** A flow being edited (or a new one). */
+  flowDraft?: { id: string, title: string, stages: string[], guardrails: 'on' | 'off', isNew: boolean }
   rollup?: Rollup
   recent?: SessionSummary[]
   checks?: CheckReport[]
@@ -49,13 +53,14 @@ export class SettingsController extends Store<SettingsSnapshot> {
   async refresh(): Promise<void> {
     this.set({ loading: true, error: undefined })
     try {
-      const [status, doctor, orphans, foundation] = await Promise.all([
+      const [status, doctor, orphans, foundation, flows] = await Promise.all([
         rpc<Status>('status'),
         rpc<DoctorReport>('doctor').catch(() => undefined),
         rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined),
         rpc<FoundationReport>('foundation/report').catch(() => undefined),
+        rpc<{ flows: Flow[] }>('flows/list').then(r => r.flows).catch(() => undefined),
       ])
-      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}), ...(foundation !== undefined ? { foundation } : {}) })
+      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}), ...(foundation !== undefined ? { foundation } : {}), ...(flows !== undefined ? { flows } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }
@@ -338,6 +343,67 @@ export class SettingsController extends Store<SettingsSnapshot> {
       return 'Practices saved.'
     })
   }
+  // ---- flows (Phase 7)
+  newFlow(): void {
+    this.set({ flowDraft: { id: '', title: '', stages: ['build', 'test'], guardrails: 'on', isNew: true } })
+  }
+
+  editFlow(flow: Flow): void {
+    this.set({ flowDraft: { id: flow.id, title: flow.title, stages: [...flow.stages], guardrails: flow.guardrails, isNew: false } })
+  }
+
+  patchFlowDraft(patch: Partial<NonNullable<SettingsSnapshot['flowDraft']>>): void {
+    const d = this.get().flowDraft
+    if (d !== undefined) this.set({ flowDraft: { ...d, ...patch } })
+  }
+
+  /** Toggle a stage in the draft, keeping canonical stage order. */
+  toggleDraftStage(stage: string): void {
+    const d = this.get().flowDraft
+    if (d === undefined) return
+    const order = ['plan', 'design', 'build', 'test', 'deploy', 'maintain']
+    const set = new Set(d.stages)
+    if (set.has(stage)) set.delete(stage); else set.add(stage)
+    this.set({ flowDraft: { ...d, stages: order.filter(s => set.has(s)) } })
+  }
+
+  cancelFlow(): void { this.set({ flowDraft: undefined }) }
+
+  async saveFlow(): Promise<void> {
+    const d = this.get().flowDraft
+    if (d === undefined) return
+    this.set({ busy: 'flow', error: undefined })
+    try {
+      const id = d.isNew ? (d.id.length > 0 ? d.id : d.title.toLowerCase().trim().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '')) : d.id
+      const existing = this.get().flows?.find(f => f.id === id)
+      const { flows } = await rpc<{ flows: Flow[] }>('flows/save', { flow: { ...(existing ?? {}), id, title: d.title, stages: d.stages, guardrails: d.guardrails } })
+      this.set({ flows, flowDraft: undefined, busy: undefined, notice: `Saved flow ${d.title}.` })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async deleteFlow(id: string): Promise<void> {
+    this.set({ busy: 'flow', error: undefined })
+    try {
+      const { flows } = await rpc<{ flows: Flow[] }>('flows/delete', { id })
+      this.set({ flows, busy: undefined, notice: `Deleted flow ${id}; sessions in it fall back to Full.` })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  /** Workspace / agent-preset DEFAULT position: what a new session starts in. */
+  async setDefaultPosition(target: { agentPreset?: string }, change: { flow?: string, stage?: string | null }): Promise<void> {
+    this.set({ busy: 'position', error: undefined })
+    try {
+      await rpc('session/move', { scope: target.agentPreset !== undefined ? 'agent-preset' : 'default', ...(target.agentPreset !== undefined ? { agentPreset: target.agentPreset } : {}), ...change })
+      await this.refresh()
+      this.set({ busy: undefined })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
 }
 
 export interface ScorecardSnapshot {
@@ -555,5 +621,132 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
+  }
+}
+
+// ------------------------------------------------------------ Phase 7 -----
+
+export interface StageSnapshot {
+  card?: PositionCard
+  loading: boolean
+  error?: string
+  busy?: string
+  open: boolean
+  /** Viewport rect of the control button; the overlay popover anchors to it. */
+  anchor?: { x: number, y: number, width: number, height: number }
+  /** Index of the step that has keyboard focus while the popover is open. */
+  focusStep?: number
+  /** The start suggestion was dismissed or accepted in this page; hide the notice. */
+  noticeDone: boolean
+  /** Practice ids hidden for this session (dismiss). */
+  hidden: string[]
+  revision: number
+}
+
+/**
+ * One per session. Owns the position card, the open state and the anchor
+ * rect — the control lives in `conversation.input.right` (session scope) and
+ * the popover in `shell.overlay` (root scope); they meet here, not in props.
+ */
+export class StageController extends Store<StageSnapshot> {
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private visible = 0
+
+  constructor(readonly sessionId: string, private readonly intervalMs = 4000) {
+    super({ loading: true, open: false, noticeDone: false, hidden: [], revision: 0 })
+  }
+
+  override set(patch: Partial<StageSnapshot>): void {
+    super.set({ ...patch, revision: this.get().revision + 1 })
+  }
+
+  async refresh(): Promise<void> {
+    try {
+      const card = await rpc<PositionCard>('session/position', { sessionId: this.sessionId })
+      this.set({ card, loading: false, error: undefined })
+    } catch (error) {
+      this.set({ loading: false, error: (error as Error).message })
+    }
+  }
+
+  watch(): () => void {
+    this.visible += 1
+    if (this.visible === 1) this.schedule(0)
+    return () => {
+      this.visible -= 1
+      if (this.visible === 0 && this.timer !== undefined) { clearTimeout(this.timer); this.timer = undefined }
+    }
+  }
+
+  private schedule(delay: number): void {
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    const timer = setTimeout(async () => {
+      await this.refresh()
+      if (this.visible > 0) this.schedule(this.intervalMs)
+    }, delay)
+    ;(timer as { unref?: () => void }).unref?.()
+    this.timer = timer
+  }
+
+  setAnchor(anchor: StageSnapshot['anchor']): void {
+    const cur = this.get().anchor
+    if (cur !== undefined && anchor !== undefined && cur.x === anchor.x && cur.y === anchor.y && cur.width === anchor.width && cur.height === anchor.height) return
+    this.set({ anchor })
+  }
+
+  toggle(open?: boolean): void {
+    const next = open ?? !this.get().open
+    const card = this.get().card
+    const at = card?.stage !== null && card?.stage !== undefined ? card.flow.stages.indexOf(card.stage) : -1
+    this.set({ open: next, focusStep: next && at >= 0 ? at : undefined })
+  }
+
+  focusStep(index: number): void {
+    const n = this.get().card?.flow.stages.length ?? 0
+    if (n === 0) return
+    this.set({ focusStep: Math.max(0, Math.min(n - 1, index)) })
+  }
+
+  /** Move THIS session; `flow` switches flows (stage kept when the new flow has it). */
+  async move(change: { flow?: string, stage?: string | null, pin?: string }): Promise<void> {
+    this.set({ busy: 'move', error: undefined })
+    try {
+      await rpc('session/move', { sessionId: this.sessionId, ...change })
+      await this.refresh()
+      this.set({ busy: undefined, noticeDone: true })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async acceptSuggestion(presetId?: string): Promise<void> {
+    this.set({ busy: 'suggest', error: undefined })
+    try {
+      await rpc('suggestion/accept', { sessionId: this.sessionId, ...(presetId !== undefined ? { presetId } : {}) })
+      await this.refresh()
+      this.set({ busy: undefined, noticeDone: true })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async dismissSuggestion(): Promise<void> {
+    try { await rpc('suggestion/dismiss', { sessionId: this.sessionId }) } catch { /* advisory */ }
+    this.set({ noticeDone: true })
+    await this.refresh()
+  }
+
+  /**
+   * "Fix" on a report line. The client cannot edit the composer's draft
+   * programmatically (see knowledge: reference chips lose data), so this is a
+   * seam: the host half registers the handler when it has a way to ask the
+   * model; until then the button is hidden.
+   */
+  requestFix?: (practiceId: string, skill: string) => void
+
+  async dismissPractice(id: string): Promise<void> {
+    this.set({ hidden: [...this.get().hidden, id] })
+    try { await rpc('practice/dismiss', { sessionId: this.sessionId, id }) } catch { /* advisory */ }
+    await this.refresh()
   }
 }

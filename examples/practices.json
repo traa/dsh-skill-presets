@@ -1,7 +1,7 @@
 {
   "version": 1,
   "strictSkills": false,
-  "autoCleanWorktrees": true,
+  "autoCleanWorktrees": false,
   "pruning": {
     "minSessions": 20,
     "maxLoadRate": 0.1,

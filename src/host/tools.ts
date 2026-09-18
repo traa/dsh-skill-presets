@@ -8,6 +8,7 @@ import type { PracticeTracker } from './practices/index.ts'
 import type { SkillPresetsService } from './service.ts'
 import type { Telemetry } from './telemetry.ts'
 import { PRACTICE_INFO, STAGE_ORDER } from './curated.ts'
+import { STAGE_TITLE, annotateRelevance, gateFor, nextStage, positionOf } from './flows.ts'
 import { STAGE_KEYWORDS } from './placement.ts'
 
 /**
@@ -109,9 +110,19 @@ export function buildTools(deps: ToolDeps): unknown[] {
       const scorecard = sessionId !== undefined ? deps.tracker.results(sessionId) : undefined
       const facts = scorecard?.facts
       const agentPreset = sessionId !== undefined && deps.tracker.has(sessionId) ? deps.tracker.session(sessionId).agentPreset : undefined
-      const stage = await deps.service.activeStage(sessionId !== undefined ? { id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) } : undefined)
+      const identity = sessionId !== undefined ? { id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) } : undefined
+      const position = await deps.service.positionFor(identity)
       const lines: string[] = []
-      lines.push(`Active stage: ${stage ?? 'none (no stage preset active)'}`)
+      if (position.stage === null) {
+        lines.push(`Flow: ${position.flow.title} — no stages, guardrails off. Practices are not judged in this flow.`)
+      } else {
+        const pos = positionOf(position.flow, position.stage)
+        const gate = gateFor(position.stage)
+        const following = nextStage(position.flow, position.stage)
+        lines.push(`Flow: ${position.flow.title} (${position.flow.stages.map(st => STAGE_TITLE[st]).join(' → ')})`)
+        lines.push(`Stage: ${STAGE_TITLE[position.stage]}${pos !== undefined ? ` (${pos.index + 1} of ${pos.of})` : ''}${position.presetId !== undefined ? ` · preset ${position.presetId}` : position.owners.length > 1 ? ` · several presets own this stage (${position.owners.join(', ')}) — the user picks one` : ''}`)
+        lines.push(`Gate: ${gate ?? 'none'}${following !== undefined ? ` → then ${STAGE_TITLE[following]}` : ' → last stage of this flow'}. Moving stage is the user's decision.`)
+      }
       if (facts === undefined) lines.push('Git: unknown (no facts yet)')
       else if (!facts.inRepo) lines.push('Git: cwd is not inside a repository')
       else {
@@ -126,8 +137,18 @@ export function buildTools(deps: ToolDeps): unknown[] {
       const next = !has('intent.md') ? 'intent.md (Plan)' : !has('spec.md') ? 'spec.md (Design)' : !has('plan.md') ? 'plan.md (Design)' : facts?.pr === undefined ? 'a pull request (Build → Test)' : 'review findings in the PR (Test)'
       lines.push(`Next artifact: ${next}`)
       if (scorecard !== undefined && scorecard.results.length > 0) {
-        lines.push('Practices:')
-        for (const r of scorecard.results) lines.push(`- ${PRACTICE_INFO[r.id].title}: ${r.status}${r.evidence.length > 0 ? ` — ${r.evidence[0]}` : ''}`)
+        // Phase 7: only what the model must act on. Red + relevant; unknowns
+        // are listed as such in one line; everything else is not mentioned.
+        const annotated = annotateRelevance(scorecard.results, position.flow, position.stage)
+        const act = annotated.filter(r => r.status === 'red' && r.relevant && r.kind !== 'unknown')
+        const unknown = annotated.filter(r => r.kind === 'unknown' && r.relevant)
+        if (act.length > 0) {
+          lines.push('Practices needing action:')
+          for (const r of act) lines.push(`- ${PRACTICE_INFO[r.id].title}: ${r.evidence[0] ?? ''} — load the \`${PRACTICE_INFO[r.id].skill}\` skill`)
+        } else if (position.flow.guardrails === 'on') {
+          lines.push('Practices: nothing needs action.')
+        }
+        if (unknown.length > 0) lines.push(`Not judged (facts unavailable): ${unknown.map(r => PRACTICE_INFO[r.id].title).join(', ')}`)
       }
       return { text: lines.join('\n') }
     },

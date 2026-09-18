@@ -15,8 +15,9 @@ export function planPaths(markdown: string): string[] {
   const consider = (raw: string): void => {
     const token = raw.trim().replace(/^\.\//u, '').replace(/[),.;:]+$/u, '')
     if (token.length === 0 || token.includes(' ') || token.startsWith('http') || token.startsWith('-')) return
-    // Looks like a path: has a slash, or a file extension, or a glob.
-    if (!/[/*]/u.test(token) && !/\.[a-z0-9]{1,6}$/iu.test(token)) return
+    // Looks like a path: has a slash, or a file extension, or a glob, or is a
+    // dotfile (`.gitignore`, `.npmrc` — the "extension" is the whole name).
+    if (!/[/*]/u.test(token) && !/\.[a-z0-9]{1,6}$/iu.test(token) && !/^\.[a-z][\w.-]*$/iu.test(token)) return
     if (/^[a-z]+:\/\//u.test(token)) return
     out.add(token)
   }
@@ -62,4 +63,19 @@ export function coveredByPlan(edited: string, topLevel: string | undefined, patt
 /** Files the plan itself lives in never count as drift. */
 export function isPlanArtifact(path: string): boolean {
   return /(?:^|\/)docs\/sdlc\/.*\.md$|(?:^|\/)(?:intent|spec|plan)\.md$/u.test(path.split(sep).join('/'))
+}
+
+/**
+ * Documentation, not code. Writing a doc is never "coding before the plan" and
+ * never "drift from the plan": the plan is about the change, and the docs that
+ * describe it are the other half of the same work. Observed live: writing
+ * `docs/sdlc/phase-7/intent.md` turned *Plan before code* red — the artifact
+ * the practice exists to encourage. Matched on the path alone; Markdown and
+ * plain-text anywhere, plus anything under a `docs/` directory.
+ */
+export function isDocsPath(path: string): boolean {
+  const p = path.split(sep).join('/')
+  if (/(?:^|\/)docs?\//u.test(p)) return true
+  if (/\.(?:md|mdx|markdown|txt|rst|adoc)$/iu.test(p)) return true
+  return /(?:^|\/)(?:README|LICENSE|LICENCE|CHANGELOG|CONTRIBUTING|NOTICE|AUTHORS|CODEOWNERS)(?:\.[^/]*)?$/u.test(p)
 }

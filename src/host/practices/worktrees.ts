@@ -37,6 +37,15 @@ export interface WorktreeInfo {
   readonly nodeModulesSymlink?: string
   /** Age in days of the newest commit on the branch. */
   readonly ageDays?: number
+  /** Age in hours of the newest commit on the branch (finer than `ageDays`, for the grace period). */
+  readonly ageHours?: number
+  /**
+   * The branch has at least one commit that was made ON it — i.e. its tip is
+   * not simply a commit the default branch already had when the worktree was
+   * created. A branch that is 0 ahead AND has no own commits has never been
+   * worked on; a branch that is 0 ahead WITH own commits has been merged.
+   */
+  readonly hasOwnCommits?: boolean
   readonly prState?: string
   readonly prUrl?: string
   /** Session that created it, when the plugin observed the `git worktree add`. */
@@ -49,18 +58,48 @@ export type WorktreeVerdict =
   | { kind: 'removable', reason: string }
   | { kind: 'attention', reason: string }
 
-/** Decide what to do with a worktree. Pure. */
-export function classify(info: WorktreeInfo, defaultBranch: string): WorktreeVerdict {
+/**
+ * Hours a MERGED worktree is kept after its last commit before it may be swept.
+ * A merge that landed an hour ago may still have a session open in that
+ * directory; the sweep is for leftovers, not for the thing you are doing now.
+ */
+export const GRACE_HOURS = 24
+
+/**
+ * Decide what to do with a worktree. Pure.
+ *
+ * `removable` is reserved for work that provably LANDED: the branch has commits
+ * of its own and all of them are in the default branch (or its PR is merged),
+ * the tree is clean, and the grace period has passed. "0 commits ahead" alone
+ * is what every worktree looks like in its first minutes — Phase 7's own
+ * worktree was swept that way, branch included, before its first commit — so it
+ * never counts as merged.
+ */
+export function classify(info: WorktreeInfo, defaultBranch: string, graceHours: number = GRACE_HOURS): WorktreeVerdict {
   if (info.primary) return { kind: 'keep', reason: 'primary checkout' }
   if (info.locked !== undefined) return { kind: 'keep', reason: `locked${typeof info.locked === 'string' && info.locked.length > 0 ? `: ${info.locked}` : ''}` }
   if (info.prunable !== undefined) return { kind: 'removable', reason: `prunable: ${info.prunable}` }
   if (info.dirty === true) return { kind: 'attention', reason: 'uncommitted changes — commit, stash, or remove by hand' }
   if (info.detached) return { kind: 'attention', reason: 'detached HEAD — no branch to judge merged state' }
   if (info.branch === defaultBranch) return { kind: 'keep', reason: `on the default branch ${defaultBranch}` }
-  if (info.merged === true) return { kind: 'removable', reason: `branch ${info.branch ?? ''} is merged into ${defaultBranch}` }
-  if (info.prState !== undefined && /merged/iu.test(info.prState)) return { kind: 'removable', reason: `PR merged: ${info.prUrl ?? ''}` }
-  if (info.nodeModulesSymlink !== undefined) return { kind: 'attention', reason: `node_modules is a symlink → ${info.nodeModulesSymlink}; replace with npm ci before committing` }
-  if ((info.aheadOfDefault ?? 1) === 0) return { kind: 'removable', reason: `branch ${info.branch ?? ''} has no commits beyond ${defaultBranch}` }
+  if (info.nodeModulesSymlink !== undefined && info.merged !== true) return { kind: 'attention', reason: `node_modules is a symlink → ${info.nodeModulesSymlink}; replace with npm ci before committing` }
+  const prMerged = info.prState !== undefined && /merged/iu.test(info.prState)
+  // A branch with nothing of its own was never worked on. Git reports its tip
+  // as an ancestor of the default branch (it IS the default tip), which used to
+  // read as "merged" and swept fresh worktrees. Explicit `hasOwnCommits: false`
+  // says so outright; absent that, the scanner's `hasOwnCommits` is only ever
+  // set when it could count, so `undefined` with 0 ahead is treated the same way
+  // unless a PR proves the branch existed long enough to be merged.
+  const neverWorkedOn = info.hasOwnCommits === false || (info.hasOwnCommits === undefined && (info.aheadOfDefault ?? 1) === 0 && !prMerged)
+  if (neverWorkedOn) return { kind: 'keep', reason: `branch ${info.branch ?? ''} has no commits of its own yet — not started, not merged` }
+  if (info.merged === true || prMerged) {
+    const ageHours = info.ageHours ?? (info.ageDays !== undefined ? info.ageDays * 24 : undefined)
+    if (ageHours !== undefined && ageHours < graceHours) return { kind: 'keep', reason: `branch ${info.branch ?? ''} merged less than ${graceHours} h ago — grace period` }
+    if (info.nodeModulesSymlink !== undefined) return { kind: 'attention', reason: `merged, but node_modules is a symlink → ${info.nodeModulesSymlink}; remove by hand` }
+    return info.merged === true
+      ? { kind: 'removable', reason: `branch ${info.branch ?? ''} is merged into ${defaultBranch}` }
+      : { kind: 'removable', reason: `PR merged: ${info.prUrl ?? ''}` }
+  }
   return { kind: 'keep', reason: `branch ${info.branch ?? ''} has unmerged work${info.aheadOfDefault !== undefined ? ` (${info.aheadOfDefault} commit${info.aheadOfDefault === 1 ? '' : 's'} beyond ${defaultBranch}${info.hasUpstream === false ? ', not pushed' : ''})` : ''}` }
 }
 
@@ -95,6 +134,8 @@ export function parsePorcelain(text: string): Pick<WorktreeInfo, 'path' | 'head'
 export interface WorktreeScanOptions {
   run?: Runner
   timeoutMs?: number
+  /** Hours a merged worktree is kept after its last commit; default `GRACE_HOURS`. */
+  graceHours?: number
   /** Known creations, keyed by worktree path. */
   created?: Record<string, { sessionId: string, at: string }>
   skipPr?: boolean
@@ -123,6 +164,8 @@ export async function scanWorktrees(cwd: string, options: WorktreeScanOptions = 
   const rows = parsePorcelain(list.stdout)
   const primary = rows.find(r => r.primary)?.path ?? cwd
   const defaultBranch = await defaultBranchOf(primary, run, timeoutMs)
+  const tip = await run('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${defaultBranch}`], primary, timeoutMs)
+  const defaultTip = tip.ok ? tip.stdout.trim() : undefined
   const worktrees: WorktreeInfo[] = []
   for (const row of rows) {
     let info: WorktreeInfo = { ...row }
@@ -135,14 +178,25 @@ export async function scanWorktrees(cwd: string, options: WorktreeScanOptions = 
         run('git', ['rev-list', '--count', `refs/heads/${defaultBranch}..${row.head}`], primary, timeoutMs),
       ])
       const ts = Number.parseInt(age.stdout.trim(), 10)
+      const aheadOfDefault = beyond.ok ? Number.parseInt(beyond.stdout.trim(), 10) || 0 : undefined
+      // Own commits: anything beyond the default branch, OR a merged tip that is
+      // not simply the default tip itself. A fresh `worktree add -b x main` sits
+      // exactly at the default tip and has none; a merged branch's tip is a
+      // commit below the merge. (A fast-forwarded branch on a default branch
+      // that has not moved since is indistinguishable from fresh, and is kept —
+      // the safe error.)
+      const hasOwnCommits = aheadOfDefault === undefined
+        ? undefined
+        : aheadOfDefault > 0 || (merged.ok && defaultTip !== undefined && row.head !== defaultTip)
       info = {
         ...info,
         dirty: status.ok ? status.stdout.trim().length > 0 : undefined,
         ...(row.branch !== undefined ? { merged: merged.ok } : {}),
         hasUpstream: upstream.ok,
         ...(upstream.ok ? { ahead: Number.parseInt(upstream.stdout.trim(), 10) || 0 } : {}),
-        ...(beyond.ok ? { aheadOfDefault: Number.parseInt(beyond.stdout.trim(), 10) || 0 } : {}),
-        ...(Number.isFinite(ts) ? { ageDays: Math.floor((Date.now() / 1000 - ts) / 86_400) } : {}),
+        ...(aheadOfDefault !== undefined ? { aheadOfDefault } : {}),
+        ...(hasOwnCommits !== undefined ? { hasOwnCommits } : {}),
+        ...(Number.isFinite(ts) ? { ageDays: Math.floor((Date.now() / 1000 - ts) / 86_400), ageHours: Math.floor((Date.now() / 1000 - ts) / 3600) } : {}),
       }
       try {
         const nm = join(row.path, 'node_modules')
@@ -186,7 +240,7 @@ export async function cleanupWorktrees(cwd: string, options: WorktreeScanOptions
   const result: CleanupResult = { removed: [], kept: [], attention: [], errors: [], dryRun: options.dryRun === true }
   for (const wt of worktrees) {
     if (options.only !== undefined && !options.only.some(p => resolve(p) === resolve(wt.path))) continue
-    const verdict = classify(wt, defaultBranch)
+    const verdict = classify(wt, defaultBranch, options.graceHours)
     if (verdict.kind === 'keep') { result.kept.push({ path: wt.path, reason: verdict.reason }); continue }
     if (verdict.kind === 'attention') { result.attention.push({ path: wt.path, reason: verdict.reason }); continue }
     if (options.dryRun === true) { result.removed.push({ path: wt.path, ...(wt.branch !== undefined ? { branch: wt.branch } : {}), reason: verdict.reason }); continue }

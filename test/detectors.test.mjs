@@ -154,6 +154,25 @@ test('artifact-chain and plan-before-code follow the active stage', () => {
   assert.equal(detectPlanBeforeCode({ ...base, calls: [edit()], facts: facts({ artifacts: ['docs/sdlc/a/plan.md'] }), activeStage: 'build' }).status, 'green')
 })
 
+// Observed live (Phase 7): writing `docs/sdlc/phase-7/intent.md` — the very
+// artifact the practice exists to encourage — turned *Plan before code* red
+// ("edited intent.md with no plan.md"). Documentation is not code: writing a
+// doc is not the thing the plan was supposed to precede. Only the first edit
+// to a NON-doc file is judged; docs before it are ignored, and a session that
+// only ever writes docs stays n/a.
+test('plan-before-code: documentation edits are not code — the first SOURCE edit is what is judged', () => {
+  const docs = ['docs/sdlc/phase-7/intent.md', `${REPO}/docs/sdlc/phase-7/spec.md`, 'README.md', 'notes/design.md', 'LICENSE', 'CHANGELOG.md']
+  for (const target of docs) {
+    const r = detectPlanBeforeCode({ ...base, calls: [edit('t1', 1, target)], facts: facts(), activeStage: 'build' })
+    assert.equal(r.status, 'n/a', `${target}: ${r.status} — ${r.evidence.join(' | ')}`)
+  }
+  // Docs first, then real code with no plan: red, and the evidence names the CODE file.
+  const r = detectPlanBeforeCode({ ...base, calls: [edit('t1', 1, 'docs/sdlc/phase-7/intent.md'), edit('t2', 1, 'src/x.ts')], facts: facts(), activeStage: 'build' })
+  assert.equal(r.status, 'red')
+  assert.match(r.evidence[0], /src\/x\.ts/)
+  assert.equal(r.firstViolationAt, 't2')
+})
+
 // --- RULE 1: doing the conductor's own job is not a self-mutation.
 // A conducted view with one approved delegation: green unless the conductor
 // itself mutated files, so any red below is the self-mutation ground alone.
@@ -311,6 +330,27 @@ test('work root: a cd or -C target has the same precedence as a write path — t
   assert.equal(currentWorkRoot([editCall, cdCall], '/primary'), '/wt-b')
   assert.equal(currentWorkRoot([cdCall, editCall], '/primary'), '/wt-a/src')
   assert.equal(currentWorkRoot([editCall, dashC], '/primary'), '/wt-c')
+})
+
+// Observed live (Phase 7): the agent edited files in its worktree, then ran a
+// handful of READ-ONLY `grep`/`ls`/`sed -n` commands with `cd` into another
+// repository to look something up. The newest `cd` won the work root, git facts
+// were read from the foreign repo, none of the edits could be "placed" there,
+// and the worktree practice went amber — "6 file mutations that cannot be placed
+// in <other repo>". Looking at a repository is not working in it. Only a call
+// that MUTATES, or drives git/gh/glab, may move the work root.
+test('work root: a read-only cd (grep/ls/sed -n) does not move the root away from where the edits land', () => {
+  const edit = { t: 't1', turn: 1, name: 'edit', target: '/wt-a/src/x.ts', isError: false }
+  const look = { t: 't2', turn: 1, name: 'bash', target: 'cd /other/repo && grep -rn "401" src/*.ts | head -20', isError: false }
+  const list = { t: 't3', turn: 1, name: 'bash', target: 'cd /other/repo/pkg && ls src; sed -n 1,40p src/index.ts', isError: false }
+  assert.equal(currentWorkRoot([edit, look, list], '/primary'), '/wt-a/src')
+  assert.equal(attributedWorkRoot([edit, look, list], '/primary'), '/wt-a/src')
+  // …but a cd that then WRITES or runs git there is real work, and still wins.
+  const work = { t: 't4', turn: 1, name: 'bash', target: 'cd /other/repo && git status --short', isError: false }
+  assert.equal(currentWorkRoot([edit, look, work], '/primary'), '/other/repo')
+  // A read-only look with no prior attribution attributes nothing: the root stays assumed.
+  assert.equal(attributedWorkRoot([look], '/primary'), undefined)
+  assert.equal(currentWorkRoot([look], '/primary'), '/primary')
 })
 
 // A mutation may only be named as evidence about a checkout when it provably

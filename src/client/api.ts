@@ -167,8 +167,14 @@ export interface Scorecard {
   overlays: string[]
   offered: { name: string, via: string, description: string }[]
   unresolved: { ref: string, reason: string }[]
-  practices: PracticeResult[]
+  practices: (PracticeResult | AnnotatedPractice)[]
   worst: PracticeResult['status']
+  /** Phase 7: the session's position. */
+  flow?: Flow
+  stage?: string | null
+  positionSource?: 'session' | 'agent-preset' | 'default' | 'legacy'
+  gate?: string | null
+  next?: string | null
   facts?: GitFacts
   summary: SessionSummary
   loadTrace?: { name: string, turn: number, t: string, ok: boolean, userLine?: string, mentioned?: boolean, deltas: { id: string, from?: string, to: string }[] }[]
@@ -219,4 +225,26 @@ export class Store<T> {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
+}
+
+// ------------------------------------------------------------ Phase 7 -----
+// Flows and the session's position. Mirrors `src/host/flows.ts`.
+export interface Flow { id: string, title: string, stages: string[], guardrails: 'on' | 'off', pins?: Record<string, string>, summary?: string, builtin?: true }
+export interface AnnotatedPractice extends PracticeResult { relevant: boolean, kind?: 'violation' | 'unknown' }
+/** `session/position`: everything the composer control renders from. */
+export interface PositionCard {
+  sessionId: string
+  flow: Flow
+  flows: Flow[]
+  stage: string | null
+  source: 'session' | 'agent-preset' | 'default' | 'legacy'
+  presetId: string | null
+  owners: string[]
+  position?: { index: number, of: number }
+  gate?: string | null
+  next?: string | null
+  practices: AnnotatedPractice[]
+  /** Red + relevant + not unknown + not dismissed. */
+  report: AnnotatedPractice[]
+  suggestion?: Suggestion
 }

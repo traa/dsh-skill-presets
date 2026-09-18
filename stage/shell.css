@@ -1,0 +1,75 @@
+/* The stage's own chrome. Token names mirror the real shell (`--dsw-alias-*`)
+   so the plugin's CSS resolves the same variables it does in the page. */
+:root {
+  /* The real shell's alias tokens (from Theme.listTokens), dark values. */
+  --dsw-alias-bg-base: #0f1115;
+  --dsw-alias-bg-layer-1: #161920;
+  --dsw-alias-bg-layer-2: #1d2129;
+  --dsw-alias-bg-overlay: #1a1e27;
+  --dsw-alias-border-l1: #2a2f3a;
+  --dsw-alias-border-l2: #384050;
+  --dsw-alias-brand-primary: #6ea8fe;
+  --dsw-alias-label-primary: #e8eaf0;
+  --dsw-alias-label-secondary: #8b93a7;
+  --dsw-alias-state-error-primary: #f0616d;
+  --dsw-alias-state-success-primary: #5ccf8a;
+  --dsw-alias-state-warn-primary: #e2b33c;
+  --dsw-specific-sidebar-fill: #161920;
+  /* Stage-only shorthands. */
+  --dsw-alias-bg-l0: var(--dsw-alias-bg-base);
+  --dsw-alias-bg-l1: var(--dsw-alias-bg-layer-1);
+  --dsw-alias-bg-l2: var(--dsw-alias-bg-layer-2);
+  --dsw-alias-bg-l3: #252a34;
+  --dsw-alias-fg-l0: var(--dsw-alias-label-primary);
+  --dsw-alias-fg-l1: #b6bcc9;
+  --dsw-alias-fg-l2: var(--dsw-alias-label-secondary);
+  --dsw-alias-accent: var(--dsw-alias-brand-primary);
+  --dsw-alias-radius-s: 6px;
+  --dsw-alias-radius-m: 10px;
+  --dsw-alias-font: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--dsw-alias-bg-l0); color: var(--dsw-alias-fg-l0); font: 13px/1.45 var(--dsw-alias-font); }
+.frame { position: relative; display: grid; grid-template-columns: 200px 1fr 320px; height: 100vh; overflow: hidden; }
+.sidebar { background: var(--dsw-alias-bg-l1); border-right: 1px solid var(--dsw-alias-border-l1); padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.brand { font-weight: 600; color: var(--dsw-alias-fg-l1); }
+.nav a { display: block; padding: 6px 8px; color: var(--dsw-alias-fg-l1); text-decoration: none; border-radius: var(--dsw-alias-radius-s); }
+.nav a.on { background: var(--dsw-alias-bg-l3); color: var(--dsw-alias-fg-l0); }
+.fixtures { margin-top: auto; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dsw-alias-fg-l2); }
+.fixtures a { color: var(--dsw-alias-fg-l1); text-decoration: none; }
+.fixtures a.on { color: var(--dsw-alias-accent); }
+.main { display: flex; flex-direction: column; min-width: 0; }
+.view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+.view.on { display: flex; }
+/* THE CLIP: the real header is a 40px flex row that hides overflow. A popover
+   rendered as a child of a header utility is cut here. */
+.header { height: 40px; display: flex; align-items: center; gap: 6px; padding: 0 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-l1); overflow: hidden; }
+.crumb { color: var(--dsw-alias-fg-l1); }
+.crumb.sep { color: var(--dsw-alias-fg-l2); }
+.header-utilities { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.body { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px; gap: 8px; }
+.chat { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.msg { max-width: 60ch; padding: 8px 12px; border-radius: var(--dsw-alias-radius-m); background: var(--dsw-alias-bg-l2); }
+.msg.user { align-self: flex-end; background: var(--dsw-alias-bg-l3); }
+.composer-card { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-l1); padding: 8px; }
+.input { width: 100%; resize: none; border: 0; background: transparent; color: inherit; font: inherit; outline: none; padding: 4px; }
+.toolrow { display: flex; align-items: center; gap: 6px; padding-top: 6px; }
+.toolrow .spacer { flex: 1; }
+.toolrow .left, .toolrow .right { display: flex; align-items: center; gap: 6px; }
+.ctl { height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-l2); color: var(--dsw-alias-fg-l1); font: inherit; cursor: pointer; }
+.send { height: 28px; width: 28px; border-radius: 999px; border: 0; background: var(--dsw-alias-accent); color: #0b1020; font-weight: 700; cursor: pointer; }
+.dock { min-height: 0; }
+.dock.bottom { color: var(--dsw-alias-fg-l2); font-size: 12px; }
+.rightbar { background: var(--dsw-alias-bg-l1); border-left: 1px solid var(--dsw-alias-border-l1); display: flex; flex-direction: column; min-height: 0; }
+.tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.tabs button { font: inherit; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-fg-l1); cursor: pointer; }
+.tabs button.on { background: var(--dsw-alias-bg-l3); color: var(--dsw-alias-fg-l0); }
+.pane { flex: 1; overflow: auto; padding: 8px; }
+.settings-nav { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.settings-nav button { font: inherit; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2); background: transparent; color: var(--dsw-alias-fg-l1); cursor: pointer; }
+.settings-nav button.on { background: var(--dsw-alias-bg-l3); color: var(--dsw-alias-fg-l0); }
+.settings-body { flex: 1; overflow: auto; padding: 16px; }
+/* Frame-wide floating layer, exactly like AppFrame's `overlayLayer`: fixed,
+   inert itself, children interactive. */
+.overlay-layer { position: fixed; inset: 0; pointer-events: none; z-index: 1000; }
+.overlay-layer > * { pointer-events: auto; }

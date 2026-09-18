@@ -17,7 +17,9 @@ import { PracticeTracker } from './practices/index.ts'
 import { ReviewGate, modeFrom } from './practices/reviewgate.ts'
 import { createProvider, type SkillProviderLike } from './provider.ts'
 import { renderGuardrails } from './prompt.ts'
-import { detectStage, suggest, type Suggestion } from './stage.ts'
+import { detectStage, shouldSuggest, suggest, type Suggestion } from './stage.ts'
+import { annotateRelevance, gateFor, nextStage, positionOf, type Flow } from './flows.ts'
+import type { Stage } from './types.ts'
 import { Experiments, aggregateExperiments, type ForkLike } from './experiments.ts'
 import { StrictCatalog } from './strict.ts'
 import { TeamReader, type AgentTeamsLike } from './teams.ts'
@@ -549,12 +551,15 @@ export function apply(ctx: Context, config: Config = {}): void {
         const score = tracker.results(sessionId)
         const set = await service.setFor({ teamAttached, inGitRepo: score?.facts?.inRepo === true }, sessionOf(agent))
         const preset = set.preset
+        const position = await service.positionFor(sessionOf(agent))
         promptCache.set(sessionId, renderGuardrails({
           ...(preset !== undefined ? { preset } : {}),
           skills: set.skills,
           overlays: set.overlays,
-          practices: score?.results ?? [],
+          practices: annotateRelevance(score?.results ?? [], position.flow, position.stage),
           ...(score?.facts !== undefined ? { artifacts: score.facts.artifacts } : {}),
+          flow: position.flow,
+          stage: position.stage,
         }))
       } catch {
         promptCache.delete(sessionId)
@@ -580,13 +585,30 @@ export function apply(ctx: Context, config: Config = {}): void {
   // ------------------------------------------------------------ suggestion --
   // First time a given transition was suggested per session, for time-to-accept.
   const suggestedAt = new Map<string, { key: string, at: number }>()
+  /** Facts as of the last suggestion check, per session — `shouldSuggest` compares against these. */
+  const lastFacts = new Map<string, ReturnType<typeof tracker.results> extends infer R ? (R extends { facts?: infer F } ? F : never) : never>()
+  /** A suggestion that is currently OFFERED (start-only; cleared on accept/dismiss/first message). */
+  const offered = new Map<string, Suggestion>()
   const suggestionFor = async (sessionId: string): Promise<{ guess: ReturnType<typeof detectStage>, suggestion?: Suggestion }> => {
     const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
     const score = tracker.results(sessionId)
-    const guess = detectStage(score?.facts, state?.calls.slice(-12) ?? [])
+    const guess = detectStage(score?.facts)
     const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
-    const activeStage = await service.activeStage(identity)
-    const suggestion = suggest(guess, activeStage, await service.presetsByStage(), await service.suggestions())
+    const position = await service.positionFor(identity)
+    const previous = lastFacts.get(sessionId)
+    if (score?.facts !== undefined) lastFacts.set(sessionId, score.facts)
+    // Phase 7: offer only at the two playbook moments. Once offered it stays
+    // until accepted/dismissed or the user's first message; it is never
+    // recomputed mid-session because an edit happened.
+    let suggestion = offered.get(sessionId)
+    if (suggestion === undefined) {
+      const moment = shouldSuggest({ explicitPosition: position.source === 'session', stage: position.stage, previous, facts: score?.facts })
+      if (moment) {
+        const candidate = suggest(guess, position.stage ?? undefined, await service.presetsByStage(), await service.suggestions())
+        // Only stages the current flow contains are worth suggesting.
+        if (candidate !== undefined && position.flow.stages.includes(candidate.to)) { suggestion = candidate; offered.set(sessionId, candidate) }
+      }
+    }
     if (suggestion !== undefined) {
       const key = `${suggestion.from ?? 'none'}→${suggestion.to}`
       if (suggestedAt.get(sessionId)?.key !== key) {
@@ -644,12 +666,18 @@ export function apply(ctx: Context, config: Config = {}): void {
     if (suggestion === undefined) return { ok: false, message: 'nothing to accept' }
     await service.acceptSuggestion(suggestion.from, suggestion.to)
     telemetry.record(sessionId, { kind: 'suggestion-accepted', from: suggestion.from, to: suggestion.to, afterMs: elapsed(sessionId) })
-    const presetId = optStr(args, 'presetId') ?? suggestion.presetId
-    if (presetId === undefined) return { ok: false, message: `several presets own the ${suggestion.to} stage; pick one` }
     const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
-    const change = await service.activate(presetId, 'ui', { sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) })
+    // Accepting MOVES the session to the suggested stage; the preset is derived
+    // (a `presetId` pins a collision).
+    const moved = await service.setPosition(
+      { sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) },
+      { stage: suggestion.to, ...(optStr(args, 'presetId') !== undefined ? { pin: optStr(args, 'presetId') } : {}) },
+      'ui',
+    )
     suggestedAt.delete(sessionId)
-    return { ok: true, ...change }
+    offered.delete(sessionId)
+    if (moved.presetId === null && moved.owners.length > 1) return { ok: false, message: `several presets own the ${suggestion.to} stage; pick one`, owners: moved.owners }
+    return { ok: true, from: suggestion.from, to: moved.presetId, stage: moved.stage }
   })
   rpc.handle('suggestion/dismiss', async (args) => {
     const sessionId = str(args, 'sessionId')
@@ -658,8 +686,83 @@ export function apply(ctx: Context, config: Config = {}): void {
     const doc = await service.dismissSuggestion(suggestion.from, suggestion.to)
     telemetry.record(sessionId, { kind: 'suggestion-dismissed', from: suggestion.from, to: suggestion.to, afterMs: elapsed(sessionId) })
     suggestedAt.delete(sessionId)
+    offered.delete(sessionId)
     return { ok: true, muted: (doc.dismissed[`${suggestion.from ?? 'none'}→${suggestion.to}`]?.count ?? 0) >= 3 }
   })
+  // ---- flows and the session's position (Phase 7)
+  rpc.handle('flows/list', async () => ({ flows: await service.flows() }))
+  rpc.handle('flows/save', async args => ({ flows: await service.saveFlow(args.flow as Flow) }))
+  rpc.handle('flows/delete', async args => ({ flows: await service.deleteFlow(str(args, 'id')) }))
+  rpc.handle('session/position', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const state = tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    return await positionCard(sessionId, state?.agentPreset)
+  })
+  /**
+   * Move a session (or a default rung) to `{ flow?, stage?, pin? }`. The
+   * derived preset is activated at the same rung; the catalog updates on the
+   * model's next step.
+   */
+  rpc.handle('session/move', async (args) => {
+    const sessionId = optStr(args, 'sessionId')
+    const scope = (optStr(args, 'scope') ?? (sessionId !== undefined ? 'session' : 'default')) as 'session' | 'default' | 'agent-preset'
+    const state = sessionId !== undefined && tracker.has(sessionId) ? tracker.session(sessionId) : undefined
+    const agentPreset = optStr(args, 'agentPreset') ?? state?.agentPreset
+    const stageArg = args.stage
+    const moved = await service.setPosition(
+      { scope, ...(sessionId !== undefined ? { sessionId } : {}), ...(agentPreset !== undefined ? { agentPreset } : {}) },
+      {
+        ...(optStr(args, 'flow') !== undefined ? { flow: optStr(args, 'flow') } : {}),
+        ...(stageArg === null ? { stage: null } : typeof stageArg === 'string' ? { stage: stageArg as Stage } : {}),
+        ...(optStr(args, 'pin') !== undefined ? { pin: optStr(args, 'pin') } : {}),
+      },
+      'ui',
+    )
+    if (sessionId !== undefined) {
+      offered.delete(sessionId)
+      telemetry.record(sessionId, { kind: 'preset-switch', from: null, to: moved.presetId, by: 'ui' } as never)
+      await tracker.refresh(sessionId)
+    }
+    return { ok: true, flow: moved.flow.id, stage: moved.stage, presetId: moved.presetId, owners: moved.owners }
+  })
+  /** Hide one practice line for this session; three dismissals in a workspace mute it there. */
+  const dismissedPractices = new Map<string, Set<string>>()
+  rpc.handle('practice/dismiss', async (args) => {
+    const sessionId = str(args, 'sessionId')
+    const id = str(args, 'id')
+    const set = dismissedPractices.get(sessionId) ?? new Set<string>()
+    set.add(id)
+    dismissedPractices.set(sessionId, set)
+    const doc = await service.dismissSuggestion(null, `practice:${id}` as never)
+    return { ok: true, muted: (doc.dismissed[`none→practice:${id}`]?.count ?? 0) >= 3 }
+  })
+  /** The position card the composer control renders from. */
+  const positionCard = async (sessionId: string, agentPreset?: string): Promise<Record<string, unknown>> => {
+    const identity = { id: sessionId, ...(agentPreset !== undefined ? { agentPreset } : {}) }
+    const position = await service.positionFor(identity)
+    const score = tracker.results(sessionId)
+    const practices = annotateRelevance(score?.results ?? [], position.flow, position.stage)
+    const muted = await service.suggestions()
+    const hidden = dismissedPractices.get(sessionId) ?? new Set<string>()
+    const isMuted = (id: string): boolean => hidden.has(id) || (muted.dismissed[`none→practice:${id}`]?.count ?? 0) >= 3
+    const pos = position.stage !== null ? positionOf(position.flow, position.stage) : undefined
+    const { suggestion } = await suggestionFor(sessionId)
+    return {
+      sessionId,
+      flow: position.flow,
+      flows: await service.flows(),
+      stage: position.stage,
+      source: position.source,
+      presetId: position.presetId ?? null,
+      owners: position.owners,
+      ...(pos !== undefined ? { position: pos } : {}),
+      ...(position.stage !== null ? { gate: gateFor(position.stage) ?? null, next: nextStage(position.flow, position.stage) ?? null } : {}),
+      practices,
+      /** Red + relevant + not unknown + not dismissed: the lines the control shows. */
+      report: practices.filter(p => p.status === 'red' && p.relevant && p.kind !== 'unknown' && !isMuted(p.id)),
+      ...(suggestion !== undefined ? { suggestion } : {}),
+    }
+  }
   // ---- experiments: fork this session under another preset
   const experiments = new Experiments(() => service.paths())
   rpc.handle('experiments/fork', async (args) => {
@@ -987,6 +1090,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const identity = { id: sessionId, ...(state?.agentPreset !== undefined ? { agentPreset: state.agentPreset } : {}) }
     const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
     const resolved = await service.activeFor(identity)
+    const position = await service.positionFor(identity)
     const { guess, suggestion } = await suggestionFor(sessionId)
     const related = await experiments.forSession(sessionId)
     const wt = tracker.worktreesOf(sessionId)
@@ -1011,7 +1115,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       overlays: set.overlays,
       offered: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}`, description: s.description })),
       unresolved: set.resolution.unresolved,
-      practices: score?.results ?? summary.practices,
+      practices: annotateRelevance(score?.results ?? summary.practices, position.flow, position.stage),
+      flow: position.flow,
+      stage: position.stage,
+      positionSource: position.source,
+      ...(position.stage !== null ? { gate: gateFor(position.stage) ?? null, next: nextStage(position.flow, position.stage) ?? null } : {}),
       worst: score?.worst ?? 'n/a',
       facts: score?.facts,
       summary,
