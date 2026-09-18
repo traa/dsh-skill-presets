@@ -761,13 +761,21 @@ export function apply(ctx: Context, config: Config = {}): void {
       practices,
       /** Red + relevant + not unknown + not dismissed: the lines the control shows. */
       report: practices.filter(p => p.status === 'red' && p.relevant && p.kind !== 'unknown' && !isMuted(p.id)),
-      /** Committed stage artifacts, so the client can say whether the gate is met. */
-      artifacts: [...(score?.facts?.artifacts ?? [])],
       /**
-       * Absent = we could not look (no forge CLI), so the gate renders "? unknown";
-       * null = we looked and found none; object = the open PR.
+       * Only when a git read actually happened. With no facts at all (fresh
+       * session, or outside a repo) both keys stay ABSENT, so the gate renders
+       * "? unknown" instead of reading an empty `artifacts` + `pr: null` as
+       * "we looked and found nothing". Same rule as the sidebar in views.ts.
+       *
+       * Within `pr`: absent = no forge CLI to ask; null = asked, none open;
+       * object = the open PR.
        */
-      pr: score?.facts?.pr ?? (score?.facts?.ghAvailable === false ? undefined : null),
+      ...(score?.facts !== undefined
+        ? {
+            artifacts: [...score.facts.artifacts],
+            pr: score.facts.pr ?? (score.facts.ghAvailable === false ? undefined : null),
+          }
+        : {}),
       /** The skills actually offered this session, for the "Skills in play" chips. */
       skills: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}` })),
       ...(suggestion !== undefined ? { suggestion } : {}),
