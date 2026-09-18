@@ -31,34 +31,48 @@ const has = (facts: GitFacts, file: string): boolean => facts.artifacts.some(a =
  * @param facts - git facts; undefined → plan with low confidence.
  * @param recent - the last few observed calls (newest last).
  */
-export function detectStage(facts: GitFacts | undefined, recent: readonly ObservedCall[] = []): StageGuess {
+export function detectStage(facts: GitFacts | undefined, _recent: readonly ObservedCall[] = []): StageGuess {
   // The two fallbacks below describe the DETECTOR's own position ("I have
   // nothing to go on"), never the repository's. A `why` that reads as a
   // complaint about the workspace is a defect: the user did nothing wrong by
   // starting outside a repo or before the first artifact exists.
   if (facts === undefined || !facts.inRepo) return { stage: 'plan', confidence: 0.2, why: ['no repository read yet; defaulting to Plan'] }
-  // Only SHELL commands count, and only when the deploy verb is the command
-  // itself — not a word inside a commit message, a grep, or a branch name.
-  const shell = recent.filter(c => ['bash', 'Bash', 'shell'].includes(c.name)).map(c => c.target ?? '')
-  const startsWith = (re: RegExp): boolean => shell.some(cmd => cmd.split(/\s*(?:&&|\|\||;|\|)\s*/u).some(part => re.test(part.trim())))
-  const incident = facts.artifacts.some(a => /incidents?\//u.test(a)) || startsWith(/^git\s+revert\b|^(?:kubectl|helm)\s+rollout\s+undo\b/u)
-  if (incident) return { stage: 'maintain', confidence: 0.75, why: ['incident record or rollback activity'] }
-  if (startsWith(/^(?:kubectl|helm|terraform|pulumi|fly|vercel|netlify|wrangler|serverless|sam|cdk)\s+(?:apply|deploy|install|upgrade|up|publish|rollout)\b|^docker\s+push\b|^(?:npm|pnpm|yarn)\s+publish\b|^gh\s+release\s+create\b|^(?:make|npm run|pnpm|yarn)\s+(?:deploy|release)\b/u)) {
-    return { stage: 'deploy', confidence: 0.7, why: ['deployment commands observed'] }
-  }
+  // Phase 7: artifacts and PR state ONLY. Shell verbs and edit counts used to
+  // feed this and made the chip pulse mid-session; a `kubectl` in a grep or a
+  // `git revert` of a typo is not the human changing stage.
+  if (facts.artifacts.some(a => /incidents?\//u.test(a))) return { stage: 'maintain', confidence: 0.75, why: ['incident record present'] }
   if (facts.pr !== undefined) {
     if (/merged/iu.test(facts.pr.state)) return { stage: 'deploy', confidence: 0.75, why: [`PR merged: ${facts.pr.url}`] }
     return { stage: 'test', confidence: 0.85, why: [`PR open: ${facts.pr.url}`] }
   }
-  if (has(facts, 'plan.md')) {
-    const edits = recent.filter(c => ['write', 'edit', 'Write', 'Edit'].includes(c.name)).length
-    return { stage: 'build', confidence: edits > 0 ? 0.9 : 0.75, why: ['plan.md committed', ...(edits > 0 ? [`${edits} recent edit(s)`] : [])] }
-  }
+  if (has(facts, 'plan.md')) return { stage: 'build', confidence: 0.8, why: ['plan.md committed'] }
   if (has(facts, 'spec.md') || has(facts, 'intent.md')) {
     return { stage: 'design', confidence: has(facts, 'spec.md') ? 0.8 : 0.7, why: [has(facts, 'spec.md') ? 'spec.md present, no plan.md' : 'intent.md present, no spec.md'] }
   }
   return { stage: 'plan', confidence: 0.5, why: ['nothing observed yet; defaulting to Plan'] }
 }
+
+/**
+ * Whether NOW is a moment to offer a suggestion at all. Pure.
+ *
+ * Two moments, from the playbook: the start of a session that has no explicit
+ * position yet ("where should I start?"), and the appearance of the CURRENT
+ * stage's gate artifact ("an accepted artifact fires the next gate"). Nothing
+ * else — not edits, not commands, not time.
+ */
+export function shouldSuggest(input: { explicitPosition: boolean, stage: Stage | null, previous: GitFacts | undefined, facts: GitFacts | undefined }): boolean {
+  if (input.stage === null) return false
+  if (!input.explicitPosition) return true
+  if (input.previous === undefined || input.facts === undefined) return false
+  const gate = GATE_ARTIFACT[input.stage]
+  if (gate === undefined) return false
+  const had = gate === 'PR' ? input.previous.pr !== undefined : has(input.previous, gate)
+  const now = gate === 'PR' ? input.facts.pr !== undefined : has(input.facts, gate)
+  return !had && now
+}
+
+/** The artifact whose appearance ends a stage. Mirrors `flows.ts` `gateFor` for the file-shaped ones. */
+const GATE_ARTIFACT: Readonly<Partial<Record<Stage, string>>> = { plan: 'intent.md', design: 'spec.md', build: 'plan.md', test: 'PR' }
 
 /** Dismissal memory per workspace, keyed by `<from>→<to>`. */
 export interface SuggestionsDoc {

@@ -74,17 +74,18 @@ test('plan + create into a temp home; refuses to overwrite; listStrictPresets fi
   await assert.rejects(planStrictPreset('nope', 'x', { presetsDir, env }), /no shipped preset/)
 })
 
-test('stage: deploy only from a shell command that IS a deploy verb, not a word inside one', () => {
+// Phase 7: shell verbs NEVER set the stage. This test used to pin "deploy only
+// from a real deploy verb"; now it pins the stronger rule — no command does it,
+// real or not. The stage is read from artifacts and PR state, and moving is the
+// human's decision.
+test('stage: no shell command sets the stage, not even a real deploy or revert', () => {
   const facts = { inRepo: true, gitAvailable: true, ghAvailable: true, artifacts: [], instructionFiles: [], readAt: 'r' }
   const bash = cmd => ({ t: 't', turn: 1, name: 'bash', target: cmd, isError: false })
-  // The false positive from the screenshot: branch deletion / PR text mentioning release.
-  assert.equal(detectStage(facts, [bash('git push -q origin --delete feat/phase-2 feat/release-notes')]).stage, 'plan')
-  assert.equal(detectStage(facts, [bash('git commit -m "prepare deploy docs"')]).stage, 'plan')
-  assert.equal(detectStage(facts, [bash('grep -rn deploy src/')]).stage, 'plan')
+  for (const cmd of ['git push -q origin --delete feat/phase-2 feat/release-notes', 'git commit -m "prepare deploy docs"', 'grep -rn deploy src/', 'kubectl apply -f k8s/', 'npm test && npm publish', 'gh release create v1.2.0', 'git revert HEAD']) {
+    assert.equal(detectStage(facts, [bash(cmd)]).stage, 'plan', cmd)
+  }
   assert.equal(detectStage(facts, [{ t: 't', turn: 1, name: 'edit', target: '/r/deploy.ts', isError: false }]).stage, 'plan')
-  // Real deploy commands, including after && or |.
-  assert.equal(detectStage(facts, [bash('kubectl apply -f k8s/')]).stage, 'deploy')
-  assert.equal(detectStage(facts, [bash('npm test && npm publish')]).stage, 'deploy')
-  assert.equal(detectStage(facts, [bash('gh release create v1.2.0')]).stage, 'deploy')
-  assert.equal(detectStage(facts, [bash('git revert HEAD')]).stage, 'maintain')
+  // What DOES move it: artifacts and the PR.
+  assert.equal(detectStage({ ...facts, pr: { url: 'u', state: 'MERGED' } }).stage, 'deploy')
+  assert.equal(detectStage({ ...facts, artifacts: ['docs/sdlc/incidents/x.md'] }).stage, 'maintain')
 })

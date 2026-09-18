@@ -11,7 +11,7 @@
  * @module dsh-skill-presets/host/flows
  */
 
-import type { Preset, Stage } from './types.ts'
+import type { PracticeId, PracticeResult, Preset, Stage } from './types.ts'
 
 export interface Flow {
   readonly id: string
@@ -267,4 +267,58 @@ export function switchFlow(to: Flow, current: Position): Position {
   if (to.stages.length === 0) return { flow: to.id, stage: null }
   if (current.stage !== null && to.stages.includes(current.stage)) return { flow: to.id, stage: current.stage }
   return { flow: to.id, stage: to.stages[0] }
+}
+
+// ------------------------------------------------------------ relevance ----
+
+/**
+ * Which stages a practice JUDGES. Outside them a verdict is noise: "no PR yet"
+ * during Plan, "plan.md missing" during Design. `all` = every stage.
+ */
+const PRACTICE_STAGES: Readonly<Record<PracticeId, readonly Stage[] | 'all'>> = {
+  'plan-before-code': ['build'],
+  'plan-drift': ['build'],
+  'worktree': ['build', 'test'],
+  'pull-request': ['build', 'test', 'deploy'],
+  'artifact-chain': ['plan', 'design', 'build', 'test'],
+  'post-merge-sync': 'all',
+  'conductor': 'all',
+  'worktree-hygiene': 'all',
+}
+
+export function relevantStages(id: PracticeId): readonly Stage[] | 'all' {
+  return PRACTICE_STAGES[id] ?? 'all'
+}
+
+/** A practice result with the two Phase 7 flags the UI and prompt read. */
+export interface AnnotatedPractice extends PracticeResult {
+  /** The current stage cares about this practice (and guardrails are on). */
+  readonly relevant: boolean
+  /**
+   * For a non-green result: `violation` = a concrete finding about the work;
+   * `unknown` = the detector could not read a fact (git missing, cwd outside
+   * the repo, forge CLI absent). Unknown never renders as a warning.
+   */
+  readonly kind?: 'violation' | 'unknown'
+}
+
+/** Evidence that reads as "I could not tell" rather than "you did X". */
+const UNKNOWN_RE = /unavailable|could not (?:determine|tell|read)|cannot (?:be placed|tell)|not judging|no (?:forge|gh|glab)\b|no upstream|rescanning|assumed/iu
+
+export function isUnknownEvidence(evidence: readonly string[]): boolean {
+  return evidence.length > 0 && UNKNOWN_RE.test(evidence[0])
+}
+
+/**
+ * Attach `relevant` and `kind` to raw detector results for a position. Pure.
+ * A flow with guardrails off makes nothing relevant.
+ */
+export function annotateRelevance(results: readonly PracticeResult[], flow: Flow | undefined, stage: Stage | null): AnnotatedPractice[] {
+  const off = flow?.guardrails === 'off'
+  return results.map((r) => {
+    const stages = relevantStages(r.id)
+    const relevant = !off && (stages === 'all' || (stage !== null && stages.includes(stage)))
+    const kind = r.status === 'green' || r.status === 'n/a' ? undefined : (isUnknownEvidence(r.evidence) ? 'unknown' : 'violation')
+    return { ...r, relevant, ...(kind !== undefined ? { kind } : {}) }
+  })
 }

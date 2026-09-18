@@ -55,13 +55,20 @@ tsdown inline a second React and killed every hook; see `test/client.test.mjs` g
 Tests: `test/flows.test.mjs` (pure + service), `test/client.test.mjs` (React-external guard).
 
 ## Task 3 — Host wiring
-Files: `src/host/index.ts` (RPC `flows/list|save|delete`, `session/set-flow`,
-`session/set-stage`, `practice/dismiss`; `scorecard` carries `flow`, `stage`, `gate`,
-`relevant`/`kind` per practice; suggestion only at session start / gate appearance),
-`src/host/stage.ts` (delete command sniffing; `shouldSuggest(prevFacts, facts, state)`),
-`src/host/prompt.ts` (red+relevant only; Explore one-liner), `src/host/tools.ts`
-(`sdlc_status` → flow/stage/next gate), `src/host/provider.ts` (Explore → no preset).
-Tests: `test/stage.test.mjs`, `test/prompt.test.mjs` (new), `test/tools.test.mjs` (new).
+Files: `src/host/flows.ts` (`relevantStages`, `annotateRelevance` → `relevant` + `kind:
+violation|unknown`, `isUnknownEvidence`), `src/host/index.ts` (RPC `flows/list|save|delete`,
+`session/position`, `session/move {flow?, stage?, pin?, scope?}` (one RPC, not two),
+`practice/dismiss`; `positionCard()` shared by the control; `scorecard` carries `flow`,
+`stage`, `positionSource`, `gate`, `next` and annotated practices; suggestion gated by
+`shouldSuggest` and held in `offered` until accept/dismiss/move; `suggestion/accept` MOVES
+the position), `src/host/stage.ts` (shell-verb and edit-count sniffing deleted;
+`shouldSuggest({explicitPosition, stage, previous, facts})`), `src/host/prompt.ts` (with a
+flow: red + relevant + not unknown only; Explore one-liner; legacy callers unchanged),
+`src/host/tools.ts` (`sdlc_status` → flow, stage n of m, gate, then only "needing action"
+and one "not judged" line). `provider.ts` unchanged: Explore already clears the preset via
+`setPosition → activate(null)`.
+Tests: `test/stage.test.mjs`, `test/prompt.test.mjs` (new), `test/strictpreset.test.mjs`
+(verb test replaced by the "no command sets the stage" contract).
 
 ## Task 4 — Stage control + overlay popover (client)
 Files: `src/client/api.ts` (types), `src/client/controller.ts` (`StageController`: anchor
