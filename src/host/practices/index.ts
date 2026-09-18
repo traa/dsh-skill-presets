@@ -10,7 +10,7 @@
 
 import { evaluate, isMutatingCall, worst, type ObservedCall, type SessionView } from './detectors.ts'
 import { readGitFacts, type GitFacts, type Runner } from './git.ts'
-import { coveredByPlan, isPlanArtifact, planPaths } from './plan.ts'
+import { coveredByPlan, isDocsPath, isPlanArtifact, planPaths } from './plan.ts'
 import { attributedWorkRoot, currentWorkRoot } from './workroot.ts'
 import { changesWorktrees, classify, scanWorktrees, worktreeAddPath, type WorktreeInfo } from './worktrees.ts'
 import { readFile } from 'node:fs/promises'
@@ -125,7 +125,7 @@ export class PracticeTracker {
       if (isPlanArtifact(call.target)) {
         state.planUpdated = state.drift.length > 0
         state.plan = undefined // re-read next time
-      } else if (state.plan !== undefined && !coveredByPlan(call.target, state.facts?.topLevel, state.plan.patterns)) {
+      } else if (state.plan !== undefined && !isDocsPath(call.target) && !coveredByPlan(call.target, state.facts?.topLevel, state.plan.patterns)) {
         state.drift.push({ path: call.target, t: call.t })
         state.planUpdated = false
         if (!state.announced.has(call.target)) { state.announced.add(call.target); drift = call.target }

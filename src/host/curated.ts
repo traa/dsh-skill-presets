@@ -172,7 +172,10 @@ export function defaultPractices(): PracticesDoc {
   return {
     version: 1,
     strictSkills: false,
-    autoCleanWorktrees: true,
+    // OFF by default since Phase 7: the sweep once deleted a fresh worktree and
+    // its branch mid-session. Removal is an action the user takes (sidebar
+    // Remove, `worktrees --clean`); opt in here to run it on session end + hourly.
+    autoCleanWorktrees: false,
     pruning: { minSessions: 20, maxLoadRate: 0.1, minUnknown: 3 },
     // Provider-neutral: any of these counts as "the project's instructions file".
     instructionFiles: ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', '.agents/AGENTS.md', 'CONTRIBUTING.md'],

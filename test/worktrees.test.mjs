@@ -31,6 +31,8 @@ async function repo() {
   await git(main, 'worktree', 'add', '-q', join(root, 'wt-dirty'), '-b', 'feat/dirty', 'main')
   await writeFile(join(root, 'wt-dirty', 'dirty.txt'), 'x')
   await symlink('../main/node_modules', join(root, 'wt-dirty', 'node_modules'))
+  // fresh: just created from main, clean, zero commits of its own — the Phase 7 casualty
+  await git(main, 'worktree', 'add', '-q', join(root, 'wt-fresh'), '-b', 'feat/fresh', 'main')
   return { root, main }
 }
 
@@ -58,7 +60,32 @@ test('classify: primary/locked keep; merged+clean removable; dirty/detached/syml
   assert.equal(classify({ ...base, branch: 'f', dirty: false, merged: false, prState: 'MERGED' }, 'main').kind, 'removable')
   assert.equal(classify({ ...base, branch: 'f', dirty: false, merged: false, nodeModulesSymlink: '../x' }, 'main').kind, 'attention')
   assert.equal(classify({ ...base, branch: 'f', dirty: false, merged: false, hasUpstream: false, aheadOfDefault: 2 }, 'main').kind, 'keep')
-  assert.equal(classify({ ...base, branch: 'f', dirty: false, merged: false, aheadOfDefault: 0 }, 'main').kind, 'removable')
+})
+
+// Observed live (Phase 7): `git worktree add ../x -b feat/x origin/main`, then
+// `npm ci` — and ten minutes later the hourly sweep had removed the directory
+// AND deleted the branch, because a branch with zero commits beyond main was
+// classified "removable: no commits beyond main". Zero ahead is what EVERY
+// worktree looks like in its first minutes. "Not yet started" is not "merged".
+// A fresh worktree — and one that is 0 ahead but whose HEAD equals the default
+// tip, which `merge-base --is-ancestor` also reports as `merged` — must be KEPT
+// until it is old enough that "abandoned" is the likelier reading, and even then
+// only when it is truly merged.
+test('classify: a worktree with no commits of its own is kept, not swept — "0 ahead" is not "merged"', () => {
+  const base = { path: '/p', head: 'h', primary: false, detached: false, branch: 'feat/x', dirty: false }
+  const fresh = classify({ ...base, merged: false, aheadOfDefault: 0, ageDays: 0 }, 'main')
+  assert.equal(fresh.kind, 'keep', fresh.reason)
+  assert.match(fresh.reason, /no commits of its own/i)
+  // HEAD == default tip: git says "ancestor" (merged: true) — still nothing to sweep.
+  const atTip = classify({ ...base, merged: true, aheadOfDefault: 0, ageDays: 0 }, 'main')
+  assert.equal(atTip.kind, 'keep', atTip.reason)
+  // Genuinely merged work (has commits, all of them in main) is still removable…
+  assert.equal(classify({ ...base, merged: true, aheadOfDefault: 0, ageDays: 3, hasOwnCommits: true }, 'main').kind, 'removable')
+  // …unless it is younger than the grace period: a merge that landed an hour ago
+  // may still have a session open in that directory.
+  const justMerged = classify({ ...base, merged: true, aheadOfDefault: 0, ageDays: 0, hasOwnCommits: true, ageHours: 1 }, 'main')
+  assert.equal(justMerged.kind, 'keep', justMerged.reason)
+  assert.match(justMerged.reason, /grace/i)
 })
 
 test('scan + cleanup on a real repo: removes merged+clean, keeps unmerged, flags dirty; dry run touches nothing', async () => {
@@ -70,21 +97,35 @@ test('scan + cleanup on a real repo: removes merged+clean, keeps unmerged, flags
   assert.equal(by['wt-merged'].merged, true); assert.equal(by['wt-merged'].dirty, false)
   assert.equal(by['wt-open'].merged, false)
   assert.equal(by['wt-dirty'].dirty, true); assert.match(by['wt-dirty'].nodeModulesSymlink, /main\/node_modules/)
+  // The scanner tells a merged branch from a never-started one, even though git
+  // calls both "ancestor of main".
+  assert.equal(by['wt-merged'].hasOwnCommits, true)
+  assert.equal(by['wt-fresh'].merged, true, 'git itself says the fresh tip is an ancestor of main')
+  assert.equal(by['wt-fresh'].hasOwnCommits, false)
+  assert.equal(by['wt-fresh'].aheadOfDefault, 0)
 
-  const dry = await cleanupWorktrees(main, { skipPr: true, dryRun: true })
+  // Everything here was committed seconds ago, so with the default grace period
+  // NOTHING is removable — that is the point of the grace period.
+  const graced = await cleanupWorktrees(main, { skipPr: true, dryRun: true })
+  assert.deepEqual(graced.removed, [], 'inside the grace period the merged worktree is kept')
+  assert.ok(graced.kept.some(k => k.path.endsWith('wt-merged') && /grace/.test(k.reason)))
+
+  const dry = await cleanupWorktrees(main, { skipPr: true, dryRun: true, graceHours: 0 })
   assert.deepEqual(dry.removed.map(r => r.branch), ['feat/merged'])
-  assert.equal((await scanWorktrees(main, { skipPr: true })).worktrees.length, 4, 'dry run removed nothing')
+  assert.equal((await scanWorktrees(main, { skipPr: true })).worktrees.length, 5, 'dry run removed nothing')
 
-  const real = await cleanupWorktrees(main, { skipPr: true })
+  const real = await cleanupWorktrees(main, { skipPr: true, graceHours: 0 })
   assert.deepEqual(real.removed.map(r => r.branch), ['feat/merged'])
   assert.ok(real.attention.some(a => a.path.endsWith('wt-dirty') && /uncommitted/.test(a.reason)))
   assert.ok(real.kept.some(k => k.path.endsWith('wt-open')))
+  assert.ok(real.kept.some(k => k.path.endsWith('wt-fresh') && /no commits of its own/.test(k.reason)), 'a fresh worktree is never swept')
   assert.deepEqual(real.errors, [])
   const after = await scanWorktrees(main, { skipPr: true })
-  assert.deepEqual(after.worktrees.map(w => w.path.split('/').pop()).sort(), ['main', 'wt-dirty', 'wt-open'])
+  assert.deepEqual(after.worktrees.map(w => w.path.split('/').pop()).sort(), ['main', 'wt-dirty', 'wt-fresh', 'wt-open'])
   const branches = await git(main, 'branch', '--format=%(refname:short)')
   assert.ok(!branches.includes('feat/merged'), 'merged branch deleted')
   assert.ok(branches.includes('feat/open'))
+  assert.ok(branches.includes('feat/fresh'), 'the fresh branch survives the sweep')
   void root
 })
 

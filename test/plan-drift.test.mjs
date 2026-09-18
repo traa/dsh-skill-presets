@@ -64,3 +64,9 @@ test('work root follows absolute edits and leading cd, else the session cwd', ()
   assert.equal(currentWorkRoot(calls, '/cwd'), '/wt')
   assert.equal(currentWorkRoot([calls[0]], '/cwd'), '/cwd')
 })
+
+test('isDocsPath: docs/, Markdown, and the usual top-level prose files are documentation; source is not', async () => {
+  const { isDocsPath } = await import('../lib/host/practices/plan.js')
+  for (const p of ['docs/sdlc/phase-7/intent.md', '/repo/doc/guide.rst', 'README.md', 'README', 'LICENSE', 'CHANGELOG.md', 'notes/todo.txt', 'src/thing.mdx']) assert.ok(isDocsPath(p), p)
+  for (const p of ['src/x.ts', 'test/a.test.mjs', 'package.json', 'docs.ts', 'src/docs/render.ts'.replace('docs/', 'docz/'), 'Makefile']) assert.ok(!isDocsPath(p), p)
+})

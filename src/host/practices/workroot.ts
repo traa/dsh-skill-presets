@@ -11,7 +11,7 @@
  */
 
 import { dirname, isAbsolute } from 'node:path'
-import { commandCwd, isBashTool, isWriteTool, type ObservedCall } from './detectors.ts'
+import { commandCwd, isBashTool, isMutatingCommand, isWriteTool, type ObservedCall } from './detectors.ts'
 
 // `commandCwd` moved into `detectors.ts` — the detectors need it to decide
 // whether a bash mutation landed inside the checkout being judged, and they
@@ -31,6 +31,24 @@ export function leadingCd(command: string): string | undefined {
   return (m[1] ?? m[2] ?? m[3]).replace(/^~(?=\/|$)/u, process.env.HOME ?? '~')
 }
 
+/** A shell segment that drives a version-control tool: it says where the agent is WORKING. */
+const VCS_COMMAND = /(?:^|[;&|]\s*)(?:git|gh|glab)\s/u
+
+/**
+ * Whether a shell command is evidence of WORK happening in its directory, as
+ * opposed to a LOOK at it.
+ *
+ * Observed live: the agent edited files in its worktree, then ran read-only
+ * `grep`/`ls`/`sed -n` with `cd` into another repository to check something.
+ * The newest `cd` moved the work root there, git facts were read from the
+ * foreign repo, none of the edits could be placed in it, and the worktree
+ * practice went amber about the wrong checkout. Looking at a repository is not
+ * working in it: only a mutation, or a git/gh/glab invocation, moves the root.
+ */
+export function attributesWork(command: string): boolean {
+  return isMutatingCommand(command) || VCS_COMMAND.test(command.trim())
+}
+
 /**
  * The directory the call worked in, when it can be told from the call alone.
  * @param call - observed call.
@@ -41,7 +59,7 @@ export function workRootOf(call: ObservedCall, cwd: string | undefined): string 
   if (isWriteTool(call.name)) {
     return isAbsolute(call.target) ? dirname(call.target) : undefined
   }
-  if (isBashTool(call.name)) return commandCwd(call.target, cwd)
+  if (isBashTool(call.name)) return attributesWork(call.target) ? commandCwd(call.target, cwd) : undefined
   return undefined
 }
 

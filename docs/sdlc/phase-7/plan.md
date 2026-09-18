@@ -6,14 +6,19 @@ task leaves `npm test` green. Risk-first: the browser stage lands first because
 every UI task is accepted through it.
 
 ## Task 0 — Stop the bleeding (host, no UI)
-Files: `src/host/practices/worktrees.ts` (`classify`: `removable` needs merged/PR-MERGED,
-never "0 ahead"; `graceHours` from `.git` gitdir mtime), `src/host/types.ts` +
-`src/host/store.ts` (`autoCleanWorktrees` default `false`, `worktreeGraceHours: 24`),
-`src/host/practices/detectors.ts` (foreign-`workdir` calls → `unknown`, never
-mutation; `docs/**`/`*.md` never trip `plan-before-code`/`plan-drift`),
-`examples/practices.json` (regen), `README.md` (worktree lifecycle table).
-Tests: `test/worktrees.test.mjs` (fresh 0-ahead worktree → keep), `test/detectors.test.mjs`
-(`grep -rn` with foreign workdir → green; `intent.md` write → plan-before-code green).
+Files: `src/host/practices/worktrees.ts` (`classify`: `removable` needs merged/PR-MERGED
+AND `hasOwnCommits`, never "0 ahead" alone; `GRACE_HOURS = 24` from the newest commit's
+age, `graceHours` option threaded through `cleanupWorktrees`; scanner sets `hasOwnCommits`
+and `ageHours`), `src/host/curated.ts` + `src/host/store.ts` (`autoCleanWorktrees` default
+`false`), `src/host/practices/workroot.ts` (DEPARTURE: the "cannot be placed" amber was not
+a placement bug — a read-only `cd /other && grep` MOVED the work root; `attributesWork()`
+now lets only mutating or git/gh/glab commands move it), `src/host/practices/plan.ts`
+(`isDocsPath`), `src/host/practices/detectors.ts` (`plan-before-code` judges the first
+non-doc edit), `src/host/practices/index.ts` (docs never recorded as drift),
+`examples/practices.json`, `README.md` (worktree lifecycle table, auto-clean default).
+Tests: `test/worktrees.test.mjs` (fresh 0-ahead worktree → keep; grace period; real-repo
+sweep keeps `wt-fresh`), `test/detectors.test.mjs` (read-only cd does not move the root;
+docs edits → plan-before-code n/a), `test/plan-drift.test.mjs` (`isDocsPath`).
 
 ## Task 1 — Browser stage
 Files: `stage/shell.html`, `stage/shell.ts` (module loader + React 18 + DOM slots incl.

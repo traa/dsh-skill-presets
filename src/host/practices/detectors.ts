@@ -10,6 +10,7 @@
  */
 
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { isDocsPath } from './plan.ts'
 import type { GitFacts } from './git.ts'
 import type { PracticeId, PracticeResult, Stage } from '../types.ts'
 
@@ -1343,8 +1344,10 @@ export function detectArtifactChain(view: SessionView): PracticeResult {
 export function detectPlanBeforeCode(view: SessionView): PracticeResult {
   if (view.activeStage !== 'build') return result('plan-before-code', 'n/a', ['applies in the Build stage'])
   const facts = view.facts
-  const first = view.calls.find(call => isWriteTool(call.name))
-  if (first === undefined) return result('plan-before-code', 'n/a', ['no file edits yet'])
+  // Documentation is not code: writing intent.md / README / notes is not the
+  // thing the plan was supposed to precede. Judge the first SOURCE edit.
+  const first = view.calls.find(call => isWriteTool(call.name) && (call.target === undefined || !isDocsPath(call.target)))
+  if (first === undefined) return result('plan-before-code', 'n/a', ['no source edits yet'])
   if (facts === undefined || !facts.inRepo) return result('plan-before-code', 'n/a', ['not inside a git repository'])
   // "no plan.md in the repository" names a repository, and `facts.artifacts`
   // were listed in the work root. Under an assumed root this was the worst

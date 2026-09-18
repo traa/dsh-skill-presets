@@ -75,14 +75,15 @@ them. Now a worktree lives exactly as long as its unmerged work:
 
 | Verdict | When | Action |
 |---|---|---|
-| **removable** | branch merged into the default branch (or its PR is `MERGED`, or it has no commits beyond default) **and** the tree is clean | removed with `git worktree remove`, branch deleted with `git branch -d`, `git worktree prune` |
+| **removable** | the branch has commits of its own **and** all of them are in the default branch (or its PR is `MERGED`), the tree is clean, **and** the newest commit is older than the 24 h grace period | removed with `git worktree remove`, branch deleted with `git branch -d`, `git worktree prune` |
 | **attention** | dirty tree, detached HEAD, or a `node_modules` **symlink** inside | listed with the reason; never touched |
-| **keep** | primary checkout, locked, on the default branch, or has unmerged commits | left alone |
+| **keep** | primary checkout, locked, on the default branch, has unmerged commits, **has no commits of its own yet** (fresh — "0 ahead" is not "merged"), or merged less than 24 h ago | left alone |
 
-Automatic (`autoCleanWorktrees`, on by default): when a session ends, for the
-repo it worked in; and hourly for every live repo. Manual: the session's
-Skills tab lists worktrees with **Remove**; `dsh-skill-presets worktrees
-[--dry-run|--clean]`. The **Clean up worktrees** practice goes amber on merged
+Manual by default: the session's Skills tab lists worktrees with **Remove**;
+`dsh-skill-presets worktrees [--dry-run|--clean]`. Automatic sweeping
+(`autoCleanWorktrees`, **off** by default since Phase 7 — it once deleted a
+fresh worktree and its branch mid-session) runs when a session ends, for the
+repo it worked in, and hourly for every live repo. The **Clean up worktrees** practice goes amber on merged
 leftovers and **red** on a `node_modules` symlink — the exact footgun that made
 Phase 2's post-merge build a silent no-op. `worktree-first` now says `npm ci`
 inside the worktree, never a symlink; `worktree-cleanup` teaches the removal
