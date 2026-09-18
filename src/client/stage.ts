@@ -36,16 +36,25 @@ const PRACTICE_FIX: Record<string, { label: string, skill: string }> = {
 }
 
 export const STAGE_CSS = `
-.skp-ctl { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 999px; font: inherit; font-size: 12px; font-weight: 600; line-height: 1; flex: none; width: auto; max-width: none;
-  color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l2); cursor: pointer; white-space: nowrap;
-  transition: background 150ms ease-out, border-color 150ms ease-out; }
-.skp-ctl:hover { background: var(--dsw-alias-bg-overlay); }
-.skp-ctl:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.skp-ctl[aria-expanded="true"] { border-color: var(--dsw-alias-brand-primary); }
-.skp-ctl .skp-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; margin: 0; }
-.skp-ctl > * { flex: none; }
-.skp-ctl-count { font-weight: 700; color: var(--dsw-alias-state-error-primary); white-space: nowrap; }
-.skp-ctl-caret { color: var(--dsw-alias-label-secondary); font-size: 10px; }
+/*
+ * The control is a COMPOSER CHIP, not a pill of our own invention: same recipe
+ * as the shipped model/permission triggers beside it (ui-model-selection
+ * ModelSelect.module.css .trigger, Figma ToggleButton 313:14108) — 28px high,
+ * borderless, transparent, 24px radius, 13/20/500 secondary label, the shared
+ * interactive hover token. Anything more (a border, a filled background, a
+ * coloured swatch) makes the one plugin control in that row the loudest thing
+ * in it.
+ */
+.skp-ctl { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px; font: inherit;
+  min-width: 0; max-width: min(320px, 40cqw); flex-wrap: nowrap; white-space: nowrap;
+  border: none; border-radius: 24px; outline: none; background: transparent; color: var(--dsw-alias-label-secondary);
+  font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer; }
+.skp-ctl:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.skp-ctl:focus-visible { box-shadow: 0 0 0 2px var(--dsw-alias-border-l3); }
+.skp-ctl[aria-expanded="true"] { background: var(--dsw-alias-interactive-bg-hover); }
+.skp-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skp-ctl-count { flex: 0 0 auto; color: var(--dsw-alias-state-error-primary); }
+.skp-ctl-caret { flex: 0 0 auto; color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 1; }
 .skp-stage-pop { position: fixed; width: 360px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box;
   background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
   box-shadow: 0 8px 24px rgba(0,0,0,.28); color: var(--dsw-alias-label-primary); font-size: 13px; z-index: 1; }
@@ -108,7 +117,6 @@ export function makeStageControl(React: ReactLike, controller: StageController):
     const card = snap.card
     const label = card === undefined ? (snap.loading ? '…' : 'Stage') : card.stage === null ? card.flow.title : STAGE_TITLE[card.stage] ?? card.stage
     const count = card?.report.filter(r => !snap.hidden.includes(r.id)).length ?? 0
-    const swatch = card?.stage === null ? 'var(--dsw-alias-border-l2)' : undefined
     return h('button', {
       ref,
       type: 'button',
@@ -117,16 +125,15 @@ export function makeStageControl(React: ReactLike, controller: StageController):
       'aria-expanded': snap.open ? 'true' : 'false',
       title: card === undefined ? 'Stage' : card.stage === null
         ? `${card.flow.title} flow — no stages, guardrails off`
-        : `${card.flow.title} flow · ${STAGE_TITLE[card.stage] ?? card.stage}${card.position !== undefined ? ` (${card.position.index + 1} of ${card.position.of})` : ''}${card.gate !== undefined && card.gate !== null ? ` · next gate: ${card.gate}` : ''}${count > 0 ? ` · ${count} practice${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} action` : ''}`,
+        : `${card.flow.title} · ${STAGE_TITLE[card.stage] ?? card.stage}${card.position !== undefined ? ` (${card.position.index + 1} of ${card.position.of})` : ''}${card.gate !== undefined && card.gate !== null ? ` · ends with ${card.gate}` : ''}${count > 0 ? ` · ${count} practice${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} action` : ''}`,
       onClick: () => controller.toggle(),
       onKeyDown: (e: { key: string, preventDefault(): void }) => {
         if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); controller.toggle(true) }
       },
     },
-      h('span', { className: 'skp-swatch', style: { background: swatch ?? 'var(--dsw-alias-brand-primary)' } }),
-      label,
+      h('span', { className: 'skp-ctl-label' }, label),
       count > 0 ? h('span', { className: 'skp-ctl-count', 'aria-label': `${count} practices need action` }, `· ${count}`) : null,
-      h('span', { className: 'skp-ctl-caret', 'aria-hidden': 'true' }, '▾'),
+      h('span', { className: 'skp-ctl-caret', 'aria-hidden': 'true' }, '⌄'),
     )
   }
 }
