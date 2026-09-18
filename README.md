@@ -21,52 +21,57 @@ vendor tool name. Upstream skills that do are normalized on install.
 
 | Surface | Where | What it shows |
 |---|---|---|
-| **Settings → Skills** | left nav | **Stages & presets** (the six-stage loop; activate/edit/duplicate), **Library** (sources, install/update, per-skill drawer with normalized diff badge), **Practices** (off/advisory/hard per practice), **Insights** (load rate, co-usage map, unknown-skill requests, per-model split, recent sessions) |
-| **Header chip** | session header, right | `◈ Build` + a traffic-light dot for the worst practice; click → switch preset, see overlays and practice evidence |
-| **Skills tab** | right sidebar | live scorecard for THIS session: stage & artifacts, practices with evidence, every offered skill with load count and first-load turn, a per-turn timeline, 👍/👎 rating |
+| **Stage control** | composer tool row, beside the model and plan controls | `◈ Build ▾` — the session's **flow** and **stage**. Click: pick a flow, move between its stages, see the gate that ends the stage, and the practices that need action (red and relevant only). Its popover renders through the shell's overlay layer, so nothing clips it. |
+| **Start notice** | one line under the composer | `plan.md committed — start in Build?` **Yes / Not now**. Offered at session start and when the current stage's gate artifact lands; never mid-session, never pulses. |
+| **Skills tab** | right sidebar | flow · stage n of m · gate; **Needs action** (red + relevant, one line each with the fixing skill); green practices; *Not judged (facts unavailable)* muted; every offered skill with load count; per-turn timeline; 👍/👎 |
+| **Settings → Skills** | left nav | **Stages & presets** (flows, presets, defaults per agent preset), **Library**, **Practices** (off/advisory/hard), **Insights** |
 | **Plugin card** | Settings → Plugins | store path, active preset, counts |
-| Tools | model | `skill_preset_status`, `sdlc_status`, `skill_preset_suggest` (deterministic; never switches) |
-| Prompt | model | a ≤ 8-line block: active preset + skill names, artifacts present, practices **at risk** with the skill that fixes each. Empty when all green. |
+| Tools | model | `sdlc_status` (flow, stage n of m, gate, then only what needs action), `skill_preset_status`, `skill_preset_suggest` (never switches) |
+| Prompt | model | a ≤ 8-line block: flow + stage + next gate, active preset + skill names, practices **needing action** (red, relevant to the stage — never "unknown", never stage-irrelevant). Empty when nothing needs saying; one line in Explore. |
 
-## Which preset a session gets
+## Flows and stages
 
-Resolution is **session → agent-preset default → workspace default**:
+A **flow** is the ordered subset of stages a piece of work passes through. Not
+every project needs the whole loop:
 
-| Rung | Set where | Survives a host restart |
+| Flow | Stages | Guardrails |
 |---|---|---|
-| this session | header chip (default action), sidebar | no — session ids are minted per process; pruned 7 days after the session ends |
-| agent preset (`standard`, `cordis`, `ptc`, …) | Settings → Skills → Stages → *Defaults per harness agent preset* | yes |
-| workspace default | Settings → Skills → *Make default*, or the chip's `default` button | yes |
+| **Full** (built in) | Plan → Design → Build → Review → Ship | on |
+| **Explore** (built in) | none | off — spikes, prototypes, looking around |
+| yours | any ordered subset (e.g. **Fix** = Build → Review) | on/off |
 
-Two parallel sessions can run different presets. The chip shows which rung
-answered; the `sdlc_status`/`skill_preset_status` tools say so too.
+The **stage** is the human's choice. Pick it in the stage control; the plugin
+never switches it. Each stage maps to the preset that owns it (`plan` → Plan,
+`build` → Build, `test` → Test & Review, …); when several presets own a stage the
+control asks which. Moving stage activates the derived preset at the same rung.
 
-### Stage suggestions
+Resolution is **session → agent-preset default → workspace default**; a session
+that predates flows (has a preset but no position) reads as Full at that preset's
+stage. Positions live in `positions.json` beside `active.json`.
 
-The scorecard folds git facts and recent commands into a **detected stage**
-(intent.md only → Plan; spec.md → Design; plan.md → Build; PR open → Test;
-PR merged or deploy commands → Deploy; incident record or rollback → Maintain).
-When the detected stage differs from the session's preset with confidence
-≥ 0.7, the chip **pulses** with "Switch to Build?" — one click accepts; *Not
-now* dismisses; three dismissals of the same transition mute it for the
-workspace; accepting clears the mute. It never switches by itself.
+**Each stage ends with a gate artifact** — `intent.md`, `spec.md`, `plan.md`,
+the PR, the merge — and the next stage reads it. The prompt block and
+`sdlc_status` name the current gate; committing it is what "done with this
+stage" means.
 
-### Plan drift
+### The start suggestion
 
-In the Build stage, an edit to a file `plan.md` never names (paths in
-backticks, bare paths, globs like `src/**/*.ts`, bare filenames) turns the
-*Keep plan.md in step with the diff* practice amber and lists the files; editing
-`plan.md` afterwards turns it green again. Advisory by default (a line in the
-guardrails prompt block); hard mode denies the next unplanned edit until the
-plan is updated.
+The detector reads **committed artifacts and PR state** (never shell verbs or
+edit counts) and is offered at exactly two moments: the start of a session that
+has no explicit position yet, and when the current stage's gate artifact appears.
+One line, **Yes / Not now**; three dismissals of the same transition mute it for
+the workspace; accepting moves the position.
 
-### Experiments (A/B)
+### Health is a gate report, not a dashboard
 
-Sidebar → *Fork under…* forks the session (through the harness session
-controller, at the last completed turn) and pins the chosen preset on the child
-**before its first step**. Run the same task in both, then *Compare*: skills
-loaded/offered, loads, turns, practice statuses, denials, drift, rating, model.
-When the controller is not composed the button explains the manual path.
+Nothing renders while all is well. A practice surfaces only when it is **red**
+and the **current stage judges it** (`plan-before-code` and `plan-drift` judge
+Build; `pull-request` judges Build/Review/Ship; `worktree` judges Build/Review;
+the rest judge every stage), as one line with the evidence and the skill that
+fixes it. **Amber means "I could not read a fact"** (git unavailable, cwd outside
+the repo, no forge CLI) — it is *Not judged*, never a warning. Dismissing a line
+hides it for the session; three dismissals mute it for the workspace. Explore
+turns every practice off for the session.
 
 ## Worktree lifecycle
 
@@ -304,13 +309,15 @@ and refuses to save on a collision unless one gets an `as` alias.
 Observed from **tool names, arguments, results, and git** — never from the
 model's prose — so they behave identically under every provider and replay
 from recorded logs. Git facts are read at the model's **work root**: the
-directory of its last absolute write/edit or the target of a leading `cd`,
-falling back to the session cwd — so a session that moved into a worktree is
-judged there, not at the checkout it was opened in.
+directory of its last absolute write/edit, or the target of a `cd`/`-C` in a
+command that **mutates or drives git** — a read-only `cd /other && grep` never
+moves it — falling back to the session cwd. So a session that moved into a
+worktree is judged there, not at the checkout it was opened in, and a look at
+another repository does not poison its verdicts.
 
 | Practice | Green | Red | Unknown (amber) |
 |---|---|---|---|
-| Work in a worktree | linked worktree, or a non-protected branch | a write/edit/mutating bash on a protected branch in the primary checkout | git unavailable |
+| Work in a worktree | linked worktree, or a non-protected branch | a write/edit/mutating bash on a protected branch in the primary checkout | git unavailable, or the mutations cannot be placed in the checkout |
 | Always open a PR | `gh pr create` / `glab mr create` ran, a PR/MR URL appeared in any tool result, or `gh pr view` finds one | session ended ahead of upstream with no PR, or never pushed | no forge CLI and no upstream |
 | Follow the conductor protocol | delegations, no self-edits | conductor wrote/edited files; delegated before a user approval turn; ended with zero delegations | — |
 | Commit the stage artifact | the active stage's artifact exists | Build/Test without `plan.md`, Design without `intent.md` | — |
@@ -340,7 +347,9 @@ strongest "missing skill" signal); **co-usage** pairs; per provider/model.
 library/<source-id>/<skill-dir>/SKILL.md (+ siblings)
 sources.json  presets.json  overlays.json  practices.json  normalize-rules.json
 lock.json        # per source: commit, fetchedAt; per skill: digest, upstreamDigest, normalized, history[≤5], orphaned?
-active.json      # { preset, since, by }
+active.json      # per rung: which preset
+positions.json   # per rung: { flow, stage }
+flows.json       # Full, Explore, and yours
 usage/*.jsonl    usage-rollup.json
 ```
 
@@ -407,8 +416,8 @@ dsh-skill-presets status | install [source…] | update [source…] | check-upda
 
 ## Acceptance checklist
 
-- Switch preset in the header chip → the next `<available_skills>` message in
-  the transcript reflects it.
+- Move stage in the composer control → the next `<available_skills>` message in
+  the transcript reflects the derived preset.
 - Load a skill → its row in the Skills tab turns green within 3 s.
 - Attach a team → `conductor-protocol` appears in the catalog on the next
   step; a conductor `Edit` turns the Conductor practice red with the call listed.
@@ -428,15 +437,35 @@ Phase 4 — shipped: `ctx.agentTeams` consumer, SDLC team templates, insight →
 skill, pruning hints, export/import.
 Phase 5 — shipped: doctor, impact view, experiments aggregation, lint,
 placement, why-trace.
+Phase 7 — shipped: flows, the stage control in the composer row (header chip
+removed), start-only suggestion, health as a gate report, the browser stage,
+and three false-positive fixes (fresh worktrees are never swept; a read-only
+`cd` does not move the work root; docs are not code).
 
 ## Development
 
 ```sh
 npm run build      # tsc -> lib/  +  tsdown -> lib/client.js
-npm test           # builds, then node --test (49 tests incl. the executed client artifact)
+npm test           # builds, then node --test (~220 tests incl. the executed client artifact)
+npm run test:ui    # Playwright against the browser stage (below)
+npm run stage      # serve the stage at http://127.0.0.1:4173/?fixture=green
+npm run stage:fixtures   # regenerate stage/fixtures/*.json from the real host service
 npm run typecheck
 npm run gen:examples
 ```
+
+### The browser stage
+
+`test/client.test.mjs` drives the bundle with a fake React and proves what it
+*registers*; it cannot prove a popover is visible or that an outside click
+closes it — which is how the header chip shipped with its popover 0 % visible
+inside a clipped header. `stage/` is a fake shell that mounts the **real**
+`lib/client.js` exactly as the page does (loader handoff, real React 18, DOM
+regions named like the slots, a `position: fixed` overlay layer) over a
+fixture-driven RPC stub. Pick a scenario with `?fixture=green|red-worktree|
+explore|start-suggestion`; Playwright specs in `stage/tests/` click, measure
+visibility *after ancestor clipping*, and screenshot. Every UI change lands with
+a passing spec there.
 
 `lib/` is gitignored on purpose: a stale client bundle fails silently, because
 the browser loads whatever is on disk without complaint. `tsconfig.build.json`
