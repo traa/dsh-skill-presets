@@ -4,9 +4,17 @@
  * | Surface          | Slot                                       | Kind        |
  * | ---------------- | ------------------------------------------ | ----------- |
  * | Settings → Skills| `settings.section` (id `skills`)           | list/root   |
- * | Header chip      | `conversation.session.header.utilities`    | list/session|
+ * | Stage control    | `conversation.input.right` (id `skill-presets-stage`) | list/session |
+ * | Stage popover    | `shell.overlay` (id `skill-presets-stage-pop`)        | list/root    |
+ * | Start notice     | `conversation.composer.dock` (id `skill-presets-start`)| list/session |
  * | Session Skills tab| `sidebar.right.pane.tab` (key = tab id)   | keyed/session|
  * | Plugin card      | `settings.plugin.item` (key `skill-presets`)| keyed      |
+ *
+ * The header chip (`conversation.session.header.utilities`) is GONE since
+ * Phase 7: its popover rendered inside a 40 px `overflow: hidden` header and
+ * was 0 % visible. The control now sits in the composer tool row, where every
+ * shipping tool puts its mode toggle, and its popover goes through
+ * `shell.overlay` — the frame-wide floating layer nothing can clip.
  *
  * `slots` is the only hard requirement; `sidebarRightTabs` and `styles` are
  * read defensively so a shell missing one still renders the rest.
@@ -16,8 +24,10 @@
 // `react` is a loader module-table row; no @types/react here, `ReactLike` states the surface used.
 // @ts-expect-error -- resolved at bundle time by the module table, not by tsc.
 import * as ReactNamespace from 'react'
-import { ScorecardController, SettingsController } from './controller.ts'
-import { CSS, makeHeaderChip, makePluginCard, makeSettingsPage, makeSidebarBody, type ReactLike } from './views.ts'
+import { Store } from './api.ts'
+import { ScorecardController, SettingsController, StageController } from './controller.ts'
+import { STAGE_CSS, makeStageControl, makeStagePopover, makeStartNotice } from './stage.ts'
+import { CSS, makePluginCard, makeSettingsPage, makeSidebarBody, type ReactLike } from './views.ts'
 
 interface ClientLike {
   get(name: string): unknown
@@ -51,13 +61,14 @@ const TAB_ID = 'dsh-skill-presets'
 const TAB_KIND = 'skills'
 
 function insertStyles(styles: StylesLike | undefined): () => void {
-  if (styles !== undefined) return styles.insert(CSS)
+  const all = CSS + STAGE_CSS
+  if (styles !== undefined) return styles.insert(all)
   if (typeof document === 'undefined') return () => {}
   const TAG = 'dsh-skill-presets'
   if (document.querySelector(`style[data-plugin="${TAG}"]`) !== null) return () => {}
   const tag = document.createElement('style')
   tag.dataset.plugin = TAG
-  tag.textContent = CSS
+  tag.textContent = all
   document.head.appendChild(tag)
   return () => { tag.remove() }
 }
@@ -92,20 +103,59 @@ export function apply(ctx: ClientLike): void {
     key: 'skill-presets',
   }, Card as (props: never) => unknown)), 'skill-presets: plugin card')
 
-  // Header chip: one component, per-session controller resolved from props.
-  const chipCache = new Map<string, () => unknown>()
-  const Chip = (props: { sessionId?: string }): unknown => {
-    const sessionId = props.sessionId
-    if (sessionId === undefined) return null
-    let component = chipCache.get(sessionId)
-    if (component === undefined) { component = makeHeaderChip(React, scorecardFor(sessionId)); chipCache.set(sessionId, component) }
-    return React.createElement(component, null)
+  // Stage control (composer row) + its popover (shell.overlay) + the start
+  // notice (under the composer). One controller per session, shared by all
+  // three: the control measures its own rect into the controller and the
+  // root-scoped popover reads it back — the two slots never see each other.
+  const stages = new Map<string, StageController>()
+  // The root-scoped overlay must re-render when a session controller is
+  // created after it mounted; this store's version bumps on every creation.
+  const roster = new Store<{ n: number }>({ n: 0 })
+  const stageFor = (sessionId: string): StageController => {
+    let c = stages.get(sessionId)
+    if (c === undefined) { c = new StageController(sessionId); stages.set(sessionId, c); roster.set({ n: roster.get().n + 1 }) }
+    return c
   }
-  ctx.effect(() => slots.inject('conversation.session.header.utilities', () => slots.register({
-    name: 'conversation.session.header.utilities',
-    id: 'skill-presets',
+  const perSession = (make: (c: StageController) => () => unknown): ((props: { sessionId?: string }) => unknown) => {
+    const cache = new Map<string, () => unknown>()
+    return (props) => {
+      const sessionId = props.sessionId
+      if (sessionId === undefined) return null
+      let component = cache.get(sessionId)
+      if (component === undefined) { component = make(stageFor(sessionId)); cache.set(sessionId, component) }
+      return React.createElement(component, null)
+    }
+  }
+  ctx.effect(() => slots.inject('conversation.input.right', () => slots.register({
+    name: 'conversation.input.right',
+    id: 'skill-presets-stage',
+    order: 30,
+  }, perSession(c => makeStageControl(React, c)) as (props: never) => unknown)), 'skill-presets: stage control')
+  ctx.effect(() => slots.inject('conversation.composer.dock', () => slots.register({
+    name: 'conversation.composer.dock',
+    id: 'skill-presets-start',
+    order: 30,
+  }, perSession(c => makeStartNotice(React, c)) as (props: never) => unknown)), 'skill-presets: start notice')
+  // `shell.overlay` is ROOT-scoped: no sessionId in props. Render every
+  // session's popover; each renders null unless open, and only one can be
+  // open at a time because a pointerdown elsewhere closes the others.
+  const Overlay = (): unknown => {
+    const [, setN] = React.useState(0)
+    React.useEffect(() => roster.subscribe(() => setN(roster.get().n)), [])
+    return React.createElement(React.Fragment ?? 'div', null,
+      ...[...stages.values()].map(c => React.createElement(makeStagePopoverFor(c), { key: c.sessionId })))
+  }
+  const popCache = new Map<StageController, () => unknown>()
+  const makeStagePopoverFor = (c: StageController): (() => unknown) => {
+    let component = popCache.get(c)
+    if (component === undefined) { component = makeStagePopover(React, c); popCache.set(c, component) }
+    return component
+  }
+  ctx.effect(() => slots.inject('shell.overlay', () => slots.register({
+    name: 'shell.overlay',
+    id: 'skill-presets-stage-pop',
     order: 40,
-  }, Chip as (props: never) => unknown)), 'skill-presets: header chip')
+  }, Overlay as (props: never) => unknown)), 'skill-presets: stage popover')
 
   // Right sidebar tab: needs the tab-type registry; skipped when absent.
   const tabs = ctx.get('sidebarRightTabs') as SidebarTabsLike | undefined

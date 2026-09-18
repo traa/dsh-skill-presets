@@ -44,23 +44,7 @@ test.describe('stage: the real client bundle in a fake shell', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// BEFORE: the header chip's popover is a child of a 40 px `overflow: hidden`
-// header. `boundingBox()` says it is 300 px tall; what the user can SEE is a
-// sliver. This is the bug the user reported as "the dropdown isn't working".
-// The assertion is deliberately inverted (`toBeLessThan`) so the test documents
-// the defect and FAILS the day the chip is removed or fixed — at which point it
-// is deleted along with the chip (Task 4).
-test.describe('BEFORE: header chip popover is clipped by the header', () => {
-  test('most of the popover is cut off', async ({ page }, testInfo) => {
-    await openStage(page, 'green')
-    const chip = page.locator('[data-slot="conversation.session.header.utilities"] .skp-hchip')
-    await expect(chip).toBeVisible()
-    await chip.click()
-    const pop = page.locator('.skp-pop')
-    await expect(pop).toHaveCount(1)
-    const fraction = await visibleFraction(pop)
-    await page.screenshot({ path: testInfo.outputPath('before-chip-clipped.png') })
-    expect(fraction, `visible fraction of the popover: ${fraction.toFixed(2)}`).toBeLessThan(0.25)
-  })
-})
+// The BEFORE test that lived here — "the header chip's popover is clipped by
+// the header" — is retired with the chip (Task 4). Its screenshot is kept as
+// PR evidence in stage/shots/before-chip-clipped.png; the AFTER is
+// control.spec.mjs "the popover escapes every container".

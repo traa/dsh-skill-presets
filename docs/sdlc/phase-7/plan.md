@@ -71,15 +71,22 @@ Tests: `test/stage.test.mjs`, `test/prompt.test.mjs` (new), `test/strictpreset.t
 (verb test replaced by the "no command sets the stage" contract).
 
 ## Task 4 — Stage control + overlay popover (client)
-Files: `src/client/api.ts` (types), `src/client/controller.ts` (`StageController`: anchor
-rect, open, setStage, setFlow, dismiss, suggestion), `src/client/views.ts`
-(`makeStageControl`, `makeStagePopover` for `shell.overlay`, `makeStartNotice` for
-`conversation.composer.dock`; CSS from theme tokens), `src/client/index.ts` (register
-`conversation.input.right` order 30, `shell.overlay` id `skill-presets-popover`,
-`conversation.composer.dock` order 30; **remove** the header chip registration).
-Tests: `stage/tests/control.spec.ts` (opens within viewport under clipped header; outside
-click; Escape; stage click → RPC body; arrow keys), `test/client.test.mjs` (registration
-count updated: control, overlay, dock, settings, card, tab; chip gone).
+Files: `src/client/api.ts` (`Flow`, `AnnotatedPractice`, `PositionCard`), `src/client/controller.ts`
+(`StageController`: card polling, `open`, `anchor` rect, `focusStep`, `move`, accept/dismiss
+suggestion, `dismissPractice`, `requestFix` seam), `src/client/stage.ts` (NEW: `STAGE_CSS`,
+`makeStageControl`, `makeStagePopover`, `makeStartNotice`, `reportLine`), `src/client/index.ts`
+(registers `conversation.input.right@skill-presets-stage` order 30, `shell.overlay@skill-presets-
+stage-pop` — root-scoped, renders every session's popover, re-renders via a `roster` store when a
+controller is created — and `conversation.composer.dock@skill-presets-start`; **header chip
+registration removed**), `src/client/views.ts` (`makeHeaderChip`, `exposedName`, `POP_SKILL_CAP`
+and the `.skp-hchip` CSS deleted; `.skp-pop*` kept for the sidebar), `stage/shell.css` (real
+theme token names), `stage/gen-fixtures.mjs` (emits `session/position` + `flows/list`).
+Tests: `stage/tests/control.spec.mjs` (8: in the composer row; popover 100 % visible + in
+viewport + anchored above the control; stages with `aria-current`; click → `session/move`;
+outside click / Escape / toggle; keyboard arrows + Enter; flow select → Explore; Explore copy;
+start notice Yes/Not now → `suggestion/dismiss`), `test/client.test.mjs` (registration set updated;
+chip tests replaced by a closed-state control test). The BEFORE test is retired; its screenshot
+and the AFTER are in `stage/shots/`.
 
 ## Task 5 — Gate report in the popover and sidebar
 Files: `src/client/views.ts` (red+relevant lines with one action each: `Create worktree`,

@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
@@ -555,5 +555,132 @@ export class ScorecardController extends Store<ScorecardSnapshot> {
     } catch (error) {
       this.set({ error: (error as Error).message })
     }
+  }
+}
+
+// ------------------------------------------------------------ Phase 7 -----
+
+export interface StageSnapshot {
+  card?: PositionCard
+  loading: boolean
+  error?: string
+  busy?: string
+  open: boolean
+  /** Viewport rect of the control button; the overlay popover anchors to it. */
+  anchor?: { x: number, y: number, width: number, height: number }
+  /** Index of the step that has keyboard focus while the popover is open. */
+  focusStep?: number
+  /** The start suggestion was dismissed or accepted in this page; hide the notice. */
+  noticeDone: boolean
+  /** Practice ids hidden for this session (dismiss). */
+  hidden: string[]
+  revision: number
+}
+
+/**
+ * One per session. Owns the position card, the open state and the anchor
+ * rect — the control lives in `conversation.input.right` (session scope) and
+ * the popover in `shell.overlay` (root scope); they meet here, not in props.
+ */
+export class StageController extends Store<StageSnapshot> {
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private visible = 0
+
+  constructor(readonly sessionId: string, private readonly intervalMs = 4000) {
+    super({ loading: true, open: false, noticeDone: false, hidden: [], revision: 0 })
+  }
+
+  override set(patch: Partial<StageSnapshot>): void {
+    super.set({ ...patch, revision: this.get().revision + 1 })
+  }
+
+  async refresh(): Promise<void> {
+    try {
+      const card = await rpc<PositionCard>('session/position', { sessionId: this.sessionId })
+      this.set({ card, loading: false, error: undefined })
+    } catch (error) {
+      this.set({ loading: false, error: (error as Error).message })
+    }
+  }
+
+  watch(): () => void {
+    this.visible += 1
+    if (this.visible === 1) this.schedule(0)
+    return () => {
+      this.visible -= 1
+      if (this.visible === 0 && this.timer !== undefined) { clearTimeout(this.timer); this.timer = undefined }
+    }
+  }
+
+  private schedule(delay: number): void {
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    const timer = setTimeout(async () => {
+      await this.refresh()
+      if (this.visible > 0) this.schedule(this.intervalMs)
+    }, delay)
+    ;(timer as { unref?: () => void }).unref?.()
+    this.timer = timer
+  }
+
+  setAnchor(anchor: StageSnapshot['anchor']): void {
+    const cur = this.get().anchor
+    if (cur !== undefined && anchor !== undefined && cur.x === anchor.x && cur.y === anchor.y && cur.width === anchor.width && cur.height === anchor.height) return
+    this.set({ anchor })
+  }
+
+  toggle(open?: boolean): void {
+    const next = open ?? !this.get().open
+    const card = this.get().card
+    const at = card?.stage !== null && card?.stage !== undefined ? card.flow.stages.indexOf(card.stage) : -1
+    this.set({ open: next, focusStep: next && at >= 0 ? at : undefined })
+  }
+
+  focusStep(index: number): void {
+    const n = this.get().card?.flow.stages.length ?? 0
+    if (n === 0) return
+    this.set({ focusStep: Math.max(0, Math.min(n - 1, index)) })
+  }
+
+  /** Move THIS session; `flow` switches flows (stage kept when the new flow has it). */
+  async move(change: { flow?: string, stage?: string | null, pin?: string }): Promise<void> {
+    this.set({ busy: 'move', error: undefined })
+    try {
+      await rpc('session/move', { sessionId: this.sessionId, ...change })
+      await this.refresh()
+      this.set({ busy: undefined, noticeDone: true })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async acceptSuggestion(presetId?: string): Promise<void> {
+    this.set({ busy: 'suggest', error: undefined })
+    try {
+      await rpc('suggestion/accept', { sessionId: this.sessionId, ...(presetId !== undefined ? { presetId } : {}) })
+      await this.refresh()
+      this.set({ busy: undefined, noticeDone: true })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async dismissSuggestion(): Promise<void> {
+    try { await rpc('suggestion/dismiss', { sessionId: this.sessionId }) } catch { /* advisory */ }
+    this.set({ noticeDone: true })
+    await this.refresh()
+  }
+
+  /**
+   * "Fix" on a report line. The client cannot edit the composer's draft
+   * programmatically (see knowledge: reference chips lose data), so this is a
+   * seam: the host half registers the handler when it has a way to ask the
+   * model; until then the button is hidden.
+   */
+  requestFix?: (practiceId: string, skill: string) => void
+
+  async dismissPractice(id: string): Promise<void> {
+    this.set({ hidden: [...this.get().hidden, id] })
+    try { await rpc('practice/dismiss', { sessionId: this.sessionId, id }) } catch { /* advisory */ }
+    await this.refresh()
   }
 }

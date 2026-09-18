@@ -88,7 +88,7 @@ function fakeCtx({ withTabs = true } = {}) {
   return { ctx, registrations, tabTypes }
 }
 
-test('artifact exports name/inject/apply and registers all four surfaces', async () => {
+test('artifact exports name/inject/apply and registers every surface — the header chip is gone', async () => {
   const { mod } = await load()
   assert.equal(mod.name, 'client-ui-skill-presets')
   assert.deepEqual(mod.inject, ['slots'])
@@ -96,9 +96,11 @@ test('artifact exports name/inject/apply and registers all four surfaces', async
   mod.apply(ctx)
   const names = registrations.map(r => `${r.options.name}${r.options.key !== undefined ? `#${r.options.key}` : r.options.id !== undefined ? `@${r.options.id}` : ''}`).sort()
   assert.deepEqual(names, [
-    'conversation.session.header.utilities@skill-presets',
+    'conversation.composer.dock@skill-presets-start',
+    'conversation.input.right@skill-presets-stage',
     'settings.plugin.item#skill-presets',
     'settings.section@skills',
+    'shell.overlay@skill-presets-stage-pop',
     'sidebar.right.pane.tab#dsh-skill-presets',
   ])
   assert.equal(tabTypes.length, 1)
@@ -109,11 +111,11 @@ test('artifact exports name/inject/apply and registers all four surfaces', async
   assert.equal(section.options.label(), 'Skills')
 })
 
-test('without sidebarRightTabs the other three surfaces still register', async () => {
+test('without sidebarRightTabs the other five surfaces still register', async () => {
   const { mod } = await load()
   const { ctx, registrations } = fakeCtx({ withTabs: false })
   mod.apply(ctx)
-  assert.equal(registrations.length, 3)
+  assert.equal(registrations.length, 5)
 })
 
 test('settings page renders tabs and a loading state before any RPC answers', async () => {
@@ -132,15 +134,32 @@ test('settings page renders tabs and a loading state before any RPC answers', as
   assert.match(words, /Reading the skill store/)
 })
 
-test('header chip renders and toggles nothing without a session id', async () => {
+// The stage control replaced the header chip (Phase 7). The fake React here
+// proves registration and the closed state only; open/anchor/clip/outside-click
+// are DOM facts and live in stage/tests/control.spec.mjs (Playwright).
+test('stage control renders nothing without a session id and reads the stage with one', async () => {
   const { mod, React } = await load()
   const { ctx, registrations } = fakeCtx()
+  const card = { sessionId: 's-1', flow: { id: 'full', title: 'Full', stages: ['plan', 'design', 'build', 'test', 'deploy'], guardrails: 'on', builtin: true }, flows: [], stage: 'build', source: 'session', presetId: 'build', owners: ['build'], position: { index: 2, of: 5 }, gate: 'plan.md', next: 'test', practices: [], report: [] }
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(card) })
   mod.apply(ctx)
-  const Chip = registrations.find(r => r.options.name === 'conversation.session.header.utilities').component
-  assert.equal(render(React, React.createElement(Chip, {})), null)
-  const tree = render(React, React.createElement(Chip, { sessionId: 's-1' }))
-  const words = text(tree).join(' ')
-  assert.match(words, /…|no preset/)
+  const Control = registrations.find(r => r.options.name === 'conversation.input.right').component
+  assert.equal(render(React, React.createElement(Control, {})), null)
+  let tree = render(React, React.createElement(Control, { sessionId: 's-1' }))
+  assert.match(text(tree).join(' '), /…/)
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  tree = render(React, React.createElement(Control, { sessionId: 's-1' }))
+  assert.match(text(tree).join(' '), /Build/)
+  const button = flatten(tree).find(n => (n.props?.className ?? '').includes('skp-stage'))
+  assert.equal(button.props['aria-expanded'], 'false')
+  assert.match(button.props.title, /Full flow · Build \(3 of 5\) · next gate: plan\.md/)
+  // Green: no count, no dot.
+  assert.equal(nodesWithClass(tree, 'skp-stage-count').length, 0)
+  assert.equal(nodesWithClass(tree, 'skp-dot').length, 0)
+  // The overlay renders nothing while closed.
+  const Overlay = registrations.find(r => r.options.name === 'shell.overlay').component
+  assert.deepEqual(nodesWithClass(render(React, React.createElement(Overlay, {})), 'skp-stage-pop'), [])
 })
 
 test('sidebar body renders a scorecard from a fake RPC answer', async () => {
@@ -343,55 +362,10 @@ test('a sub-threshold stage guess names no stage: the 0.5 fallback is muted, not
   await new Promise(r => setTimeout(r, 5))
 })
 
-test('the popover hides n/a practices and shows the session scope as a neutral pill at the top, not a green paragraph', async () => {
-  const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
-  const { scorecard, status } = mixedFixture()
-  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
-  mod.apply(ctx)
-  const Chip = registrations.find(r => r.options.name === 'conversation.session.header.utilities').component
-  const props = { sessionId: 's-4' }
-  render(React, React.createElement(Chip, props))
-  React.__runEffects()
-  await new Promise(r => setTimeout(r, 30))
-  // Open the popover by clicking the chip, exactly as a user does.
-  const closed = render(React, React.createElement(Chip, props))
-  flatten(closed).find(n => (n.props?.className ?? '').startsWith('skp-hchip')).props.onClick()
-  // Click the preset row: this is the real `activate(id, 'session')` path.
-  const open = render(React, React.createElement(Chip, props))
-  const row = flatten(open).find(n => (n.props?.className ?? '').startsWith('skp-pop-item') && text(n).join('').includes('Build'))
-  assert.ok(row, 'the popover lists the Build preset')
-  row.props.onClick()
-  await new Promise(r => setTimeout(r, 30))
-  // Activating closes the popover; reopen it to read what the switch left.
-  const afterActivate = render(React, React.createElement(Chip, props))
-  flatten(afterActivate).find(n => (n.props?.className ?? '').startsWith('skp-hchip')).props.onClick()
-  const tree = render(React, React.createElement(Chip, props))
-  const words = text(tree).join(' ')
-
-  // FIX 2 in the popover: the n/a rows are gone, the summary line is present.
-  assert.match(words, /Work in a worktree: red/)
-  assert.doesNotMatch(words, /Plan before code: n\/a/)
-  const na = nodesWithClass(tree, 'skp-na')
-  assert.equal(na.length, 1)
-  assert.equal(text(na[0]).join(''), '+2 not applicable in this stage')
-  assert.match(na[0].props.title, /Conductor protocol: no team attached/)
-
-  // FIX 3: the scope confirmation is a NEUTRAL pill (no green/amber/red
-  // variant), and it sits at the top of the popover, not at the bottom.
-  const pop = nodesWithClass(tree, 'skp-pop')[0]
-  const pill = nodesWithClass(pop, 'skp-pill').find(n => text(n).join('') === 'session only')
-  assert.ok(pill, 'a "session only" pill renders')
-  assert.equal(pill.props.className, 'skp-pill', 'neutral variant: no green')
-  assert.match(pill.props.title, /This session only\. Catalog updates on the model's next step\./)
-  // It is no longer a green .skp-msg.ok paragraph anywhere in the popover.
-  assert.deepEqual(nodesWithClass(pop, 'ok').map(n => text(n).join('')), [])
-  // Top, not bottom: the pill precedes the practice list in document order.
-  const flat = []
-  const walk = (n) => { if (n && typeof n === 'object') { if (Array.isArray(n)) n.forEach(walk); else { flat.push(n); (n.children ?? []).forEach(walk) } } }
-  walk(pop)
-  assert.ok(flat.indexOf(pill) < flat.indexOf(na[0]), 'pill renders above the practice list')
-})
+// "the popover hides n/a practices and shows the session scope as a neutral
+// pill" was a header-chip test; the chip is gone. Its concerns moved: n/a
+// practices never reach the stage popover at all (only red + relevant do —
+// stage/tests/health.spec.mjs), and the scope reads as a footer line.
 
 test('a genuine success notice still renders as the green paragraph it always was', async () => {
   const { mod, React } = await load()

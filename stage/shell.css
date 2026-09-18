@@ -1,23 +1,32 @@
 /* The stage's own chrome. Token names mirror the real shell (`--dsw-alias-*`)
    so the plugin's CSS resolves the same variables it does in the page. */
 :root {
-  --dsw-alias-bg-l0: #0f1115;
-  --dsw-alias-bg-l1: #161920;
-  --dsw-alias-bg-l2: #1d2129;
-  --dsw-alias-bg-l3: #252a34;
+  /* The real shell's alias tokens (from Theme.listTokens), dark values. */
+  --dsw-alias-bg-base: #0f1115;
+  --dsw-alias-bg-layer-1: #161920;
+  --dsw-alias-bg-layer-2: #1d2129;
+  --dsw-alias-bg-overlay: #1a1e27;
   --dsw-alias-border-l1: #2a2f3a;
   --dsw-alias-border-l2: #384050;
-  --dsw-alias-fg-l0: #e8eaf0;
+  --dsw-alias-brand-primary: #6ea8fe;
+  --dsw-alias-label-primary: #e8eaf0;
+  --dsw-alias-label-secondary: #8b93a7;
+  --dsw-alias-state-error-primary: #f0616d;
+  --dsw-alias-state-success-primary: #5ccf8a;
+  --dsw-alias-state-warn-primary: #e2b33c;
+  --dsw-specific-sidebar-fill: #161920;
+  /* Stage-only shorthands. */
+  --dsw-alias-bg-l0: var(--dsw-alias-bg-base);
+  --dsw-alias-bg-l1: var(--dsw-alias-bg-layer-1);
+  --dsw-alias-bg-l2: var(--dsw-alias-bg-layer-2);
+  --dsw-alias-bg-l3: #252a34;
+  --dsw-alias-fg-l0: var(--dsw-alias-label-primary);
   --dsw-alias-fg-l1: #b6bcc9;
-  --dsw-alias-fg-l2: #7f879a;
-  --dsw-alias-accent: #6ea8fe;
-  --dsw-alias-danger: #f0616d;
-  --dsw-alias-warning: #e2b33c;
-  --dsw-alias-success: #5ccf8a;
+  --dsw-alias-fg-l2: var(--dsw-alias-label-secondary);
+  --dsw-alias-accent: var(--dsw-alias-brand-primary);
   --dsw-alias-radius-s: 6px;
   --dsw-alias-radius-m: 10px;
   --dsw-alias-font: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-  --dsw-alias-font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--dsw-alias-bg-l0); color: var(--dsw-alias-fg-l0); font: 13px/1.45 var(--dsw-alias-font); }
