@@ -472,9 +472,10 @@ export class SkillPresetsService {
   /**
    * Where a session sits: `{ flow, stage }` plus the preset that stage maps to.
    *
-   * A session that predates flows (has a preset in `active.json` but no
-   * position) is read as Full at that preset's stage, so nothing changes for
-   * it until the human moves. `presetId` may be undefined when several presets
+   * A rung that predates flows (has a preset in `active.json` but no position)
+   * is read as Full at that preset's stage, so nothing changes for it until the
+   * human moves. `source` is the rung that answered; `legacy` is the session
+   * rung answering from a pre-flows preset. `presetId` may be undefined when several presets
    * own the stage and the flow pins none — the UI asks; the provider falls
    * back to `active.json`, which still holds the last explicit choice.
    */
@@ -482,27 +483,35 @@ export class SkillPresetsService {
     const [positions, flows, presets, active] = await Promise.all([this.positions(), this.flows(), this.presets(), this.active()])
     let resolved = resolvePosition(positions, session?.id, session?.agentPreset)
     let source: 'session' | 'agent-preset' | 'default' | 'legacy' = resolved.source
-    // Legacy rung: an explicit preset choice at a rung that has no position of
-    // its own. Every rung can predate flows, not just the session one — a
-    // workspace that set `active.default` before Phase 7 must still read as
-    // that preset's stage. Checked highest rung first, so a position at a
-    // higher rung always beats a preset at a lower one.
+    // An explicit preset choice at a rung that has no position of its own. Any
+    // rung can predate flows, not just the session one — a workspace that set
+    // `active.default` before Phase 7 must still read as that preset's stage.
+    // Checked highest rung first, so a position at a higher rung always beats a
+    // preset at a lower one.
+    //
+    // `source` names the RUNG the answer came from, because that is what the UI
+    // shows ("this session" / "agent preset" / "workspace default"). Only the
+    // session rung reports `legacy`, which the client renders as "this session"
+    // — the same rung, so the two labels agree. Whether a position was read
+    // from positions.json or derived from a pre-flows preset is an
+    // implementation detail no consumer needs.
     if (session?.id !== undefined && resolved.source !== 'session' && Object.hasOwn(active.sessions, session.id)) {
       resolved = { position: positionFromPreset(active.sessions[session.id].preset, presets), source: 'session' }
       source = 'legacy'
     } else if (session?.agentPreset !== undefined && resolved.source === 'default' && Object.hasOwn(active.byAgentPreset, session.agentPreset)) {
       resolved = { position: positionFromPreset(active.byAgentPreset[session.agentPreset], presets), source: 'agent-preset' }
-      source = 'legacy'
+      source = 'agent-preset'
     } else if (resolved.source === 'default' && active.default !== null && isSeededPosition(positions.default)) {
       // The default rung has no "unset" marker: a fresh positions.json is
       // SEEDED with DEFAULT_POSITION, which is indistinguishable from a human
       // who chose Full/Plan. Rule: an untouched (still exactly seeded) default
-      // position loses to an explicit `active.default`. A human who genuinely
-      // wants Full/Plan moves the stage once — setPosition writes the position
-      // AND activates the derived preset, after which the two agree and this
-      // branch never fires again for them.
+      // position yields to an explicit `active.default`. That costs nothing
+      // when the human really does want Full/Plan: setPosition writes the
+      // position AND activates the derived preset, so `active.default` becomes
+      // 'plan' and this branch — which still evaluates, since the position is
+      // once again seed-shaped — derives that very same Full/Plan.
       resolved = { position: positionFromPreset(active.default, presets), source: 'default' }
-      source = 'legacy'
+      source = 'default'
     }
     const flow = flows.find(f => f.id === resolved.position.flow) ?? flows[0]
     const stage = flow.stages.length === 0 ? null : (resolved.position.stage !== null && flow.stages.includes(resolved.position.stage) ? resolved.position.stage : flow.stages[0])
