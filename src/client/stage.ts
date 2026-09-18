@@ -88,7 +88,7 @@ export const STAGE_CSS = `
 .skp-stage-sep { border-top: 1px solid var(--dsw-alias-border-l1); margin: 0; }
 .skp-report-actions { display: flex; gap: 4px; }
 .skp-stage-btn { font: inherit; font-size: 12px; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); cursor: pointer; }
-.skp-stage-btn.primary { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: #0b1020; }
+.skp-stage-btn.primary { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary-inverted); }
 .skp-stage-btn.quiet { border-color: transparent; background: transparent; color: var(--dsw-alias-label-secondary); }
 .skp-stage-btn:disabled { opacity: .55; cursor: default; }
 /* The gate is the single most important line here: it answers "what ends this
