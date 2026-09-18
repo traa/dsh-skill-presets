@@ -13,7 +13,7 @@ import { adoptFoundation, foundationReport, type FoundationReport } from './foun
 import { Library, type CheckReport, type SyncReport } from './library.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import {
-  BUILTIN_FLOWS, defaultPositions, flowsDoc, moveTo, positionFromPreset, presetForStage, resolvePosition, switchFlow, validateFlow, validateFlows, validatePositions,
+  BUILTIN_FLOWS, DEFAULT_POSITION, defaultPositions, flowsDoc, moveTo, positionFromPreset, presetForStage, resolvePosition, switchFlow, validateFlow, validateFlows, validatePositions,
   type Flow, type Position, type PositionsDoc,
 } from './flows.ts'
 import { cleanupWorktrees, scanWorktrees, type CleanupResult, type WorktreeInfo } from './practices/worktrees.ts'
@@ -31,6 +31,16 @@ import type { ActivateBy, ActivateScope, ActiveDoc, Lock, NormalizeRule, Overlay
 /** Where the plugin's own `skills/` folder is, for seeding local skills. */
 export function bundledSkillsDir(): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skills')
+}
+
+/**
+ * Whether the default position is still exactly the seed written by
+ * `defaultPositions()`. `positions.json` has no "unset" marker for the default
+ * rung, so this is the only way to tell "nobody has ever moved the default"
+ * from "somebody deliberately chose Full/Plan". See `positionFor`.
+ */
+function isSeededPosition(position: Position): boolean {
+  return position.flow === DEFAULT_POSITION.flow && position.stage === DEFAULT_POSITION.stage
 }
 
 /** Status the UI and tools read in one round trip. */
@@ -472,9 +482,26 @@ export class SkillPresetsService {
     const [positions, flows, presets, active] = await Promise.all([this.positions(), this.flows(), this.presets(), this.active()])
     let resolved = resolvePosition(positions, session?.id, session?.agentPreset)
     let source: 'session' | 'agent-preset' | 'default' | 'legacy' = resolved.source
-    // Legacy rung: an explicit preset choice at a rung that has no position yet.
+    // Legacy rung: an explicit preset choice at a rung that has no position of
+    // its own. Every rung can predate flows, not just the session one — a
+    // workspace that set `active.default` before Phase 7 must still read as
+    // that preset's stage. Checked highest rung first, so a position at a
+    // higher rung always beats a preset at a lower one.
     if (session?.id !== undefined && resolved.source !== 'session' && Object.hasOwn(active.sessions, session.id)) {
       resolved = { position: positionFromPreset(active.sessions[session.id].preset, presets), source: 'session' }
+      source = 'legacy'
+    } else if (session?.agentPreset !== undefined && resolved.source === 'default' && Object.hasOwn(active.byAgentPreset, session.agentPreset)) {
+      resolved = { position: positionFromPreset(active.byAgentPreset[session.agentPreset], presets), source: 'agent-preset' }
+      source = 'legacy'
+    } else if (resolved.source === 'default' && active.default !== null && isSeededPosition(positions.default)) {
+      // The default rung has no "unset" marker: a fresh positions.json is
+      // SEEDED with DEFAULT_POSITION, which is indistinguishable from a human
+      // who chose Full/Plan. Rule: an untouched (still exactly seeded) default
+      // position loses to an explicit `active.default`. A human who genuinely
+      // wants Full/Plan moves the stage once — setPosition writes the position
+      // AND activates the derived preset, after which the two agree and this
+      // branch never fires again for them.
+      resolved = { position: positionFromPreset(active.default, presets), source: 'default' }
       source = 'legacy'
     }
     const flow = flows.find(f => f.id === resolved.position.flow) ?? flows[0]
