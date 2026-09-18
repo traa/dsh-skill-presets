@@ -17,6 +17,7 @@ stage/shots/*
 !stage/shots/after-control-open.png
 !stage/shots/after-red-worktree.png
 !stage/shots/after-sidebar.png
+!stage/shots/after-settings-flows.png
 !stage/shots/.keep
 test-results/
 playwright-report/

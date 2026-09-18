@@ -106,9 +106,15 @@ announces a detected stage" replaces the muted-guess test). Screenshots: `stage/
 red-worktree.png`, `after-sidebar.png`.
 
 ## Task 6 — Settings: Flows section
-Files: `src/client/views.ts` (Stages tab → Flows list: stages as ordered toggles,
-guardrails on/off, delete non-builtin, "New flow"), `src/client/controller.ts`.
-Tests: `test/client.test.mjs` (renders flows from fixture status).
+Files: `src/client/controller.ts` (`SettingsSnapshot.flows/flowDraft`; `refresh` fetches
+`flows/list`; `newFlow`/`editFlow`/`patchFlowDraft`/`toggleDraftStage`/`saveFlow`/
+`deleteFlow`/`setDefaultPosition`), `src/client/views.ts` (Stages tab → **Flows** card: one row
+per flow with its stages, `guardrails off` / `built-in` pills, Edit, Delete for custom;
+inline editor: title, optional id, guardrails checkbox, stage checkboxes kept in canonical
+order; stale "header chip" copy fixed).
+Tests: `stage/tests/settings-flows.spec.mjs` (lists built-ins; built-ins have no Delete;
+create "Fix" → `flows/save {id:'fix', stages:['build','test']}`). Screenshot
+`stage/shots/after-settings-flows.png`.
 
 ## Task 7 — Docs, examples, PR
 `README.md` (What you get table, "Which preset a session gets" → "Flows and stages",

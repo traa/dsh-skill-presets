@@ -5,10 +5,14 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard, type Flow } from './api.ts'
 
 export interface SettingsSnapshot {
   status?: Status
+  /** Phase 7: flows (Full, Explore, custom). */
+  flows?: Flow[]
+  /** A flow being edited (or a new one). */
+  flowDraft?: { id: string, title: string, stages: string[], guardrails: 'on' | 'off', isNew: boolean }
   rollup?: Rollup
   recent?: SessionSummary[]
   checks?: CheckReport[]
@@ -49,13 +53,14 @@ export class SettingsController extends Store<SettingsSnapshot> {
   async refresh(): Promise<void> {
     this.set({ loading: true, error: undefined })
     try {
-      const [status, doctor, orphans, foundation] = await Promise.all([
+      const [status, doctor, orphans, foundation, flows] = await Promise.all([
         rpc<Status>('status'),
         rpc<DoctorReport>('doctor').catch(() => undefined),
         rpc<OrphanSkill[]>('placement/orphans').catch(() => undefined),
         rpc<FoundationReport>('foundation/report').catch(() => undefined),
+        rpc<{ flows: Flow[] }>('flows/list').then(r => r.flows).catch(() => undefined),
       ])
-      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}), ...(foundation !== undefined ? { foundation } : {}) })
+      this.set({ status, loading: false, ...(doctor !== undefined ? { doctor } : {}), ...(orphans !== undefined ? { orphans } : {}), ...(foundation !== undefined ? { foundation } : {}), ...(flows !== undefined ? { flows } : {}) })
     } catch (error) {
       this.set({ loading: false, error: (error as Error).message })
     }
@@ -337,6 +342,67 @@ export class SettingsController extends Store<SettingsSnapshot> {
       await rpc('practices/save', { practices: doc })
       return 'Practices saved.'
     })
+  }
+  // ---- flows (Phase 7)
+  newFlow(): void {
+    this.set({ flowDraft: { id: '', title: '', stages: ['build', 'test'], guardrails: 'on', isNew: true } })
+  }
+
+  editFlow(flow: Flow): void {
+    this.set({ flowDraft: { id: flow.id, title: flow.title, stages: [...flow.stages], guardrails: flow.guardrails, isNew: false } })
+  }
+
+  patchFlowDraft(patch: Partial<NonNullable<SettingsSnapshot['flowDraft']>>): void {
+    const d = this.get().flowDraft
+    if (d !== undefined) this.set({ flowDraft: { ...d, ...patch } })
+  }
+
+  /** Toggle a stage in the draft, keeping canonical stage order. */
+  toggleDraftStage(stage: string): void {
+    const d = this.get().flowDraft
+    if (d === undefined) return
+    const order = ['plan', 'design', 'build', 'test', 'deploy', 'maintain']
+    const set = new Set(d.stages)
+    if (set.has(stage)) set.delete(stage); else set.add(stage)
+    this.set({ flowDraft: { ...d, stages: order.filter(s => set.has(s)) } })
+  }
+
+  cancelFlow(): void { this.set({ flowDraft: undefined }) }
+
+  async saveFlow(): Promise<void> {
+    const d = this.get().flowDraft
+    if (d === undefined) return
+    this.set({ busy: 'flow', error: undefined })
+    try {
+      const id = d.isNew ? (d.id.length > 0 ? d.id : d.title.toLowerCase().trim().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '')) : d.id
+      const existing = this.get().flows?.find(f => f.id === id)
+      const { flows } = await rpc<{ flows: Flow[] }>('flows/save', { flow: { ...(existing ?? {}), id, title: d.title, stages: d.stages, guardrails: d.guardrails } })
+      this.set({ flows, flowDraft: undefined, busy: undefined, notice: `Saved flow ${d.title}.` })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  async deleteFlow(id: string): Promise<void> {
+    this.set({ busy: 'flow', error: undefined })
+    try {
+      const { flows } = await rpc<{ flows: Flow[] }>('flows/delete', { id })
+      this.set({ flows, busy: undefined, notice: `Deleted flow ${id}; sessions in it fall back to Full.` })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
+  }
+
+  /** Workspace / agent-preset DEFAULT position: what a new session starts in. */
+  async setDefaultPosition(target: { agentPreset?: string }, change: { flow?: string, stage?: string | null }): Promise<void> {
+    this.set({ busy: 'position', error: undefined })
+    try {
+      await rpc('session/move', { scope: target.agentPreset !== undefined ? 'agent-preset' : 'default', ...(target.agentPreset !== undefined ? { agentPreset: target.agentPreset } : {}), ...change })
+      await this.refresh()
+      this.set({ busy: undefined })
+    } catch (error) {
+      this.set({ busy: undefined, error: (error as Error).message })
+    }
   }
 }
 
