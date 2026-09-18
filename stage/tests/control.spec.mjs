@@ -91,7 +91,7 @@ test.describe('stage control', () => {
     await expect(page.locator(CONTROL)).toContainText('Explore')
     await page.click(CONTROL)
     await expect(page.locator(`${POP} .skp-step`)).toHaveCount(0)
-    await expect(page.locator(`${POP} .skp-report-line`)).toHaveCount(0)
+    await expect(page.locator(`${POP} .skp-check`)).toHaveCount(0)
     await expect(page.locator(POP)).toContainText(/guardrails/iu)
   })
 

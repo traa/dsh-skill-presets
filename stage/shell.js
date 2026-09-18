@@ -7,6 +7,12 @@
   const params = new URLSearchParams(location.search)
   const FIXTURE = params.get('fixture') ?? 'green'
   const SESSION_ID = params.get('session') ?? 'stage-session'
+  const STAGE_WIDTH = params.get('stage-width')
+  if (STAGE_WIDTH) {
+    const style = document.createElement('style')
+    style.textContent = `.composer-card { width: ${STAGE_WIDTH}px !important; }`
+    document.head.appendChild(style)
+  }
   document.title = `stage · ${FIXTURE}`
 
   // Every RPC carries the fixture so one server can serve several tabs.
@@ -139,12 +145,14 @@
   }).catch(() => {})
 
   // ------------------------------------------------------------ loader -----
-  const services = { slots, styles, sidebarRightTabs }
-  const ctx = {
-    get: name => services[name],
-    effect: (cb) => { const off = cb(); return typeof off === 'function' ? off : () => {} },
+  const layout = {
+    openRightbar(track, fullscreen) {
+      document.documentElement.dataset.stageRightbar = 'open'
+      window.__STAGE__.rightbarOpened = (window.__STAGE__.rightbarOpened ?? 0) + 1
+    }
   }
-  window.__STAGE__ = { fixture: FIXTURE, sessionId: SESSION_ID, occupants, tabTypes, regions, applied: false, error: undefined }
+  const services = { slots, styles, sidebarRightTabs, layout }
+  window.__STAGE__ = { fixture: FIXTURE, sessionId: SESSION_ID, occupants, tabTypes, regions, applied: false, error: undefined, deniedGets: [] }
   window.__ModuleLoader__ = {
     load({ id, factory }) {
       try {
@@ -153,6 +161,16 @@
           throw new Error(`stage: unexpected require(${name})`)
         })
         window.__STAGE__.module = { id, name: mod.name, inject: mod.inject }
+        const ctx = {
+          get: name => {
+            if (name !== 'styles' && !(mod.inject || []).includes(name)) {
+              window.__STAGE__.deniedGets.push(name)
+              return undefined
+            }
+            return services[name]
+          },
+          effect: (cb) => { const off = cb(); return typeof off === 'function' ? off : () => {} },
+        }
         mod.apply(ctx)
         window.__STAGE__.applied = true
         document.documentElement.dataset.stageReady = '1'

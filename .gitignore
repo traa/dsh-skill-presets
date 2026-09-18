@@ -21,3 +21,6 @@ stage/shots/*
 !stage/shots/.keep
 test-results/
 playwright-report/
+!stage/shots/after-phase8-popover.png
+!stage/shots/after-phase8-page.png
+!stage/shots/after-phase8-pill.png

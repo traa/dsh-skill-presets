@@ -13,7 +13,7 @@ test.describe('stage: the real client bundle in a fake shell', () => {
       tabs: window.__STAGE__.tabTypes.map(t => t.id),
     }))
     expect(info.module.name).toBe('client-ui-skill-presets')
-    expect(info.module.inject).toEqual(['slots'])
+    expect(info.module.inject).toEqual(['slots', 'sidebarRightTabs', 'layout'])
     const slotNames = Object.fromEntries(info.slots)
     // Every surface the bundle registers must land in a region the stage
     // provides — a slot name the shell has no region for renders nowhere, which
