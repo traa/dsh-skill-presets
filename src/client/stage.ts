@@ -34,6 +34,20 @@ const PRACTICE_FIX: Record<string, { label: string, skill: string }> = {
   'worktree-hygiene': { label: 'Clean up', skill: 'worktree-cleanup' },
   'post-merge-sync': { label: 'Sync', skill: 'post-merge-sync' },
 }
+/**
+ * What the gate word MEANS, spelled as the condition that ends the stage.
+ * The host sends the bare token (`plan.md`, `PR`, `merge`); "Ends with PR"
+ * says nothing to someone who has not read the flow docs, "Ends when a pull
+ * request is open" says the whole thing.
+ */
+const GATE_LABEL: Record<string, string> = {
+  'intent.md': 'intent.md is committed',
+  'spec.md': 'spec.md is committed',
+  'plan.md': 'plan.md is committed',
+  'PR': 'a pull request is open',
+  'merge': 'the PR is merged',
+  'incident record': 'an incident record is committed',
+}
 
 export const STAGE_CSS = `
 /*
@@ -55,9 +69,10 @@ export const STAGE_CSS = `
 .skp-ctl-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skp-ctl-count { flex: 0 0 auto; color: var(--dsw-alias-state-error-primary); }
 .skp-ctl-caret { flex: 0 0 auto; color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 1; }
+/* Same material as every other popup in the app (the Menu primitive surface). */
 .skp-stage-pop { position: fixed; width: 360px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box;
-  background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.28); color: var(--dsw-alias-label-primary); font-size: 13px; z-index: 1; }
+  background: var(--dsw-alias-bg-overlay); border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.18); color: var(--dsw-alias-label-primary); font-size: 13px; z-index: 1; }
 .skp-stage-head { display: flex; align-items: center; gap: 8px; }
 .skp-stage-head label { font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .skp-flow-select { font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: inherit; }
@@ -80,8 +95,27 @@ export const STAGE_CSS = `
 .skp-stage-btn.primary { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: #0b1020; }
 .skp-stage-btn.quiet { border-color: transparent; background: transparent; color: var(--dsw-alias-label-secondary); }
 .skp-stage-btn:disabled { opacity: .55; cursor: default; }
-.skp-stage-skills { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.5; }
-.skp-stage-skills b { color: var(--dsw-alias-label-primary); font-weight: 500; }
+/* The gate is the single most important line here: it answers "what ends this
+   stage, and is it done?" in primary text, above the flow/stage controls. */
+.skp-gate { font-size: 13px; line-height: 1.45; color: var(--dsw-alias-label-primary); }
+.skp-gate b { font-weight: 600; }
+.skp-gate-state { font-weight: 600; white-space: nowrap; }
+.skp-gate-state.ok { color: var(--dsw-alias-state-success-primary); }
+.skp-gate-state.todo { color: var(--dsw-alias-state-error-primary); }
+.skp-gate-state.unknown { color: var(--dsw-alias-label-caption); }
+/* Every relevant practice, always — the old popover showed only the red ones,
+   so a green session said nothing about what was being watched. */
+.skp-checks { display: flex; flex-direction: column; gap: 6px; }
+.skp-check { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; }
+.skp-check > .skp-dot { margin: 0; }
+.skp-check-title { font-size: 12px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skp-check-note { grid-column: 2 / 4; font-size: 11px; line-height: 1.4; color: var(--dsw-alias-label-caption); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skp-check[data-status="red"] > .skp-check-note { color: var(--dsw-alias-state-error-primary); }
+.skp-check .skp-report-actions { grid-row: 1; grid-column: 3; }
+.skp-skills { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.skp-skills-head { font-size: 11px; color: var(--dsw-alias-label-secondary); width: 100%; }
+.skp-skill { font-size: 12px; padding: 1px 7px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skp-open-tab { white-space: nowrap; }
 .skp-stage-foot { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary); }
 .skp-stage-err { font-size: 12px; color: var(--dsw-alias-state-error-primary); }
 .skp-start-notice { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
@@ -138,22 +172,141 @@ export function makeStageControl(React: ReactLike, controller: StageController):
   }
 }
 
-/** One red, relevant practice: what, the evidence, one action, dismiss. */
-function reportLine(h: ReactLike['createElement'], p: AnnotatedPractice, controller: StageController, busy: boolean): unknown {
+/**
+ * The actions column of a red practice: the one fix, then dismiss.
+ *
+ * Since Phase 8 this is the ONLY thing left of the old report line — the
+ * popover no longer has a red-only report block, so what a practice IS
+ * (title, evidence) is rendered by `renderChecks` for every relevant
+ * practice and this contributes just the buttons for the red ones.
+ */
+export function reportLine(h: ReactLike['createElement'], p: AnnotatedPractice, controller: StageController, busy: boolean): unknown {
   const fix = PRACTICE_FIX[p.id]
-  return h('div', { key: p.id, className: 'skp-report-line', role: 'listitem' },
-    h('div', { className: 'skp-report-what' },
-      h('b', null, PRACTICE_TITLE[p.id] ?? p.id),
-      h('span', { title: p.evidence.join(' · ') }, p.evidence[0] ?? ''),
-    ),
-    h('div', { className: 'skp-report-actions' },
+  return h('div', { className: 'skp-report-actions' },
       fix !== undefined && controller.requestFix !== undefined ? h('button', {
         type: 'button', className: 'skp-stage-btn', disabled: busy,
         title: `Ask the model to load the ${fix.skill} skill`,
         onClick: () => { controller.requestFix?.(p.id, fix.skill) },
-      }, fix.label) : fix !== undefined ? h('span', { className: 'skp-stage-gate', title: `Load the ${fix.skill} skill` }, fix.skill) : null,
+      }, fix.label ?? `Use ${fix.skill}`) : fix !== undefined ? h('span', { className: 'skp-stage-gate', title: `Load the ${fix.skill} skill` }, fix.skill) : null,
       h('button', { type: 'button', className: 'skp-stage-btn quiet', title: 'Hide for this session (three times mutes it for the workspace)', 'aria-label': `Dismiss ${PRACTICE_TITLE[p.id] ?? p.id}`, onClick: () => { void controller.dismissPractice(p.id) } }, '✕'),
-    ),
+  )
+}
+
+/** What the gate line reads from. The popover has a `PositionCard`, the sidebar a `Scorecard`; both can produce this. */
+export interface GateFacts { artifacts?: string[], pr?: { url: string, state: string } | null }
+
+/**
+ * Is the gate condition met? `undefined` facts mean UNKNOWN, not "no": the
+ * host does not always send git facts, and rendering "✗ not yet" for a gate
+ * nobody looked at would be a lie the user cannot tell from a real verdict.
+ */
+function gateDone(gate: string, facts: GateFacts | undefined): 'ok' | 'todo' | 'unknown' {
+  if (facts === undefined) return 'unknown'
+  if (gate === 'PR') return facts.pr === undefined ? 'unknown' : facts.pr === null ? 'todo' : 'ok'
+  if (gate === 'merge') {
+    if (facts.pr === undefined) return 'unknown'
+    return facts.pr !== null && /merged/iu.test(facts.pr.state) ? 'ok' : 'todo'
+  }
+  if (facts.artifacts === undefined) return 'unknown'
+  const want = gate === 'incident record' ? 'incident' : gate
+  return facts.artifacts.some(a => a.endsWith(want) || a.includes(want)) ? 'ok' : 'todo'
+}
+
+const GATE_STATE_TEXT: Record<'ok' | 'todo' | 'unknown', string> = { ok: '✓ done', todo: '✗ not yet', unknown: '? unknown' }
+
+/**
+ * The gate line — the most important sentence in either surface: what ends
+ * this stage, whether it is done, and what comes after. Shared by the popover
+ * and the Skills tab so the two cannot drift.
+ */
+export function renderGate(
+  h: ReactLike['createElement'],
+  position: { flowTitle: string, stage: string | null, gate?: string | null, next?: string | null },
+  facts?: GateFacts,
+): unknown {
+  if (position.stage === null) {
+    return h('div', { className: 'skp-gate' }, `${position.flowTitle}: no stages, guardrails off. Skills are still offered; nothing is judged.`)
+  }
+  const gate = position.gate
+  if (gate === undefined || gate === null) {
+    return h('div', { className: 'skp-gate' }, 'No gate for this stage.',
+      position.next !== undefined && position.next !== null ? ` → then ${STAGE_TITLE[position.next] ?? position.next}` : ' — last stage of this flow')
+  }
+  const state = gateDone(gate, facts)
+  return h('div', { className: 'skp-gate' },
+    'Ends when ',
+    h('b', null, GATE_LABEL[gate] ?? gate),
+    ' ',
+    h('span', { className: `skp-gate-state ${state}`, title: state === 'unknown' ? 'The host has not reported this fact yet' : undefined }, GATE_STATE_TEXT[state]),
+    position.next !== undefined && position.next !== null ? ` → then ${STAGE_TITLE[position.next] ?? position.next}` : ' — last stage of this flow',
+  )
+}
+
+/** One practice row's dot class and note, from its verdict. */
+function checkNote(p: AnnotatedPractice, dismissed: boolean): { status: string, note: string, muted: boolean } {
+  const evidence = p.evidence[0] ?? ''
+  if (dismissed) return { status: 'green', note: 'dismissed', muted: true }
+  if (p.kind === 'unknown') return { status: 'amber', note: `not judged — ${evidence}`, muted: true }
+  if (p.status === 'red') return { status: 'red', note: evidence, muted: false }
+  if (p.status === 'amber') return { status: 'amber', note: `${evidence} · advisory`, muted: true }
+  if (p.status === 'n/a') return { status: 'n/a', note: evidence, muted: true }
+  return { status: 'green', note: evidence, muted: true }
+}
+
+/**
+ * EVERY relevant practice, in the order the host sent them — the point of
+ * Phase 8's "make what it checks visible": a green session used to render an
+ * empty popover, which reads as "nothing is watched" rather than "all clear".
+ * Red rows keep the fix/dismiss actions; everything else is one quiet line.
+ *
+ * Returns a node ARRAY (the list, then the "+N not judged" footnote) so the
+ * footnote stays outside `role="list"`.
+ */
+export function renderChecks(
+  h: ReactLike['createElement'],
+  practices: AnnotatedPractice[],
+  options: { title?: (id: string) => string, controller?: StageController, busy?: boolean, hidden?: string[] } = {},
+): unknown[] {
+  const titleOf = options.title ?? ((id: string) => PRACTICE_TITLE[id] ?? id)
+  const hidden = options.hidden ?? []
+  const relevant = practices.filter(p => p.relevant)
+  const skipped = practices.filter(p => !p.relevant && p.status !== 'n/a')
+  const rows = relevant.map((p) => {
+    const dismissed = hidden.includes(p.id)
+    const { status, note } = checkNote(p, dismissed)
+    const actionable = !dismissed && p.status === 'red' && p.kind !== 'unknown' && options.controller !== undefined
+    return h('div', { key: p.id, className: 'skp-check', role: 'listitem', 'data-status': status },
+      h('i', { className: `skp-dot ${status}` }),
+      h('span', { className: 'skp-check-title' }, titleOf(p.id)),
+      actionable ? reportLine(h, p, options.controller!, options.busy === true) : null,
+      h('span', { className: 'skp-check-note', title: p.evidence.join(' · ') }, note),
+    )
+  })
+  return [
+    // No empty `role="list"`: a flow with guardrails off judges nothing, and
+    // an empty list announced to a screen reader is noise.
+    rows.length > 0 ? h('div', { key: 'checks', className: 'skp-checks', role: 'list', 'aria-label': 'Checked in this stage' }, ...rows) : null,
+    skipped.length > 0
+      ? h('div', { key: 'na', className: 'skp-na', title: skipped.map(p => `${titleOf(p.id)}: not judged in this stage`).join('\n') },
+        `+${skipped.length} not judged in this stage`)
+      : null,
+  ]
+}
+
+/** The live "Skills in play" block: what the model is actually being offered. */
+export function renderSkills(h: ReactLike['createElement'], skills: { name: string, via: string }[] | undefined): unknown {
+  if (skills === undefined || skills.length === 0) return null
+  const CAP = 16
+  const shown = skills.slice(0, CAP)
+  const rest = skills.slice(CAP)
+  return h('div', { className: 'skp-skills' },
+    h('span', { className: 'skp-skills-head' }, `Skills in play · ${skills.length}`),
+    ...shown.map(s => h('span', {
+      key: s.name,
+      className: 'skp-skill',
+      ...(s.via.startsWith('overlay:') ? { title: `from overlay ${s.via.slice('overlay:'.length)}` } : {}),
+    }, s.name)),
+    rest.length > 0 ? h('span', { className: 'skp-skill', title: rest.map(s => s.name).join('\n') }, `+${rest.length} more`) : null,
   )
 }
 
@@ -202,7 +355,6 @@ export function makeStagePopover(React: ReactLike, controller: StageController):
     const left = a === undefined ? 8 : Math.max(8, Math.min(vw - W - 8, a.x + a.width - W))
     const bottom = a === undefined ? 8 : Math.max(8, (typeof window !== 'undefined' ? window.innerHeight : 800) - a.y + 6)
     const busy = snap.busy !== undefined
-    const report = card.report.filter(r => !snap.hidden.includes(r.id))
     const stages = card.flow.stages
     const current = card.stage
     return h('div', {
@@ -212,6 +364,9 @@ export function makeStagePopover(React: ReactLike, controller: StageController):
       'aria-label': 'Flow and stage',
       style: { left, bottom, width: W },
     },
+      // The gate comes FIRST: "what ends this stage, and is it done?" is the
+      // question this popover exists to answer.
+      renderGate(h, { flowTitle: card.flow.title, stage: current, gate: card.gate, next: card.next }, { artifacts: card.artifacts, pr: card.pr }),
       // Flow
       h('div', { className: 'skp-stage-head' },
         h('label', { htmlFor: 'skp-flow' }, 'Flow'),
@@ -238,28 +393,31 @@ export function makeStagePopover(React: ReactLike, controller: StageController):
             },
           }, STAGE_TITLE[s] ?? s),
         ]),
-      ) : h('div', { className: 'skp-stage-gate' }, `${card.flow.title}: no stages, guardrails off. Skills are still offered; nothing is judged.`),
-      current !== null && card.gate !== undefined && card.gate !== null
-        ? h('div', { className: 'skp-stage-gate' }, 'Ends with ', h('b', null, card.gate), card.next !== undefined && card.next !== null ? ` → then ${STAGE_TITLE[card.next] ?? card.next}` : ' — last stage of this flow')
-        : null,
+      ) : null,
       // Collision: several presets own this stage and none is pinned.
       card.owners.length > 1 && card.presetId === null ? h('div', { className: 'skp-stage-gate' },
         'Several presets own this stage — pick one: ',
         ...card.owners.map(id => h('button', { key: id, type: 'button', className: 'skp-stage-btn', disabled: busy, onClick: () => { void controller.move({ stage: current, pin: id }) } }, id)),
       ) : null,
+      // What is being checked — ALL of it, not just the failures.
+      card.practices.some(p => p.relevant) ? h('hr', { className: 'skp-stage-sep' }) : null,
+      ...renderChecks(h, card.practices, { controller, busy, hidden: snap.hidden }),
+      // What the model is actually carrying right now.
+      renderSkills(h, card.skills),
       // Suggestion (start-only). The Yes / Not now live in the notice under the
       // composer — ONE place to decide. Here it is a quiet pointer: clicking the
       // suggested stage in the step row above is the same move.
       card.suggestion !== undefined && !snap.noticeDone ? h('div', { className: 'skp-stage-gate' },
         `${card.suggestion.why[0] ?? 'Artifacts'} — `, h('b', null, STAGE_TITLE[card.suggestion.to] ?? card.suggestion.to), ' is suggested; pick it above, or answer under the composer.') : null,
-      // Report: red + relevant only. Nothing when green.
-      report.length > 0 ? h('hr', { className: 'skp-stage-sep' }) : null,
-      report.length > 0 ? h('div', { role: 'list', 'aria-label': 'Practices needing action', style: { display: 'flex', flexDirection: 'column', gap: 6 } }, ...report.map(p => reportLine(h, p, controller, busy))) : null,
       snap.error !== undefined ? h('div', { className: 'skp-stage-err' }, snap.error) : null,
       h('hr', { className: 'skp-stage-sep' }),
       h('div', { className: 'skp-stage-foot' },
         h('span', null, card.presetId !== null ? `Preset: ${card.presetId}` : card.stage === null ? 'No preset' : 'No preset for this stage'),
-        h('span', null, card.source === 'session' || card.source === 'legacy' ? 'this session' : card.source === 'agent-preset' ? 'agent-preset default' : 'workspace default'),
+        h('button', {
+          type: 'button', className: 'skp-stage-btn quiet skp-open-tab',
+          title: `Open the Skills tab — set by ${card.source === 'session' || card.source === 'legacy' ? 'this session' : card.source === 'agent-preset' ? 'the agent-preset default' : 'the workspace default'}`,
+          onClick: () => { controller.openSkillsTab() },
+        }, 'Open Skills tab'),
       ),
     )
   }

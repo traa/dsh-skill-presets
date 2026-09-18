@@ -8,6 +8,10 @@
 import { AT_RISK_PREFIX } from './api.ts'
 import type { CompareCard, Lock, LockedSkill, Preset, PracticeResult, PracticesDoc, PresetSkillRef, Rollup, Scorecard, SessionSummary, Status } from './api.ts'
 import type { ScorecardController, SettingsController, SettingsSnapshot } from './controller.ts'
+// The gate line and the checks list are SHARED with the composer popover so
+// the two surfaces state the same thing. `stage.ts` imports only types from
+// this module, so this value import does not close a runtime cycle.
+import { renderChecks, renderGate, renderSkills } from './stage.ts'
 
 export interface ReactLike {
   createElement(type: unknown, props?: unknown, ...children: unknown[]): unknown
@@ -196,32 +200,11 @@ function atRiskDetail(p: { evidence: readonly string[] }): string | undefined {
   return line !== undefined ? line.slice(AT_RISK_PREFIX.length) : p.evidence[0]
 }
 
-/**
- * Split practices into the ones that APPLY and a summary of the ones that do
- * not.
- *
- * An `n/a` row ("Plan before code: n/a — applies in the Build stage") is a
- * statement that the panel has nothing to say, and a list of them buries the
- * two rows that do carry a verdict. They are not deleted, though: the count
- * stays visible and `title` carries every hidden title and reason, so nothing
- * becomes unreachable — the information moves to hover instead of occupying a
- * line each.
- *
- * @param practices - the scorecard's results, in display order.
- * @param titleOf - practice id → human title, for the hover text.
- */
-function splitApplicable<T extends { id: string, status: string, evidence: readonly string[] }>(
-  practices: readonly T[],
-  titleOf: (id: string) => string,
-): { shown: T[], hiddenCount: number, hiddenTitle: string } {
-  const shown = practices.filter(p => p.status !== 'n/a' || isAtRisk(p))
-  const hidden = practices.filter(p => p.status === 'n/a' && !isAtRisk(p))
-  return {
-    shown,
-    hiddenCount: hidden.length,
-    hiddenTitle: hidden.map(p => `${titleOf(p.id)}: ${p.evidence[0] ?? 'does not apply'}`).join('\n'),
-  }
-}
+// `splitApplicable` lived here until Phase 8: it folded the `n/a` practices
+// into a "+N not applicable" hover so the two rows carrying a verdict were not
+// buried. The Skills tab now renders EVERY relevant practice through
+// `renderChecks` (shared with the composer popover), which owns that
+// summarising itself, and nothing else called it.
 
 // ---------------------------------------------------------------- Settings --
 
@@ -854,6 +837,15 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
     return h('div', { className: 'skp skp-side' },
       h('div', { className: 'skp-col' },
         h('h3', null, 'Flow'),
+        // Same gate line as the composer popover, from the same helper.
+        renderGate(h, {
+          flowTitle: card.flow?.title ?? 'This flow',
+          stage: card.stage ?? null,
+          gate: card.gate,
+          next: card.next,
+          // No `gh` means nobody could look, which is UNKNOWN — not "no PR".
+          // The artifact chips below draw the same distinction ("? PR (no gh)").
+        }, facts !== undefined ? { artifacts: facts.artifacts, pr: facts.pr ?? (facts.ghAvailable ? null : undefined) } : undefined),
         h('div', { className: 'skp-row' },
           card.flow !== undefined ? h('strong', null, card.flow.title) : h('strong', null, card.activePreset?.title ?? 'none'),
           card.flow !== undefined && card.stage !== undefined && card.stage !== null
@@ -864,7 +856,7 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
           card.overlays.length > 0 ? h('span', { className: 'skp-pill' }, `+ ${card.overlays.join(', ')}`) : null,
           !card.live ? h('span', { className: 'skp-pill' }, 'session not live') : null,
         ),
-        card.gate !== undefined && card.gate !== null ? h('div', { className: 'skp-sub' }, `Ends with ${card.gate}${card.next !== undefined && card.next !== null ? ` → then ${STAGE_LABEL[card.next] ?? card.next}` : ' — last stage of this flow'}. Change flow or stage from the control beside the composer.`) : null,
+        h('div', { className: 'skp-sub' }, 'Change flow or stage from the control beside the composer.'),
       ),
       h('div', { className: 'skp-col' },
         h('h3', null, 'Stage & artifacts'),
@@ -876,46 +868,20 @@ export function makeSidebarBody(React: ReactLike, controllerFor: (sessionId: str
                 h('span', { className: `skp-chip${facts.pr !== undefined ? '' : ' miss'}` }, facts.pr !== undefined ? `✓ PR ${facts.pr.state}` : facts.ghAvailable ? '✗ PR' : '? PR (no gh)')),
             ),
       ),
-      // Gate report: red + relevant + not unknown, one line each with the
-      // evidence and the skill that fixes it. Rendered ONLY when non-empty.
+      // What this stage checks — the SAME full list as the composer popover,
+      // from the same helper, so the two surfaces cannot drift. Green rows are
+      // rendered too: an empty panel reads as "nothing is watched" rather than
+      // "all clear".
       ...(() => {
-        const annotated = card.practices as (PracticeResult & { relevant?: boolean, kind?: 'violation' | 'unknown' })[]
-        const flowAware = annotated.some(p => p.relevant !== undefined)
-        const report = annotated.filter(p => p.status === 'red' && (p.relevant ?? true) && p.kind !== 'unknown')
-        const unknown = annotated.filter(p => p.kind === 'unknown' && (p.relevant ?? true))
-        const soft = annotated.filter(p => p.status === 'amber' && p.kind !== 'unknown' && (p.relevant ?? true))
-        const fine = annotated.filter(p => p.status === 'green' && (p.relevant ?? true))
-        const irrelevant = flowAware ? annotated.filter(p => p.relevant === false && p.status !== 'n/a') : []
-        const { hiddenCount, hiddenTitle } = splitApplicable(annotated.filter(p => p.status === 'n/a'), id => status.practiceInfo[id]?.title ?? id)
-        const na = hiddenCount + irrelevant.length
-        const naTitle = [hiddenTitle, ...irrelevant.map(p => `${status.practiceInfo[p.id]?.title ?? p.id}: not judged in this stage`)].filter(Boolean).join('\n')
+        const annotated = (card.practices as (PracticeResult & { relevant?: boolean, kind?: 'violation' | 'unknown' })[])
+          .map(p => ({ ...p, relevant: p.relevant ?? true }))
+        const titleOf = (id: string): string => status.practiceInfo[id]?.title ?? id
         return [
-          report.length > 0 ? h('div', { key: 'report', className: 'skp-col skp-report' },
-            h('h3', null, 'Needs action'),
-            ...report.map(p => h('div', { key: p.id, className: 'skp-report-line' },
-              h('div', { className: 'skp-report-what' },
-                h('b', null, status.practiceInfo[p.id]?.title ?? p.id),
-                h('span', { title: p.evidence.join(' · ') }, p.evidence[0] ?? ''),
-              ),
-              h('div', { className: 'skp-report-actions' },
-                status.practiceInfo[p.id]?.skill !== undefined ? h('span', { className: 'skp-stage-gate', title: 'The skill that fixes it' }, status.practiceInfo[p.id].skill) : null,
-              ),
-            )),
-          ) : null,
-          h('div', { key: 'practices', className: 'skp-col' },
-            h('h3', null, 'Practices'),
-            ...soft.map(p => h('div', { key: p.id, className: 'skp-col', style: { gap: 2 } },
-              h('div', { className: 'skp-line' }, h('i', { className: 'skp-dot amber' }), h('span', null, status.practiceInfo[p.id]?.title ?? p.id, ' ', h('span', { className: 'skp-sub' }, 'advisory'))),
-              ...p.evidence.slice(0, 2).map((e, i) => h('div', { key: i, className: 'skp-ev' }, e)),
-            )),
-            ...fine.map(p => h('div', { key: p.id, className: 'skp-line' },
-              h('i', { className: 'skp-dot green' }),
-              h('span', { title: p.evidence.join(' · ') }, status.practiceInfo[p.id]?.title ?? p.id),
-            )),
-            unknown.length > 0 ? h('div', { key: 'nj', className: 'skp-na skp-not-judged', title: unknown.map(p => `${status.practiceInfo[p.id]?.title ?? p.id}: ${p.evidence[0] ?? ''}`).join('\n') },
-              `Not judged (facts unavailable): ${unknown.map(p => status.practiceInfo[p.id]?.title ?? p.id).join(', ')}`) : null,
-            na > 0 ? h('div', { key: 'skp-na', className: 'skp-na', title: naTitle }, `+${na} not applicable in this stage`) : null,
-            report.length === 0 && soft.length === 0 && fine.length === 0 && unknown.length === 0 && na === 0 ? h('div', { className: 'skp-sub' }, card.flow?.guardrails === 'off' ? 'Guardrails are off in this flow.' : 'Nothing judged yet.') : null,
+          h('div', { key: 'checks', className: 'skp-col' },
+            h('h3', null, 'Checked in this stage'),
+            ...(annotated.some(p => p.relevant)
+              ? renderChecks(h, annotated, { title: titleOf })
+              : [h('div', { key: 'none', className: 'skp-sub' }, card.flow?.guardrails === 'off' ? 'Guardrails are off in this flow.' : 'Nothing judged yet.')]),
           ),
         ]
       })(),
