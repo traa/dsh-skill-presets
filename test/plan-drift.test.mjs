@@ -70,3 +70,19 @@ test('isDocsPath: docs/, Markdown, and the usual top-level prose files are docum
   for (const p of ['docs/sdlc/phase-7/intent.md', '/repo/doc/guide.rst', 'README.md', 'README', 'LICENSE', 'CHANGELOG.md', 'notes/todo.txt', 'src/thing.mdx']) assert.ok(isDocsPath(p), p)
   for (const p of ['src/x.ts', 'test/a.test.mjs', 'package.json', 'docs.ts', 'src/docs/render.ts'.replace('docs/', 'docz/'), 'Makefile']) assert.ok(!isDocsPath(p), p)
 })
+
+// Found while dogfooding Phase 7's own plan.md: two real files it named were
+// reported as drift because the parser did not see them.
+test('planPaths: dotfiles and a backticked path followed by punctuation are paths', async () => {
+  const { planPaths } = await import('../lib/host/practices/plan.js')
+  const p = planPaths([
+    '`.gitignore` (`stage/shots/*`), `.npmrc`, and `.github/workflows/ci.yml`.',
+    'Files: `src/host/flows.ts` (x), `src/host/index.ts`, (RPC',
+    'also `package.json`; then `lib/`',
+  ].join('\n'))
+  for (const want of ['.gitignore', '.npmrc', '.github/workflows/ci.yml', 'src/host/flows.ts', 'src/host/index.ts', 'package.json', 'lib/']) {
+    assert.ok(p.includes(want), `${want} missing from ${JSON.stringify(p)}`)
+  }
+  // Still not paths: abbreviations and prose.
+  for (const not of ['e.g', 'i.e', 'RPC']) assert.ok(!p.includes(not), `${not} should not be a path`)
+})

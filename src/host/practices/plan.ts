@@ -15,8 +15,9 @@ export function planPaths(markdown: string): string[] {
   const consider = (raw: string): void => {
     const token = raw.trim().replace(/^\.\//u, '').replace(/[),.;:]+$/u, '')
     if (token.length === 0 || token.includes(' ') || token.startsWith('http') || token.startsWith('-')) return
-    // Looks like a path: has a slash, or a file extension, or a glob.
-    if (!/[/*]/u.test(token) && !/\.[a-z0-9]{1,6}$/iu.test(token)) return
+    // Looks like a path: has a slash, or a file extension, or a glob, or is a
+    // dotfile (`.gitignore`, `.npmrc` — the "extension" is the whole name).
+    if (!/[/*]/u.test(token) && !/\.[a-z0-9]{1,6}$/iu.test(token) && !/^\.[a-z][\w.-]*$/iu.test(token)) return
     if (/^[a-z]+:\/\//u.test(token)) return
     out.add(token)
   }

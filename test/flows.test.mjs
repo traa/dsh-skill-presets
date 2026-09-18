@@ -186,3 +186,25 @@ test('service: positions drive presets; legacy preset choices read as Full at th
   await svc.clearSession('L')
   assert.equal((await svc.positionFor({ id: 'L' })).source, 'default')
 })
+
+// Acceptance §10.1: a brand-new session on a fresh store is Full at Plan — the
+// control reads "Plan" — and Explore is one move away with no preset and no
+// judged practice. Also the default rung: "what a new session starts in".
+test('acceptance: a fresh store puts a new session in Full/Plan; the workspace default can be moved to Explore', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skp-fresh-'))
+  const svc = new SkillPresetsService({ root: () => root, now: () => new Date('2026-09-18T12:00:00Z') })
+  await svc.ensure()
+  const fresh = await svc.positionFor({ id: 'brand-new' })
+  assert.equal(fresh.flow.id, 'full'); assert.equal(fresh.stage, 'plan'); assert.equal(fresh.presetId, 'plan'); assert.equal(fresh.source, 'default')
+  assert.equal((await svc.practices()).autoCleanWorktrees, false, '§10.4: auto-clean is off in a fresh store')
+  // Workspace default → Explore: every NEW session now starts there.
+  await svc.setPosition({ scope: 'default' }, { flow: 'explore' }, 'ui')
+  const next = await svc.positionFor({ id: 'another-new' })
+  assert.equal(next.flow.id, 'explore'); assert.equal(next.stage, null); assert.equal(next.presetId, undefined); assert.equal(next.flow.guardrails, 'off')
+  assert.equal(await svc.activePreset({ id: 'another-new' }), undefined)
+  // Agent-preset rung wins over the workspace default.
+  await svc.setPosition({ scope: 'agent-preset', agentPreset: 'cordis' }, { flow: 'full', stage: 'build' }, 'ui')
+  const cordis = await svc.positionFor({ id: 'x', agentPreset: 'cordis' })
+  assert.equal(cordis.stage, 'build'); assert.equal(cordis.source, 'agent-preset'); assert.equal(cordis.presetId, 'build')
+  assert.equal((await svc.positionFor({ id: 'x', agentPreset: 'standard' })).flow.id, 'explore')
+})

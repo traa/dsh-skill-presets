@@ -180,17 +180,27 @@ chip's popover used to show that is not in §3 lives here.
 practices. `skill_preset_suggest` is unchanged. New `sdlc_set_stage { stage }`
 is **not** added: moving stage is a human act (playbook §2).
 
-## 10. Acceptance (all must hold before the PR)
+## 10. Acceptance (all must hold before the PR) — status at PR #22
 
 1. New session → control reads `◈ Plan ▾` (Full default) or the workspace's
    default flow; Explore shows `◈ Explore ▾` and no practice lines ever.
+   **Proven:** `test/flows.test.mjs` "acceptance: a fresh store…";
+   `stage/tests/control.spec.mjs` "Explore: the control says so".
 2. Popover renders inside the viewport with the header clipped at 40 px in
-   the stage shell; Playwright asserts `boundingBox` within viewport.
-3. `grep` with a foreign `workdir` → worktree practice green (test + live).
-4. A 5-second-old worktree with 0 commits is `keep`, and `autoCleanWorktrees`
-   is `false` in a fresh store.
-5. `renderGuardrails` output contains no amber line and no irrelevant practice
-   (test).
-6. v2 → v3 migration test for `active.json`.
-7. `npm test` green; `npm run test:ui` green; README updated; screenshots in
-   the PR.
+   the stage shell; Playwright asserts the box is within the viewport **and**
+   that ≥ 99 % of it survives ancestor clipping (`visibleFraction`).
+   **Proven:** `control.spec.mjs` "the popover escapes every container".
+3. `grep` with a foreign `workdir` → worktree practice green. **Proven (test):**
+   `test/detectors.test.mjs` "a read-only cd does not move the root".
+   **Live:** after merge + restart (the running host serves the old build).
+4. A fresh worktree with 0 commits is `keep`, and `autoCleanWorktrees` is
+   `false` in a fresh store. **Proven:** `test/worktrees.test.mjs` (pure +
+   real repo with `wt-fresh`), `test/flows.test.mjs` acceptance test.
+5. `renderGuardrails` output contains no amber line and no irrelevant practice.
+   **Proven:** `test/prompt.test.mjs`.
+6. ~~v2 → v3 migration for `active.json`~~ — **superseded** (plan Task 2
+   departure): `active.json` stays v2; `positions.json` is added beside it and
+   a session with a preset but no position reads as Full at that preset's
+   stage. **Proven:** `test/flows.test.mjs` "legacy preset choices read as Full".
+7. `npm test` green (220); `npm run test:ui` green (17); README updated;
+   screenshots in `stage/shots/` and the PR body. **Done.**

@@ -18,7 +18,8 @@ non-doc edit), `src/host/practices/index.ts` (docs never recorded as drift),
 `examples/practices.json`, `README.md` (worktree lifecycle table, auto-clean default).
 Tests: `test/worktrees.test.mjs` (fresh 0-ahead worktree → keep; grace period; real-repo
 sweep keeps `wt-fresh`), `test/detectors.test.mjs` (read-only cd does not move the root;
-docs edits → plan-before-code n/a), `test/plan-drift.test.mjs` (`isDocsPath`).
+docs edits → plan-before-code n/a), `test/plan-drift.test.mjs` (`isDocsPath`; `planPaths`
+accepts dotfiles — `.gitignore` was reported as drift while dogfooding this very plan).
 
 ## Task 1 — Browser stage
 Files: `stage/server.mjs` (plain `node:http`: serves the shell, React 18 UMD from
@@ -28,10 +29,12 @@ the stage must not need a build step of its own), `stage/shell.html` + `stage/sh
 (a 40 px `overflow: hidden` header, composer card, right pane, settings view, and a
 `position: fixed` overlay layer — the same clip and the same escape the real shell has),
 `stage/shell.js` (module loader, `slots`/`styles`/`sidebarRightTabs`, fixture header on
-every RPC), `stage/fixtures/{green,red-worktree,explore,start-suggestion}.json`,
-`stage/tests/smoke.spec.mjs`, `playwright.config.mjs`, `package.json` (`stage`, `test:ui`,
+every RPC), `stage/fixtures/*.json` (`green`, `red-worktree`, `explore`, `start-suggestion`),
+`stage/tests/smoke.spec.mjs`, `stage/tests/_helpers.mjs` (`openStage`, `rpcCalls`,
+`expectInViewport`, `visibleFraction`), `playwright.config.mjs`, `package.json` (`stage`, `test:ui`,
 devDeps `@playwright/test@1.61.1`, `react@18.3.1`, `react-dom@18.3.1` — the harness's own
-versions), `.gitignore` (`stage/shots/`, `test-results/`).
+versions; `package-lock.json` follows), `.gitignore` (`stage/shots/*` with the kept
+screenshots un-ignored, `test-results/`, `playwright-report/`).
 Tests: `npm run test:ui` boots the shell, loads `lib/client.js`, asserts the FOUR current
 surfaces mount (proves the harness before any redesign). Screenshot of the current
 header chip popover clipped — the "before" evidence.
@@ -55,8 +58,8 @@ tsdown inline a second React and killed every hook; see `test/client.test.mjs` g
 Tests: `test/flows.test.mjs` (pure + service), `test/client.test.mjs` (React-external guard).
 
 ## Task 3 — Host wiring
-Files: `src/host/flows.ts` (`relevantStages`, `annotateRelevance` → `relevant` + `kind:
-violation|unknown`, `isUnknownEvidence`), `src/host/index.ts` (RPC `flows/list|save|delete`,
+Files: `src/host/flows.ts` (`relevantStages`, `annotateRelevance` → `relevant` +
+`kind: violation|unknown`, `isUnknownEvidence`), `src/host/index.ts` (RPC `flows/list|save|delete`,
 `session/position`, `session/move {flow?, stage?, pin?, scope?}` (one RPC, not two),
 `practice/dismiss`; `positionCard()` shared by the control; `scorecard` carries `flow`,
 `stage`, `positionSource`, `gate`, `next` and annotated practices; suggestion gated by
