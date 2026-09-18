@@ -21,11 +21,17 @@ sweep keeps `wt-fresh`), `test/detectors.test.mjs` (read-only cd does not move t
 docs edits → plan-before-code n/a), `test/plan-drift.test.mjs` (`isDocsPath`).
 
 ## Task 1 — Browser stage
-Files: `stage/shell.html`, `stage/shell.ts` (module loader + React 18 + DOM slots incl.
-`shell.overlay` layer and a 40 px clipped header), `stage/rpc.ts` (fixture-driven RPC
-stub), `stage/fixtures/{green,red-worktree,explore,start-suggestion}.json`,
-`stage/tests/smoke.spec.ts`, `playwright.config.ts`, `package.json` (`stage`, `test:ui`,
-devDeps `@playwright/test`, `react`, `react-dom`, `vite`), `.gitignore` (`stage/shots/`).
+Files: `stage/server.mjs` (plain `node:http`: serves the shell, React 18 UMD from
+node_modules, `lib/client.js`, and answers `/plugins/dsh-skill-presets/rpc/*` from
+`stage/fixtures/<name>.json`; `/__stage/calls` for assertions — DEPARTURE: no Vite, no TS;
+the stage must not need a build step of its own), `stage/shell.html` + `stage/shell.css`
+(a 40 px `overflow: hidden` header, composer card, right pane, settings view, and a
+`position: fixed` overlay layer — the same clip and the same escape the real shell has),
+`stage/shell.js` (module loader, `slots`/`styles`/`sidebarRightTabs`, fixture header on
+every RPC), `stage/fixtures/{green,red-worktree,explore,start-suggestion}.json`,
+`stage/tests/smoke.spec.mjs`, `playwright.config.mjs`, `package.json` (`stage`, `test:ui`,
+devDeps `@playwright/test@1.61.1`, `react@18.3.1`, `react-dom@18.3.1` — the harness's own
+versions), `.gitignore` (`stage/shots/`, `test-results/`).
 Tests: `npm run test:ui` boots the shell, loads `lib/client.js`, asserts the FOUR current
 surfaces mount (proves the harness before any redesign). Screenshot of the current
 header chip popover clipped — the "before" evidence.

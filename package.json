@@ -26,7 +26,8 @@
     "examples",
     "cordis.patch.yml",
     "README.md",
-    "tsdown.client.config.ts"
+    "tsdown.client.config.ts",
+    "stage"
   ],
   "dsh": {
     "bundle": {
@@ -46,20 +47,26 @@
     "pretest": "npm run build",
     "clean": "rm -rf lib",
     "build:client": "tsdown -c tsdown.client.config.ts",
-    "gen:examples": "node lib/bin/gen-examples.js"
+    "gen:examples": "node lib/bin/gen-examples.js",
+    "stage": "node stage/server.mjs",
+    "stage:fixtures": "node stage/gen-fixtures.mjs",
+    "test:ui": "playwright test"
   },
   "bin": {
     "dsh-skill-presets": "./lib/bin/cli.js"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/dsh-skill": "*"
+    "@deepseek-ai/dsh-skill": "*",
+    "@deepseek-ai/dsh-tools": "*"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.20.1",
-    "typescript": "^5.6.0",
-    "tsdown": "^0.15.6"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsdown": "^0.15.6",
+    "typescript": "^5.6.0"
   },
   "engines": {
     "node": "^22.19 || >=24"

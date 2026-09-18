@@ -10,3 +10,8 @@ tsconfig.tsbuildinfo
 *.log
 .DS_Store
 node_modules
+
+# Browser stage artefacts (screenshots, traces)
+stage/shots/
+test-results/
+playwright-report/
