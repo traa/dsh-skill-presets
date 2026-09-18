@@ -12,6 +12,10 @@ import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC,
 import { adoptFoundation, foundationReport, type FoundationReport } from './foundation.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
+import {
+  BUILTIN_FLOWS, defaultPositions, flowsDoc, moveTo, positionFromPreset, presetForStage, resolvePosition, switchFlow, validateFlow, validateFlows, validatePositions,
+  type Flow, type Position, type PositionsDoc,
+} from './flows.ts'
 import { cleanupWorktrees, scanWorktrees, type CleanupResult, type WorktreeInfo } from './practices/worktrees.ts'
 import { lintLibrary } from './lint.ts'
 import { BUILTIN_NORMALIZE_RULES, validateRules } from './normalize.ts'
@@ -236,6 +240,8 @@ export class SkillPresetsService {
     await seed(paths.practices, defaultPractices())
     await seed(paths.normalizeRules, BUILTIN_NORMALIZE_RULES)
     await seed(paths.active, defaultActive())
+    await seed(paths.flows, flowsDoc(BUILTIN_FLOWS))
+    await seed(paths.positions, defaultPositions())
 
     // Legacy: `<workbench>/skills/<name>/SKILL.md` bundles that predate the
     // library. Moved (never deleted) so the old filesystem row, if still on,
@@ -390,7 +396,141 @@ export class SkillPresetsService {
     if (!Object.hasOwn(current.sessions, sessionId)) return
     const { [sessionId]: _dropped, ...sessions } = current.sessions
     await writeJson(this.paths().active, { ...current, sessions })
+    const positions = await this.positions()
+    if (Object.hasOwn(positions.sessions, sessionId)) {
+      const { [sessionId]: _p, ...rest } = positions.sessions
+      await writeJson(this.paths().positions, { ...positions, sessions: rest })
+    }
     this.notify()
+  }
+
+  // ---------------------------------------------------------------- flows --
+
+  async flows(): Promise<Flow[]> {
+    const doc = (await readJson(this.paths().flows, () => flowsDoc(BUILTIN_FLOWS), (raw) => {
+      const d = raw as { flows?: unknown }
+      return flowsDoc(validateFlows(Array.isArray(d?.flows) ? d.flows : raw))
+    })).value
+    return [...doc.flows]
+  }
+
+  async flow(id: string): Promise<Flow> {
+    const flow = (await this.flows()).find(f => f.id === id)
+    if (flow === undefined) throw new Error(`flow "${id}" does not exist`)
+    return flow
+  }
+
+  async saveFlow(flow: Flow): Promise<Flow[]> {
+    await this.ensure()
+    const problems = validateFlow(flow)
+    if (problems.length > 0) throw new Error(`flow "${String((flow as Partial<Flow>).id)}" is invalid: ${problems.join('; ')}`)
+    const current = await this.flows()
+    const existing = current.find(f => f.id === flow.id)
+    const next = existing !== undefined
+      ? current.map(f => (f.id === flow.id ? { ...flow, ...(f.builtin === true ? { builtin: true as const } : {}) } : f))
+      : [...current, flow]
+    const valid = validateFlows(next)
+    await writeJson(this.paths().flows, flowsDoc(valid))
+    return valid
+  }
+
+  async deleteFlow(id: string): Promise<Flow[]> {
+    await this.ensure()
+    const current = await this.flows()
+    const target = current.find(f => f.id === id)
+    if (target === undefined) throw new Error(`flow "${id}" does not exist`)
+    if (target.builtin === true) throw new Error(`flow "${id}" is built in; edit it instead`)
+    const valid = validateFlows(current.filter(f => f.id !== id))
+    await writeJson(this.paths().flows, flowsDoc(valid))
+    // Sessions and defaults that pointed at it fall back to Full at the same stage when possible.
+    const positions = await this.positions()
+    const remap = (p: Position): Position => (p.flow === id ? switchFlow(valid[0], p) : p)
+    const next: PositionsDoc = {
+      ...positions,
+      default: remap(positions.default),
+      byAgentPreset: Object.fromEntries(Object.entries(positions.byAgentPreset).map(([k, v]) => [k, remap(v)])),
+      sessions: Object.fromEntries(Object.entries(positions.sessions).map(([k, v]) => [k, { ...v, ...remap(v) }])),
+    }
+    await writeJson(this.paths().positions, next)
+    return valid
+  }
+
+  async positions(): Promise<PositionsDoc> {
+    return (await readJson(this.paths().positions, defaultPositions, validatePositions)).value
+  }
+
+  /**
+   * Where a session sits: `{ flow, stage }` plus the preset that stage maps to.
+   *
+   * A session that predates flows (has a preset in `active.json` but no
+   * position) is read as Full at that preset's stage, so nothing changes for
+   * it until the human moves. `presetId` may be undefined when several presets
+   * own the stage and the flow pins none — the UI asks; the provider falls
+   * back to `active.json`, which still holds the last explicit choice.
+   */
+  async positionFor(session?: { id?: string, agentPreset?: string }): Promise<{ flow: Flow, stage: Stage | null, presetId: string | undefined, source: 'session' | 'agent-preset' | 'default' | 'legacy', owners: string[] }> {
+    const [positions, flows, presets, active] = await Promise.all([this.positions(), this.flows(), this.presets(), this.active()])
+    let resolved = resolvePosition(positions, session?.id, session?.agentPreset)
+    let source: 'session' | 'agent-preset' | 'default' | 'legacy' = resolved.source
+    // Legacy rung: an explicit preset choice at a rung that has no position yet.
+    if (session?.id !== undefined && resolved.source !== 'session' && Object.hasOwn(active.sessions, session.id)) {
+      resolved = { position: positionFromPreset(active.sessions[session.id].preset, presets), source: 'session' }
+      source = 'legacy'
+    }
+    const flow = flows.find(f => f.id === resolved.position.flow) ?? flows[0]
+    const stage = flow.stages.length === 0 ? null : (resolved.position.stage !== null && flow.stages.includes(resolved.position.stage) ? resolved.position.stage : flow.stages[0])
+    const owners = stage === null ? [] : presetForStage.ownersOf(stage, presets).map(p => p.id)
+    const derived = stage === null ? undefined : presetForStage(stage, presets, flow.pins)
+    // The last explicit choice wins a collision the flow does not pin.
+    const explicit = resolveActive(active, session?.id, session?.agentPreset).preset
+    const presetId = derived?.id ?? (explicit !== null && owners.includes(explicit) ? explicit : undefined)
+    return { flow, stage, presetId, source, owners }
+  }
+
+  /**
+   * Move a session (or a default rung) to `{ flow, stage }` and activate the
+   * derived preset at the same rung, so `active.json` and `positions.json`
+   * never disagree. `stage` undefined = keep the current stage if the flow has
+   * it, else the flow's first.
+   */
+  async setPosition(
+    target: { scope?: ActivateScope, sessionId?: string, agentPreset?: string },
+    change: { flow?: string, stage?: Stage | null, pin?: string },
+    by: ActivateBy,
+  ): Promise<{ flow: Flow, stage: Stage | null, presetId: string | null, owners: string[] }> {
+    await this.ensure()
+    const scope: ActivateScope = target.scope ?? (target.sessionId !== undefined ? 'session' : 'default')
+    const current = await this.positionFor({ id: target.sessionId, agentPreset: target.agentPreset })
+    const flows = await this.flows()
+    const flow = change.flow !== undefined ? flows.find(f => f.id === change.flow) : current.flow
+    if (flow === undefined) throw new Error(`flow "${String(change.flow)}" does not exist`)
+    const position = change.stage !== undefined
+      ? moveTo(flow, change.stage)
+      : switchFlow(flow, { flow: current.flow.id, stage: current.stage })
+    const presets = await this.presets()
+    const owners = position.stage === null ? [] : presetForStage.ownersOf(position.stage, presets)
+    let preset = position.stage === null ? undefined : presetForStage(position.stage, presets, flow.pins)
+    if (preset === undefined && change.pin !== undefined) preset = owners.find(p => p.id === change.pin)
+    if (preset === undefined && owners.length === 1) preset = owners[0]
+    const positions = await this.positions()
+    const now = this.now().toISOString()
+    let next: PositionsDoc
+    if (scope === 'session') {
+      if (target.sessionId === undefined) throw new Error('session scope needs a sessionId')
+      next = { ...positions, sessions: { ...positions.sessions, [target.sessionId]: { ...position, since: now } } }
+    } else if (scope === 'agent-preset') {
+      if (target.agentPreset === undefined) throw new Error('agent-preset scope needs an agentPreset')
+      next = { ...positions, byAgentPreset: { ...positions.byAgentPreset, [target.agentPreset]: position } }
+    } else {
+      next = { ...positions, default: position }
+    }
+    await writeJson(this.paths().positions, next)
+    // Activate the derived preset at the same rung. A collision with no pin
+    // leaves the preset as it was (the UI asks); Explore clears it.
+    if (position.stage === null) await this.activate(null, by, { scope, sessionId: target.sessionId, agentPreset: target.agentPreset })
+    else if (preset !== undefined) await this.activate(preset.id, by, { scope, sessionId: target.sessionId, agentPreset: target.agentPreset })
+    else this.notify()
+    return { flow, stage: position.stage, presetId: preset?.id ?? null, owners: owners.map(p => p.id) }
   }
 
   /** Mark a session disposed (starts its retention clock) and prune old ones. */
@@ -403,6 +543,16 @@ export class SkillPresetsService {
       : { ...current, sessions: { ...current.sessions, [sessionId]: { ...entry, disposedAt: now.toISOString() } } }
     const pruned = pruneSessions(marked, now)
     if (pruned !== current) await writeJson(this.paths().active, pruned)
+    // Positions follow the same retention: mark, then drop whatever active.json dropped.
+    const positions = await this.positions()
+    const pos = positions.sessions[sessionId]
+    const keep = new Set(Object.keys(pruned.sessions))
+    const sessions: PositionsDoc['sessions'] = {}
+    for (const [id, entry] of Object.entries(positions.sessions)) {
+      if (id === sessionId && pos !== undefined) { if (keep.has(id)) sessions[id] = { ...entry, disposedAt: now.toISOString() }; continue }
+      if (keep.has(id) || !Object.hasOwn(marked.sessions, id)) sessions[id] = entry
+    }
+    if (Object.keys(sessions).length !== Object.keys(positions.sessions).length || pos !== undefined) await writeJson(this.paths().positions, { ...positions, sessions })
   }
 
   async savePreset(input: Preset): Promise<Preset> {

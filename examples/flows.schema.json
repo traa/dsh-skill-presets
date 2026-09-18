@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dsh-skill-presets flows",
+  "description": "Ordered subsets of stages a piece of work passes through. Persisted as <workbench>/skills/flows.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "flows"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "stages",
+          "guardrails"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string"
+          },
+          "stages": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "plan",
+                "design",
+                "build",
+                "test",
+                "deploy",
+                "maintain",
+                "cross"
+              ]
+            }
+          },
+          "guardrails": {
+            "enum": [
+              "on",
+              "off"
+            ]
+          },
+          "pins": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "enum": [
+                "plan",
+                "design",
+                "build",
+                "test",
+                "deploy",
+                "maintain",
+                "cross"
+              ]
+            }
+          },
+          "builtin": {
+            "const": true
+          }
+        }
+      }
+    }
+  }
+}

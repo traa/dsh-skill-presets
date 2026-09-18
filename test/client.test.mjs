@@ -448,3 +448,17 @@ test('client bundle imports no Node built-ins', async () => {
   const hits = [...(bundle.match(specifier) ?? []), ...(bundle.match(smuggler) ?? [])]
   assert.equal(hits.length, 0, `client bundle pulls in Node built-ins: ${hits.join(', ')}`)
 })
+
+// Adding react/react-dom to devDependencies (for the browser stage) made them
+// resolvable at bundle time, and tsdown silently INLINED a second React into
+// lib/client.js. In the page that React's hooks ran against a null dispatcher
+// inside the shell's React tree ("Cannot read properties of null (reading
+// 'useState')") — eight tests here went red, and the live plugin would have
+// too. `external: ['react', …]` in tsdown.client.config.ts is the fix; this
+// pins it, because the failure otherwise announces itself only at runtime.
+test('client bundle takes React from the loader, never inlines its own', async () => {
+  const source = await readFile(ARTIFACT, 'utf8')
+  assert.match(source, /require\("react"\)/, 'the bundle must require("react") from the page loader')
+  assert.doesNotMatch(source, /ReactCurrentDispatcher/, 'a React internals symbol means a React copy was inlined')
+  assert.doesNotMatch(source, /react-dom/, 'react-dom must not be referenced at all')
+})

@@ -69,6 +69,8 @@ export class StorePaths {
   get suggestions(): string { return join(this.skills, 'suggestions.json') }
   get experiments(): string { return join(this.skills, 'experiments.json') }
   get worktrees(): string { return join(this.skills, 'worktrees.json') }
+  get flows(): string { return join(this.skills, 'flows.json') }
+  get positions(): string { return join(this.skills, 'positions.json') }
   get usage(): string { return join(this.skills, 'usage') }
   get rollup(): string { return join(this.skills, 'usage-rollup.json') }
   get migrated(): string { return join(this.skills, 'MIGRATED.md') }

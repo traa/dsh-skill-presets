@@ -37,14 +37,22 @@ surfaces mount (proves the harness before any redesign). Screenshot of the curre
 header chip popover clipped — the "before" evidence.
 
 ## Task 2 — Flows in the store
-Files: `src/host/types.ts` (`Flow`, `ActiveDoc` v3 `{flow, stage}` per rung), `src/host/store.ts`
-(`validateActive` v1→v2→v3; `flows.json` seed + validate), `src/host/curated.ts`
-(`BUILTIN_FLOWS`, `PRACTICE_INFO[id].stages`), `src/host/service.ts` (`flows()`,
-`saveFlow`, `deleteFlow`, `activeFor` returns `{flow, stage, preset}`, `presetFor(stage)`
-with pins, `setStage`, `setFlow`), `examples/flows.json` + `flows.schema.json`,
-`src/bin/gen-examples.ts`.
-Tests: `test/active.test.mjs` (v2→v3 migration incl. `cross` preset → pins), new
-`test/flows.test.mjs` (derivation, collision → pin, Explore → no preset).
+DEPARTURE: no `ActiveDoc` v3. `active.json` (which preset, per rung) is read by the
+provider, the tools, the prompt block, the CLI and ~20 tests; rewriting it is the biggest
+blast radius in the plan for no user-visible gain. Instead a parallel `positions.json`
+(`{ flow, stage }` per rung) sits beside it and `setPosition()` ALSO activates the derived
+preset at the same rung, so the two never disagree. A session with a preset but no
+position reads as Full at that preset's stage (`source: 'legacy'`).
+Files: `src/host/flows.ts` (NEW, pure: `Flow`, `BUILTIN_FLOWS`, `validateFlow(s)`,
+`presetForStage` + `ownersOf`, `stageOfPreset`, `positionOf`, `nextStage`, `gateFor`,
+`STAGE_TITLE`; `Position`/`PositionsDoc`, `resolvePosition`, `positionFromPreset`,
+`moveTo`, `switchFlow`), `src/host/store.ts` (`flows`/`positions` paths), `src/host/service.ts`
+(`flows()`, `flow()`, `saveFlow`, `deleteFlow` (remaps positions to Full), `positions()`,
+`positionFor()`, `setPosition()`; dispose/clear keep positions in step), `src/host/schema.ts`
+(`flows.json` example + schema), `examples/flows.json`, `examples/flows.schema.json`,
+`tsdown.client.config.ts` (`external: ['react', …]` — installing react for the stage made
+tsdown inline a second React and killed every hook; see `test/client.test.mjs` guard).
+Tests: `test/flows.test.mjs` (pure + service), `test/client.test.mjs` (React-external guard).
 
 ## Task 3 — Host wiring
 Files: `src/host/index.ts` (RPC `flows/list|save|delete`, `session/set-flow`,

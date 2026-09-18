@@ -22,6 +22,12 @@ const config: UserConfig = {
   target: 'es2024',
   dts: false,
   clean: false,
+  // React MUST stay a `require('react')` for the page's loader to satisfy.
+  // The stage (`stage/`) added react/react-dom to devDependencies, and the
+  // moment they were resolvable the bundler inlined a second React — whose
+  // hooks then ran against a null dispatcher inside the page's React tree.
+  // Nothing in @deepseek-ai/* is imported at runtime either.
+  external: ['react', 'react-dom', /^@deepseek-ai\//u],
   sourcemap: true,
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
