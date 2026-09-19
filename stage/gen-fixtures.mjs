@@ -67,6 +67,8 @@ async function fixture(name, { preset, position: pos, scorecard }) {
     practices: annotated,
     report: annotated.filter(p => p.status === 'red' && p.relevant && p.kind !== 'unknown'),
     ...(card.suggestion !== undefined ? { suggestion: card.suggestion } : {}),
+    skills: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}` })),
+    ...(scorecard.facts !== undefined ? { artifacts: scorecard.facts.artifacts ?? [], pr: scorecard.facts.pr ?? null } : {}),
   }
   card.practices = annotated
   card.flow = where.flow; card.stage = where.stage; card.positionSource = where.source
@@ -115,7 +117,7 @@ await fixture('green', {
     worst: 'green',
     practices: [
       { id: 'worktree', status: 'green', evidence: ['linked worktree on branch feat/thing'] },
-      { id: 'pr-always', status: 'n/a', evidence: ['work in progress; no PR yet'] },
+      { id: 'pull-request', status: 'n/a', evidence: ['work in progress; no PR yet'] },
       { id: 'conductor', status: 'n/a', evidence: ['no team attached'] },
       { id: 'artifact-chain', status: 'green', evidence: ['plan.md present'] },
       { id: 'plan-before-code', status: 'green', evidence: ['plan.md present before edits'] },
@@ -135,7 +137,7 @@ await fixture('red-worktree', {
     worst: 'red',
     practices: [
       { id: 'worktree', status: 'red', evidence: ['2 file mutations on protected branch main in the primary checkout', 'first: edit src/x.ts'], firstViolationAt: '2026-09-18T11:58:00Z' },
-      { id: 'pr-always', status: 'n/a', evidence: ['work in progress; no PR yet'] },
+      { id: 'pull-request', status: 'n/a', evidence: ['work in progress; no PR yet'] },
       { id: 'conductor', status: 'n/a', evidence: ['no team attached'] },
       { id: 'artifact-chain', status: 'green', evidence: ['plan.md present'] },
       { id: 'plan-before-code', status: 'green', evidence: ['plan.md present before edits'] },
@@ -166,7 +168,7 @@ await fixture('start-suggestion', {
     worst: 'n/a',
     practices: [
       { id: 'worktree', status: 'n/a', evidence: ['no file mutations yet'] },
-      { id: 'pr-always', status: 'n/a', evidence: ['nothing to push yet'] },
+      { id: 'pull-request', status: 'n/a', evidence: ['nothing to push yet'] },
       { id: 'conductor', status: 'n/a', evidence: ['no team attached'] },
       { id: 'artifact-chain', status: 'green', evidence: ['intent.md present'] },
       { id: 'plan-before-code', status: 'n/a', evidence: ['applies in the Build stage'] },
@@ -174,6 +176,16 @@ await fixture('start-suggestion', {
       { id: 'worktree-hygiene', status: 'green', evidence: ['no merged leftovers'] },
       { id: 'post-merge-sync', status: 'green', evidence: ['level with origin/main and built'] },
     ],
+  },
+})
+
+// 5. Build stage but no facts available (e.g. initial load before stats gathered)
+await fixture('no-facts', {
+  position: { stage: 'build' },
+  scorecard: {
+    stageGuess: { stage: 'build', confidence: 0.9, why: ['plan.md committed', '3 recent edit(s)'] },
+    worst: 'n/a',
+    practices: [],
   },
 })
 

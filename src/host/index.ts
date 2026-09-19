@@ -747,6 +747,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const isMuted = (id: string): boolean => hidden.has(id) || (muted.dismissed[`none→practice:${id}`]?.count ?? 0) >= 3
     const pos = position.stage !== null ? positionOf(position.flow, position.stage) : undefined
     const { suggestion } = await suggestionFor(sessionId)
+    const set = await service.setFor({ teamAttached: score?.teamAttached === true, inGitRepo: score?.facts?.inRepo === true }, identity)
     return {
       sessionId,
       flow: position.flow,
@@ -760,6 +761,23 @@ export function apply(ctx: Context, config: Config = {}): void {
       practices,
       /** Red + relevant + not unknown + not dismissed: the lines the control shows. */
       report: practices.filter(p => p.status === 'red' && p.relevant && p.kind !== 'unknown' && !isMuted(p.id)),
+      /**
+       * Only when a git read actually happened. With no facts at all (fresh
+       * session, or outside a repo) both keys stay ABSENT, so the gate renders
+       * "? unknown" instead of reading an empty `artifacts` + `pr: null` as
+       * "we looked and found nothing". Same rule as the sidebar in views.ts.
+       *
+       * Within `pr`: absent = no forge CLI to ask; null = asked, none open;
+       * object = the open PR.
+       */
+      ...(score?.facts !== undefined
+        ? {
+            artifacts: [...score.facts.artifacts],
+            pr: score.facts.pr ?? (score.facts.ghAvailable === false ? undefined : null),
+          }
+        : {}),
+      /** The skills actually offered this session, for the "Skills in play" chips. */
+      skills: set.skills.map(s => ({ name: s.name, via: s.via === 'preset' ? 'preset' : `overlay:${s.via.overlay}` })),
       ...(suggestion !== undefined ? { suggestion } : {}),
     }
   }

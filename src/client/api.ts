@@ -247,4 +247,14 @@ export interface PositionCard {
   /** Red + relevant + not unknown + not dismissed. */
   report: AnnotatedPractice[]
   suggestion?: Suggestion
+  /**
+   * Committed stage artifacts, for deciding whether the gate is met.
+   * OPTIONAL and undefined-means-unknown: the host does not send this yet, and
+   * the gate line must say "? unknown" rather than claim the gate is unmet.
+   */
+  artifacts?: string[]
+  /** The session's PR: absent = unknown, null = none open, object = open. Same rule as `artifacts`. */
+  pr?: { url: string, state: string } | null
+  /** The skills offered to the model right now. Undefined until the host sends it. */
+  skills?: { name: string, via: string }[]
 }

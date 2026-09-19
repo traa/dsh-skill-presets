@@ -70,17 +70,23 @@ async function load() {
   return { mod, React }
 }
 
-function fakeCtx({ withTabs = true } = {}) {
+function fakeCtx(inject = [], { withTabs = true, withStyles = true } = {}) {
   const registrations = []
   const tabTypes = []
   const slots = {
     inject: (key, cb) => { const off = cb(); return typeof off === 'function' ? off : () => {} },
     register: (options, component) => { registrations.push({ options, component }); return () => {} },
   }
-  const services = {
+  const available = {
     slots,
     ...(withTabs ? { sidebarRightTabs: { register: (d) => { tabTypes.push(d); return () => {} } } } : {}),
   }
+  const services = {}
+  for (const name of inject) {
+    services[name] = available[name]
+  }
+  if (withStyles) services.styles = { insert: () => () => {} }
+
   const ctx = {
     get: name => services[name],
     effect: (cb) => { const off = cb(); return typeof off === 'function' ? off : () => {} },
@@ -88,11 +94,28 @@ function fakeCtx({ withTabs = true } = {}) {
   return { ctx, registrations, tabTypes }
 }
 
+test('inject declares every service the bundle reaches for', async () => {
+  // The real page gives a plugin only what it injects. If it reaches for a service
+  // not in inject, ctx.get returns undefined and it breaks silently.
+  const { mod } = await load()
+  const source = await readFile(ARTIFACT, 'utf8')
+  const srcIndex = await readFile(join(ROOT, 'src', 'client', 'index.ts'), 'utf8')
+  const gets = [...source.matchAll(/ctx\.get\(['"]([^'"]+)['"]\)/g)].map(m => m[1])
+  for (const name of new Set(gets)) {
+    if (name === 'styles') {
+      // styles is optional and read defensively, so we allow it to be missing from inject
+      assert.match(srcIndex, /!==\s*undefined/, 'styles must be guarded')
+      continue
+    }
+    assert.ok(mod.inject.includes(name), `Service ${name} is requested but not in mod.inject`)
+  }
+})
+
 test('artifact exports name/inject/apply and registers every surface — the header chip is gone', async () => {
   const { mod } = await load()
   assert.equal(mod.name, 'client-ui-skill-presets')
-  assert.deepEqual(mod.inject, ['slots'])
-  const { ctx, registrations, tabTypes } = fakeCtx()
+  assert.deepEqual(mod.inject, ['slots', 'sidebarRightTabs', 'layout'])
+  const { ctx, registrations, tabTypes } = fakeCtx(mod.inject)
   mod.apply(ctx)
   const names = registrations.map(r => `${r.options.name}${r.options.key !== undefined ? `#${r.options.key}` : r.options.id !== undefined ? `@${r.options.id}` : ''}`).sort()
   assert.deepEqual(names, [
@@ -107,20 +130,21 @@ test('artifact exports name/inject/apply and registers every surface — the hea
   assert.equal(tabTypes[0].kind, 'skills')
   assert.equal(tabTypes[0].title(''), 'Skills')
   assert.equal(tabTypes[0].guide[0].title(), 'Skills')
+  assert.match(tabTypes[0].guide[0].description(), /flow.*stage.*checked.*skills/i)
   const section = registrations.find(r => r.options.name === 'settings.section')
   assert.equal(section.options.label(), 'Skills')
 })
 
 test('without sidebarRightTabs the other five surfaces still register', async () => {
   const { mod } = await load()
-  const { ctx, registrations } = fakeCtx({ withTabs: false })
+  const { ctx, registrations } = fakeCtx(mod.inject, { withTabs: false })
   mod.apply(ctx)
   assert.equal(registrations.length, 5)
 })
 
 test('settings page renders tabs and a loading state before any RPC answers', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({}) })
   mod.apply(ctx)
   const Page = registrations.find(r => r.options.name === 'settings.section').component
@@ -139,7 +163,7 @@ test('settings page renders tabs and a loading state before any RPC answers', as
 // are DOM facts and live in stage/tests/control.spec.mjs (Playwright).
 test('stage control renders nothing without a session id and reads the stage with one', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   const card = { sessionId: 's-1', flow: { id: 'full', title: 'Full', stages: ['plan', 'design', 'build', 'test', 'deploy'], guardrails: 'on', builtin: true }, flows: [], stage: 'build', source: 'session', presetId: 'build', owners: ['build'], position: { index: 2, of: 5 }, gate: 'plan.md', next: 'test', practices: [], report: [] }
   globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(card) })
   mod.apply(ctx)
@@ -153,7 +177,11 @@ test('stage control renders nothing without a session id and reads the stage wit
   assert.match(text(tree).join(' '), /Build/)
   const button = flatten(tree).find(n => (n.props?.className ?? '').includes('skp-ctl'))
   assert.equal(button.props['aria-expanded'], 'false')
-  assert.match(button.props.title, /Full flow · Build \(3 of 5\) · next gate: plan\.md/)
+  assert.match(button.props.title, /Full · Build \(3 of 5\) · ends with plan\.md/)
+  assert.equal(nodesWithClass(button, 'skp-swatch').length, 0)
+  assert.equal(nodesWithClass(button, 'skp-ctl-label').length, 1)
+  assert.equal(text(nodesWithClass(button, 'skp-ctl-label')[0]).join(''), 'Build')
+  assert.equal(nodesWithClass(button, 'skp-ctl-caret').length, 1)
   // Green: no count, no dot.
   assert.equal(nodesWithClass(tree, 'skp-ctl-count').length, 0)
   assert.equal(nodesWithClass(tree, 'skp-dot').length, 0)
@@ -164,7 +192,7 @@ test('stage control renders nothing without a session id and reads the stage wit
 
 test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   const scorecard = {
     sessionId: 's-2', live: true,
     active: { version: 2, default: 'plan', byAgentPreset: {}, sessions: { 's-2': { preset: 'build', since: 'x', by: 'ui' } }, since: 'x', by: 'ui' },
@@ -213,7 +241,8 @@ test('sidebar body renders a scorecard from a fake RPC answer', async () => {
   // "Needs action" line with the skill that fixes it.
   assert.doesNotMatch(words, /Detected stage/)
   assert.doesNotMatch(words, /Switch to Test & Review\?/)
-  assert.match(words, /Needs action Work in a worktree 2 file mutations on protected branch main/)
+  assert.doesNotMatch(words, /Needs action/)
+  assert.match(words, /Checked in this stage.*Work in a worktree.*2 file mutations on protected branch main/)
   assert.match(words, /unplanned\.ts/)
   assert.match(words, /s-3/)
   assert.match(words, /Why each load/)
@@ -280,10 +309,11 @@ function mixedFixture() {
   return { scorecard, status }
 }
 
-test('practices that do not apply are replaced by one muted "+N not applicable" line carrying their reasons', async () => {
+test('relevant n/a practices render as normal check rows, not folded', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   const { scorecard, status } = mixedFixture()
+  scorecard.practices = scorecard.practices.map(p => ({ ...p, relevant: true }))
   globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
   mod.apply(ctx)
   const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
@@ -292,30 +322,23 @@ test('practices that do not apply are replaced by one muted "+N not applicable" 
   React.__runEffects()
   await new Promise(r => setTimeout(r, 30))
   const tree = render(React, React.createElement(Body, props))
-  const words = text(tree).join(' ')
-  // The applicable practice still renders in full, with its evidence.
-  assert.match(words, /Work in a worktree/)
-  assert.match(words, /protected branch main/)
-  // The n/a rows are gone from the list.
-  assert.doesNotMatch(words, /Plan before code: n\/a/)
-  assert.doesNotMatch(words, /applies in the Build stage/)
-  assert.doesNotMatch(words, /no team attached/)
-  // …replaced by exactly one muted summary line.
-  const na = nodesWithClass(tree, 'skp-na')
-  assert.equal(na.length, 1)
-  assert.equal(text(na[0]).join(''), '+2 not applicable in this stage')
-  // Nothing is unreachable: titles AND reasons live in the hover text.
-  assert.match(na[0].props.title, /Plan before code: applies in the Build stage/)
-  assert.match(na[0].props.title, /Conductor protocol: no team attached/)
+  
+  const naRows = nodesWithClass(tree, 'skp-check').filter(n => n.props['data-status'] === 'n/a')
+  assert.equal(naRows.length, 2, 'the two n/a practices render as individual rows')
+  assert.equal(nodesWithClass(tree, 'skp-na').length, 0, 'no folded +N line when all are relevant')
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))
 })
 
-test('when every practice is n/a the muted line stands alone rather than an empty section', async () => {
+test('irrelevant practices fold into one +N not judged line', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   const { scorecard, status } = mixedFixture()
-  scorecard.practices = scorecard.practices.map(p => ({ ...p, status: 'n/a' }))
+  scorecard.practices = [
+    { id: 'worktree', status: 'red', relevant: true, evidence: ['x'] },
+    { id: 'p1', status: 'green', relevant: false, evidence: ['y'] },
+    { id: 'p2', status: 'red', relevant: false, evidence: ['z'] }
+  ]
   globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
   mod.apply(ctx)
   const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
@@ -324,11 +347,32 @@ test('when every practice is n/a the muted line stands alone rather than an empt
   React.__runEffects()
   await new Promise(r => setTimeout(r, 30))
   const tree = render(React, React.createElement(Body, props))
+  
   const na = nodesWithClass(tree, 'skp-na')
   assert.equal(na.length, 1)
-  assert.equal(text(na[0]).join(''), '+3 not applicable in this stage')
-  // The section still has its heading, so it cannot read as a broken empty block.
-  assert.match(text(tree).join(' '), /Practices/)
+  assert.equal(text(na[0]).join(''), '+2 not judged in this stage')
+  assert.match(na[0].props.title, /p1: not judged/)
+  assert.match(na[0].props.title, /p2: not judged/)
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 5))
+})
+
+test('explore style fixture where no practice is relevant renders no checks element', async () => {
+  const { mod, React } = await load()
+  const { ctx, registrations } = fakeCtx(mod.inject)
+  const { scorecard, status } = mixedFixture()
+  scorecard.practices = scorecard.practices.map(p => ({ ...p, relevant: false }))
+  globalThis.fetch = async (url) => ({ ok: true, status: 200, text: async () => JSON.stringify(url.endsWith('/scorecard') ? scorecard : status) })
+  mod.apply(ctx)
+  const Body = registrations.find(r => r.options.name === 'sidebar.right.pane.tab').component
+  const props = { sessionId: 's-6', useTabInfo: () => ({ tab: { visible: true } }) }
+  render(React, React.createElement(Body, props))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 30))
+  const tree = render(React, React.createElement(Body, props))
+  
+  assert.equal(nodesWithClass(tree, 'skp-checks').length, 0, 'the entire checks container is suppressed')
+  assert.equal(nodesWithClass(tree, 'skp-na').length, 0, 'no folded line either')
   React.__runEffects()
   await new Promise(r => setTimeout(r, 5))
 })
@@ -339,7 +383,7 @@ test('when every practice is n/a the muted line stands alone rather than an empt
 // a confident finding — the sidebar body is silent about it.
 test('the sidebar never announces a detected stage, whatever the guess', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   const { scorecard, status } = mixedFixture()
   for (const guess of [
     { stage: 'plan', confidence: 0.5, why: ['nothing observed yet; defaulting to Plan'] },
@@ -369,7 +413,7 @@ test('the sidebar never announces a detected stage, whatever the guess', async (
 
 test('a genuine success notice still renders as the green paragraph it always was', async () => {
   const { mod, React } = await load()
-  const { ctx, registrations } = fakeCtx()
+  const { ctx, registrations } = fakeCtx(mod.inject)
   const { scorecard, status } = mixedFixture()
   globalThis.fetch = async (url) => ({
     ok: true, status: 200,
