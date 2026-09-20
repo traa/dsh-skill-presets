@@ -7,7 +7,7 @@
  * | Stage control    | `conversation.input.right` (id `skill-presets-stage`) | list/session |
  * | Stage popover    | `shell.overlay` (id `skill-presets-stage-pop`)        | list/root    |
  * | Start notice     | `conversation.composer.dock` (id `skill-presets-start`)| list/session |
- * | Session Skills tab| `sidebar.right.pane.tab` (key = tab id) — opened from the right sidebar's Guide page ("New tab" +) | keyed/session|
+ * | Session Skills tab| `sidebar.right.pane.tab` (key = tab id) — opened from the stage popover's "Open Skills tab", or from the right sidebar's Guide page ("New tab" +) | keyed/session|
  * | Plugin card      | `settings.plugin.item` (key `skill-presets`)| keyed      |
  *
  * The header chip (`conversation.session.header.utilities`) is GONE since
@@ -29,7 +29,7 @@
 // @ts-expect-error -- resolved at bundle time by the module table, not by tsc.
 import * as ReactNamespace from 'react'
 import { Store } from './api.ts'
-import { ScorecardController, SettingsController, StageController } from './controller.ts'
+import { ScorecardController, SettingsController, StageController, TAB_KIND } from './controller.ts'
 import { STAGE_CSS, makeStageControl, makeStagePopover, makeStartNotice } from './stage.ts'
 import { CSS, makePluginCard, makeSettingsPage, makeSidebarBody, type ReactLike } from './views.ts'
 
@@ -51,6 +51,13 @@ interface StylesLike { insert(css: string): () => void }
 /** The shell's layout service; only `openRightbar` is used. */
 interface LayoutLike { openRightbar(track: boolean, fullscreen: boolean): void }
 
+/**
+ * The shell's right-sidebar navigation service; only `openTab` is used, and
+ * only with a kind. It selects the page type and expands the column in one
+ * step, and reports every failure by throwing.
+ */
+interface SidebarRightLike { openTab(kind: string): void }
+
 interface SidebarTabsLike {
   register(definition: {
     id: string
@@ -62,10 +69,9 @@ interface SidebarTabsLike {
 }
 
 export const name = 'client-ui-skill-presets'
-export const inject = ['slots', 'sidebarRightTabs', 'layout']
+export const inject = ['slots', 'sidebarRightTabs', 'layout', 'sidebarRight']
 
 const TAB_ID = 'dsh-skill-presets'
-const TAB_KIND = 'skills'
 
 function insertStyles(styles: StylesLike | undefined): () => void {
   const all = CSS + STAGE_CSS
@@ -118,12 +124,16 @@ export function apply(ctx: ClientLike): void {
   // The root-scoped overlay must re-render when a session controller is
   // created after it mounted; this store's version bumps on every creation.
   const roster = new Store<{ n: number }>({ n: 0 })
-  // The popover's "Open Skills tab" needs the shell's layout service; absent
-  // in a shell without it, and the button then only closes the popover.
+  // The popover's "Open Skills tab" goes through `sidebarRight.openTab(kind)`,
+  // which selects our tab AND expands the column. `layout` is the degraded
+  // path, used when that service is absent or its open throws; with neither,
+  // the button only closes the popover. Both are read defensively: a shell may
+  // provide one, the other, or neither.
   const layout = ctx.get('layout') as LayoutLike | undefined
+  const sidebarRight = ctx.get('sidebarRight') as SidebarRightLike | undefined
   const stageFor = (sessionId: string): StageController => {
     let c = stages.get(sessionId)
-    if (c === undefined) { c = new StageController(sessionId); c.attachLayout(layout); stages.set(sessionId, c); roster.set({ n: roster.get().n + 1 }) }
+    if (c === undefined) { c = new StageController(sessionId); c.attachLayout(layout); c.attachSidebarRight(sidebarRight); stages.set(sessionId, c); roster.set({ n: roster.get().n + 1 }) }
     return c
   }
   const perSession = (make: (c: StageController) => () => unknown): ((props: { sessionId?: string }) => unknown) => {
