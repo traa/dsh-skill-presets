@@ -485,9 +485,7 @@ test('client bundle takes React from the loader, never inlines its own', async (
 })
 
 async function openPopoverAndClickSkillsTab(mod, React, fakeCtxOpts) {
-  // Use a mock inject since src/ might not be updated yet
-  const inject = ['slots', 'sidebarRightTabs', 'layout', 'sidebarRight']
-  const { ctx, registrations, calls } = fakeCtx(inject, fakeCtxOpts)
+  const { ctx, registrations, calls } = fakeCtx(mod.inject, fakeCtxOpts)
   globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ sessionId: 's-test', flow: { id: 'f', title: 'F', stages: [], guardrails: 'on', builtin: true }, flows: [], stage: 'b', source: 'session', presetId: 'b', owners: ['b'], position: { index: 1, of: 1 }, gate: '', next: '', practices: [], report: [] }) })
   mod.apply(ctx)
   

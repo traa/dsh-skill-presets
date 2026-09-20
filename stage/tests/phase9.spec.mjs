@@ -8,7 +8,7 @@ test('Open Skills tab: calls openTab exactly once, no openRightbar, closes popov
   await popover.locator('.skp-open-tab').click()
   
   const rightbarOpened = await page.evaluate(() => window.__STAGE__.rightbarOpened)
-  expect(rightbarOpened).toBeUndefined() // or not incremented from undefined
+  expect(rightbarOpened).toBe(0)
   
   const tabsOpened = await page.evaluate(() => window.__STAGE__.tabsOpened)
   expect(tabsOpened).toEqual(['skills'])

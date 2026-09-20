@@ -163,7 +163,6 @@ test('5. Skills in play', async ({ page }) => {
   await expect(chips).toHaveCount(skillsCount)
 })
 
-
 test('7. Inject contract, live', async ({ page }) => {
   await openStage(page, 'green')
   const deniedGets = await page.evaluate(() => window.__STAGE__.deniedGets)

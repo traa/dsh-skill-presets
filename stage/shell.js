@@ -157,7 +157,7 @@
     }
   }
   const services = { slots, styles, sidebarRightTabs, layout, sidebarRight }
-  window.__STAGE__ = { fixture: FIXTURE, sessionId: SESSION_ID, occupants, tabTypes, regions, applied: false, error: undefined, deniedGets: [], tabsOpened: [] }
+  window.__STAGE__ = { fixture: FIXTURE, sessionId: SESSION_ID, occupants, tabTypes, regions, applied: false, error: undefined, deniedGets: [], tabsOpened: [], rightbarOpened: 0 }
   window.__ModuleLoader__ = {
     load({ id, factory }) {
       try {
