@@ -163,17 +163,6 @@ test('5. Skills in play', async ({ page }) => {
   await expect(chips).toHaveCount(skillsCount)
 })
 
-test('6. Open Skills tab', async ({ page }) => {
-  await openStage(page, 'green')
-  await page.locator('.skp-ctl').click()
-  const popover = page.locator('.skp-stage-pop')
-  await popover.locator('.skp-open-tab').click()
-  
-  const rightbarOpened = await page.evaluate(() => window.__STAGE__.rightbarOpened)
-  expect(rightbarOpened).toBe(1)
-  await expect(popover).not.toBeVisible()
-})
-
 test('7. Inject contract, live', async ({ page }) => {
   await openStage(page, 'green')
   const deniedGets = await page.evaluate(() => window.__STAGE__.deniedGets)

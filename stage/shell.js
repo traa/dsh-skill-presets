@@ -151,8 +151,13 @@
       window.__STAGE__.rightbarOpened = (window.__STAGE__.rightbarOpened ?? 0) + 1
     }
   }
-  const services = { slots, styles, sidebarRightTabs, layout }
-  window.__STAGE__ = { fixture: FIXTURE, sessionId: SESSION_ID, occupants, tabTypes, regions, applied: false, error: undefined, deniedGets: [] }
+  const sidebarRight = {
+    openTab(kind) {
+      window.__STAGE__.tabsOpened.push(kind)
+    }
+  }
+  const services = { slots, styles, sidebarRightTabs, layout, sidebarRight }
+  window.__STAGE__ = { fixture: FIXTURE, sessionId: SESSION_ID, occupants, tabTypes, regions, applied: false, error: undefined, deniedGets: [], tabsOpened: [], rightbarOpened: 0 }
   window.__ModuleLoader__ = {
     load({ id, factory }) {
       try {

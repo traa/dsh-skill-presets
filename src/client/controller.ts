@@ -7,6 +7,15 @@
 
 import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard, type Flow } from './api.ts'
 
+/**
+ * The right-sidebar page type's KIND, as registered with `sidebarRightTabs` and
+ * as looked up by `sidebarRight.openTab`. Not the tab id (`dsh-skill-presets`):
+ * the tab-type registry is keyed by kind, and passing the id throws. It lives
+ * here rather than in `index.ts` because both the registration and the popover's
+ * open path need it, and `index.ts` already imports this module.
+ */
+export const TAB_KIND = 'skills'
+
 export interface SettingsSnapshot {
   status?: Status
   /** Phase 7: flows (Full, Explore, custom). */
@@ -745,9 +754,11 @@ export class StageController extends Store<StageSnapshot> {
   requestFix?: (practiceId: string, skill: string) => void
 
   /**
-   * The shell's layout service, when the plugin got one. Optional because a
-   * shell without it must still render the popover — the button then just
-   * closes it.
+   * The shell's layout service, when the plugin got one. The DEGRADED path for
+   * "Open Skills tab": it reveals the column without selecting a tab, so it is
+   * used only when `sidebarRight` is missing or refuses. Optional because a
+   * shell without it must still render the popover — with neither service the
+   * button then just closes it.
    */
   private layout: { openRightbar(track: boolean, fullscreen: boolean): void } | undefined
 
@@ -756,16 +767,42 @@ export class StageController extends Store<StageSnapshot> {
   }
 
   /**
-   * Open the right sidebar so the Skills tab is reachable, and close the
-   * popover behind it.
+   * The shell's right-sidebar navigation service, when the plugin got one. The
+   * PRIMARY path for "Open Skills tab": `openTab` selects the page type and
+   * expands the column in one step. Optional — `sidebarRight` and
+   * `sidebarRightTabs` are separate services and a shell may provide either.
+   */
+  private sidebarRight: { openTab(kind: string): void } | undefined
+
+  attachSidebarRight(sidebarRight: { openTab(kind: string): void } | undefined): void {
+    this.sidebarRight = sidebarRight
+  }
+
+  /**
+   * Open THIS plugin's Skills tab in the right sidebar, and close the popover
+   * behind it.
    *
-   * This opens the COLUMN, not our specific tab: focusing one tab needs
-   * `sidebarRight.openTab(kind)` from a different service than `layout`.
-   * Opening the column is enough for this round — from there the tab is one
-   * click away on the Guide page.
+   * `sidebarRight.openTab(TAB_KIND)` selects the page type and reveals the
+   * column in the same step, so `layout.openRightbar` must NOT also run on the
+   * success path — the sidebar owns that intent.
+   *
+   * `openTab` reports failure by throwing, never by returning a status, and all
+   * three of its throw paths are reachable from a click: the service was never
+   * provided, no tab type is registered for the kind (registration needs the
+   * separate `sidebarRightTabs` service), or no session surface is mounted.
+   * Each degrades to `layout.openRightbar(true, false)` — the user must get
+   * something visible, because swallowing the failure would reproduce the bug
+   * this replaced. With neither service the popover simply closes.
+   *
+   * No throw escapes the click handler, and the popover closes on every path.
    */
   openSkillsTab(): void {
-    this.layout?.openRightbar(true, false)
+    try {
+      if (this.sidebarRight !== undefined) this.sidebarRight.openTab(TAB_KIND)
+      else this.layout?.openRightbar(true, false)
+    } catch {
+      try { this.layout?.openRightbar(true, false) } catch { /* the shell is beyond help; the popover still closes */ }
+    }
     this.toggle(false)
   }
 

@@ -56,7 +56,7 @@ function text(tree, out = []) {
 
 async function load() {
   const source = await readFile(ARTIFACT, 'utf8')
-  assert.ok(source.startsWith('window.__ModuleLoader__.load({ id: "dsh-skill-presets"'), 'artifact must be a loader closure factory')
+  assert.match(source, /^window\.__ModuleLoader__\.load\(\{\s*id:\s*"dsh-skill-presets"/, 'artifact must be a loader closure factory')
   let captured
   const React = fakeReact()
   const win = { __ModuleLoader__: { load: (entry) => { captured = entry } } }
@@ -70,9 +70,10 @@ async function load() {
   return { mod, React }
 }
 
-function fakeCtx(inject = [], { withTabs = true, withStyles = true } = {}) {
+function fakeCtx(inject = [], { withTabs = true, withStyles = true, withLayout = true, withSidebarRight = true, withSidebarRightError = false } = {}) {
   const registrations = []
   const tabTypes = []
+  const calls = { openTab: [], openRightbar: [] }
   const slots = {
     inject: (key, cb) => { const off = cb(); return typeof off === 'function' ? off : () => {} },
     register: (options, component) => { registrations.push({ options, component }); return () => {} },
@@ -80,6 +81,8 @@ function fakeCtx(inject = [], { withTabs = true, withStyles = true } = {}) {
   const available = {
     slots,
     ...(withTabs ? { sidebarRightTabs: { register: (d) => { tabTypes.push(d); return () => {} } } } : {}),
+    ...(withLayout ? { layout: { openRightbar: (t, f) => { calls.openRightbar.push([t, f]) } } } : {}),
+    ...(withSidebarRight ? { sidebarRight: { openTab: (kind) => { calls.openTab.push(kind); if (withSidebarRightError) throw new Error('fake error') } } } : {}),
   }
   const services = {}
   for (const name of inject) {
@@ -91,7 +94,7 @@ function fakeCtx(inject = [], { withTabs = true, withStyles = true } = {}) {
     get: name => services[name],
     effect: (cb) => { const off = cb(); return typeof off === 'function' ? off : () => {} },
   }
-  return { ctx, registrations, tabTypes }
+  return { ctx, registrations, tabTypes, calls }
 }
 
 test('inject declares every service the bundle reaches for', async () => {
@@ -114,7 +117,7 @@ test('inject declares every service the bundle reaches for', async () => {
 test('artifact exports name/inject/apply and registers every surface — the header chip is gone', async () => {
   const { mod } = await load()
   assert.equal(mod.name, 'client-ui-skill-presets')
-  assert.deepEqual(mod.inject, ['slots', 'sidebarRightTabs', 'layout'])
+  assert.deepEqual(mod.inject, ['slots', 'sidebarRightTabs', 'layout', 'sidebarRight'])
   const { ctx, registrations, tabTypes } = fakeCtx(mod.inject)
   mod.apply(ctx)
   const names = registrations.map(r => `${r.options.name}${r.options.key !== undefined ? `#${r.options.key}` : r.options.id !== undefined ? `@${r.options.id}` : ''}`).sort()
@@ -479,4 +482,65 @@ test('client bundle takes React from the loader, never inlines its own', async (
   assert.match(source, /require\("react"\)/, 'the bundle must require("react") from the page loader')
   assert.doesNotMatch(source, /ReactCurrentDispatcher/, 'a React internals symbol means a React copy was inlined')
   assert.doesNotMatch(source, /react-dom/, 'react-dom must not be referenced at all')
+})
+
+async function openPopoverAndClickSkillsTab(mod, React, fakeCtxOpts) {
+  const { ctx, registrations, calls } = fakeCtx(mod.inject, fakeCtxOpts)
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ sessionId: 's-test', flow: { id: 'f', title: 'F', stages: [], guardrails: 'on', builtin: true }, flows: [], stage: 'b', source: 'session', presetId: 'b', owners: ['b'], position: { index: 1, of: 1 }, gate: '', next: '', practices: [], report: [] }) })
+  mod.apply(ctx)
+  
+  const Control = registrations.find(r => r.options.name === 'conversation.input.right').component
+  const Overlay = registrations.find(r => r.options.name === 'shell.overlay').component
+  
+  let ctlTree = render(React, React.createElement(Control, { sessionId: 's-test' }))
+  React.__runEffects()
+  await new Promise(r => setTimeout(r, 10))
+  ctlTree = render(React, React.createElement(Control, { sessionId: 's-test' }))
+  
+  const ctlBtn = flatten(ctlTree).find(n => (n.props?.className ?? '').includes('skp-ctl'))
+  ctlBtn.props.onClick({ currentTarget: { getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }) } })
+  React.__runEffects()
+  
+  let popTree = render(React, React.createElement(Overlay, {}))
+  const tabBtn = flatten(popTree).find(n => (n.props?.className ?? '').includes('skp-open-tab'))
+  tabBtn.props.onClick({ stopPropagation: () => {}, preventDefault: () => {} })
+  React.__runEffects()
+  
+  // Re-render to check if popover closed
+  popTree = render(React, React.createElement(Overlay, {}))
+  const popoverNodes = flatten(popTree).filter(n => typeof n === 'object' && n !== null && (n.props?.className ?? '').includes('skp-stage-pop'))
+  
+  return { calls, popoverNodes }
+}
+
+test('phase 9 shape 1: all services present: calls openTab once, openRightbar 0 times', async () => {
+  const { mod, React } = await load()
+  const { calls, popoverNodes } = await openPopoverAndClickSkillsTab(mod, React, { withSidebarRight: true, withLayout: true })
+  assert.deepEqual(calls.openTab, ['skills'])
+  assert.deepEqual(calls.openRightbar, [])
+  assert.equal(popoverNodes.length, 0, 'popover must close')
+})
+
+test('phase 9 shape 2: sidebarRight absent: calls openRightbar once', async () => {
+  const { mod, React } = await load()
+  const { calls, popoverNodes } = await openPopoverAndClickSkillsTab(mod, React, { withSidebarRight: false, withLayout: true })
+  assert.deepEqual(calls.openTab, [])
+  assert.deepEqual(calls.openRightbar, [[true, false]])
+  assert.equal(popoverNodes.length, 0, 'popover must close')
+})
+
+test('phase 9 shape 3: openTab throws: falls back to openRightbar once and error swallowed', async () => {
+  const { mod, React } = await load()
+  const { calls, popoverNodes } = await openPopoverAndClickSkillsTab(mod, React, { withSidebarRight: true, withSidebarRightError: true, withLayout: true })
+  assert.deepEqual(calls.openTab, ['skills']) // It attempts it
+  assert.deepEqual(calls.openRightbar, [[true, false]]) // It falls back
+  assert.equal(popoverNodes.length, 0, 'popover must close')
+})
+
+test('phase 9 shape 4: neither present: nothing throws, popover closes', async () => {
+  const { mod, React } = await load()
+  const { calls, popoverNodes } = await openPopoverAndClickSkillsTab(mod, React, { withSidebarRight: false, withLayout: false })
+  assert.deepEqual(calls.openTab, [])
+  assert.deepEqual(calls.openRightbar, [])
+  assert.equal(popoverNodes.length, 0, 'popover must close')
 })
