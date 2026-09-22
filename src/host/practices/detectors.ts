@@ -1245,6 +1245,85 @@ export function detectPullRequest(view: SessionView): PracticeResult {
 }
 
 /**
+ * Resolve a tool path to a canonical, always-absolute-looking form for
+ * SEGMENT matching — not for filesystem access.
+ *
+ * `.` and empty segments are dropped and `..` pops, so
+ * `docs/sdlc/../../src/a.ts` cannot wear an artifact prefix it climbed out of.
+ * The result always starts with `/`, which lets a caller match a leading
+ * directory with one pattern whether the tool named a relative or an absolute
+ * path — both spellings occur: observed calls carry absolute paths, while a
+ * hand-written test or a model's own call is routinely relative.
+ */
+function canonicalSegments(raw: string): string {
+  const out: string[] = []
+  for (const segment of raw.replace(/\\/gu, '/').split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') { out.pop(); continue }
+    out.push(segment)
+  }
+  return `/${out.join('/')}`
+}
+
+/**
+ * A PROSE file inside some `docs/sdlc/` directory, at any depth.
+ *
+ * Both halves carry weight. `/docs/sdlc/` is anchored on segment boundaries, so
+ * `mydocs/sdlc/x.ts` is not an artifact path. The markdown extension is what
+ * keeps `src/docs/sdlc/thing.ts` a violation: a stage artifact is a document,
+ * and a source file does not stop being a teammate's work by sitting under a
+ * directory with the right name.
+ */
+const STAGE_ARTIFACT = /\/docs\/sdlc\/(?:[^/]+\/)*[^/]+\.mdx?$/u
+
+/**
+ * Whether a written path is a stage artifact the CONDUCTOR itself owns.
+ *
+ * WHAT IS EXEMPT: a markdown file under a `docs/sdlc/` directory — `intent.md`,
+ * `spec.md`, `plan.md`, `deferred.md` and the rest of a phase directory. WHY:
+ * the SDLC skills instruct the conductor to write exactly these, no teammate is
+ * ever assigned that directory, and the practice asks "did the conductor do a
+ * TEAMMATE's job?". Producing a required artifact is the conductor's own duty,
+ * the same class as the git duties carved out below, and counting it made
+ * `detectConductor` report red for a correctly conducted phase — every one of
+ * Phase 9's ten reported "self-mutations" was a `docs/sdlc/**` write.
+ *
+ * WHERE THE LINE IS DRAWN, and why not wider:
+ * - NOT `docs/` generally. Reference docs, READMEs and guides are ordinary
+ *   deliverables a teammate can be assigned; only the SDLC paper trail is
+ *   structurally the conductor's.
+ * - NOT non-markdown files under the directory. A `.ts` in a path containing
+ *   `docs/sdlc/` is code — `src/docs/sdlc/thing.ts` is a source write wearing
+ *   an artifact-shaped prefix, and exempting it would hand away sensitivity for
+ *   a directory name anyone can create.
+ * - NOT scratch space (`/tmp`, `$TMPDIR`) even though a PR body drafted there
+ *   is also conductor-owned. "Any path outside the repo" is a much larger
+ *   exemption than the evidence demands, and this predicate suppresses a
+ *   report, so it fails CLOSED by design — the same bar the `READONLY_FILTERS`
+ *   note above sets. A PR body written to a temp file therefore still counts;
+ *   that is a known, deliberate residual, not an oversight.
+ * - NOT reachable from the bash branch at all. This is consulted ONLY for
+ *   write-tool calls, so `sed -i` into `src/**`, a redirect into a source file,
+ *   and a command touching an artifact AND a source path are all judged by the
+ *   unchanged command classifiers. A path exemption that trusted a bash
+ *   command's arguments would be exactly the laundering hole `isVcsPlumbing`
+ *   was hardened against.
+ *
+ * A target that is not a string is NOT exempt: a write whose path cannot be
+ * read is still a write. That covers `undefined` and, because an observed call
+ * can be rebuilt from JSON that was cast to `ObservedCall` without validation,
+ * a `null` or any other non-string a malformed record smuggles past the type.
+ * The guard is on the TYPE rather than on `undefined` alone so the predicate
+ * stays total: a bad record is counted as a self-mutation — failing CLOSED,
+ * like every other carve-out here — instead of throwing out of
+ * `canonicalSegments` and taking the whole scorecard down with the one call.
+ */
+export function isConductorArtifactPath(target: string | undefined): boolean {
+  if (typeof target !== 'string') return false
+  return STAGE_ARTIFACT.test(canonicalSegments(target))
+}
+
+/**
  * Whether a call is the conductor doing a TEAMMATE's job.
  *
  * Not the same question as `isMutatingCall`, in both directions: recording or
@@ -1252,9 +1331,13 @@ export function detectPullRequest(view: SessionView): PracticeResult {
  * own duty and does not count, while rewriting working-tree content through
  * git (`git restore`, `git checkout -- path`) does count even where
  * `isMutatingCommand` does not list that subcommand.
+ *
+ * A write tool is judged by its PATH, not by its name: the conductor's own
+ * stage artifacts are exempt (`isConductorArtifactPath`), every other path —
+ * `src/**`, `test/**`, configuration, anything a teammate owns — still counts.
  */
 export function isConductorSelfMutation(call: ObservedCall): boolean {
-  if (isWriteTool(call.name)) return true
+  if (isWriteTool(call.name)) return !isConductorArtifactPath(call.target)
   if (!isBashTool(call.name)) return false
   if (writesWorkingTreeViaVcs(call.target)) return true
   return isMutatingCommand(call.target) && !isVcsPlumbing(call.target)
@@ -1262,9 +1345,10 @@ export function isConductorSelfMutation(call: ObservedCall): boolean {
 
 export function detectConductor(view: SessionView): PracticeResult {
   if (!view.teamAttached) return result('conductor', 'n/a', ['no team attached'])
-  // Committing, pushing and opening the PR are the conductor's OWN duties in
-  // the team protocol, so they cannot count as doing a teammate's job — even
-  // though `isMutatingCall` rightly reports them as mutations elsewhere.
+  // Committing, pushing, opening the PR and authoring the `docs/sdlc/**` stage
+  // artifacts are the conductor's OWN duties in the team protocol, so they
+  // cannot count as doing a teammate's job — even though `isMutatingCall`
+  // rightly reports them as mutations elsewhere.
   const selfEdits = view.calls.filter(call => isConductorSelfMutation(call))
   const delegations = view.calls.filter(call => call.name === 'team_delegate' && !call.isError)
   const evidence: string[] = []

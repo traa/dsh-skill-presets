@@ -662,3 +662,58 @@ test('a global flag never hides a package manager subcommand', () => {
     assert.ok(!isMutatingCommand(cmd), `should not be mutating: ${cmd}`)
   }
 })
+
+test('conductor artifacts exemption: isConductorSelfMutation', () => {
+  const { isConductorSelfMutation } = detectors
+
+  // MUST STAY GREEN (exempt)
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/sdlc/phase-10/intent.md' }), false, 'write to intent.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: '/Users/andriistepikov/dev/dsh-plugins/dsh-skill-presets-phase-10/docs/sdlc/phase-10/spec.md' }), false, 'write to absolute artifact path')
+  assert.equal(isConductorSelfMutation({ name: 'edit', target: 'docs/sdlc/plan.md' }), false, 'edit to plan.md')
+
+  // MUST STAY RED (violation)
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'src/client/controller.ts' }), true, 'write to src')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'test/client.test.mjs' }), true, 'write to test')
+  assert.equal(isConductorSelfMutation({ name: 'edit', target: 'src/host/practices/detectors.ts' }), true, 'edit to src path')
+  assert.equal(isConductorSelfMutation({ name: 'bash', target: 'sed -i s/a/b/ src/host/practices/detectors.ts' }), true, 'bash mutating src')
+  
+  // ordinary docs outside sdlc must be RED
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/architecture.md' }), true, 'write to docs/architecture.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/README.md' }), true, 'write to docs/README.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/guide/setup.md' }), true, 'write to docs/guide/setup.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/sdlc-notes/x.md' }), true, 'write to docs/sdlc-notes/x.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: '/Users/andriistepikov/dev/dsh-plugins/dsh-skill-presets-phase-10/docs/architecture.md' }), true, 'write to absolute path in docs/')
+  
+  // Bash touching both artifact and source must be RED
+  assert.equal(isConductorSelfMutation({ name: 'bash', target: 'sed -i s/a/b/ docs/sdlc/plan.md && sed -i s/a/b/ src/x.ts' }), true, 'bash touching both')
+  
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'src/docs/sdlc/thing.ts' }), true, 'contains substring inside src')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'mydocs/sdlc/x.ts' }), true, 'contains substring with prefix')
+})
+
+test('conductor artifacts exemption: detectConductor end-to-end', () => {
+  // GREEN scenario: writes only artifacts and delegates
+  const greenResult = detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: 'docs/sdlc/phase-10/intent.md', isError: false },
+    { t: 'm2', turn: 2, name: 'write', target: '/Users/andriistepikov/dev/dsh-plugins/dsh-skill-presets-phase-10/docs/sdlc/phase-10/spec.md', isError: false }
+  ]))
+  assert.equal(greenResult.status, 'green', 'writing artifacts and delegating is green')
+  assert.deepEqual(selfMutation(greenResult), [], 'no self-mutation evidence')
+
+  // RED scenario: writes artifacts but also writes source
+  const redResult = detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: 'docs/sdlc/phase-10/intent.md', isError: false },
+    { t: 'm2', turn: 2, name: 'edit', target: 'src/x.ts', isError: false }
+  ]))
+  assert.equal(redResult.status, 'red', 'writing source makes it red')
+  assert.equal(selfMutation(redResult).length, 1, 'contains self-mutation evidence')
+
+  // existing rules check
+  const early = detectConductor({ ...base, teamAttached: true, userTurns: [1, 2], calls: [{ t: 't', turn: 1, name: 'team_delegate', isError: false }] })
+  assert.equal(early.status, 'red')
+  assert.match(early.evidence[0], /without a prior approval turn/)
+
+  const noDel = detectConductor({ ...base, teamAttached: true, userTurns: [1, 2], ended: true, calls: [{ t: 't', turn: 2, name: 'Read', isError: false }] })
+  assert.equal(noDel.status, 'red')
+  assert.match(noDel.evidence[0], /no delegation happened/)
+})
