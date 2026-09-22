@@ -677,6 +677,13 @@ test('conductor artifacts exemption: isConductorSelfMutation', () => {
   assert.equal(isConductorSelfMutation({ name: 'edit', target: 'src/host/practices/detectors.ts' }), true, 'edit to src path')
   assert.equal(isConductorSelfMutation({ name: 'bash', target: 'sed -i s/a/b/ src/host/practices/detectors.ts' }), true, 'bash mutating src')
   
+  // ordinary docs outside sdlc must be RED
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/architecture.md' }), true, 'write to docs/architecture.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/README.md' }), true, 'write to docs/README.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/guide/setup.md' }), true, 'write to docs/guide/setup.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: 'docs/sdlc-notes/x.md' }), true, 'write to docs/sdlc-notes/x.md')
+  assert.equal(isConductorSelfMutation({ name: 'write', target: '/Users/andriistepikov/dev/dsh-plugins/dsh-skill-presets-phase-10/docs/architecture.md' }), true, 'write to absolute path in docs/')
+  
   // Bash touching both artifact and source must be RED
   assert.equal(isConductorSelfMutation({ name: 'bash', target: 'sed -i s/a/b/ docs/sdlc/plan.md && sed -i s/a/b/ src/x.ts' }), true, 'bash touching both')
   

@@ -1309,11 +1309,17 @@ const STAGE_ARTIFACT = /\/docs\/sdlc\/(?:[^/]+\/)*[^/]+\.mdx?$/u
  *   command's arguments would be exactly the laundering hole `isVcsPlumbing`
  *   was hardened against.
  *
- * An undefined target is NOT exempt: a write whose path cannot be read is
- * still a write.
+ * A target that is not a string is NOT exempt: a write whose path cannot be
+ * read is still a write. That covers `undefined` and, because an observed call
+ * can be rebuilt from JSON that was cast to `ObservedCall` without validation,
+ * a `null` or any other non-string a malformed record smuggles past the type.
+ * The guard is on the TYPE rather than on `undefined` alone so the predicate
+ * stays total: a bad record is counted as a self-mutation — failing CLOSED,
+ * like every other carve-out here — instead of throwing out of
+ * `canonicalSegments` and taking the whole scorecard down with the one call.
  */
 export function isConductorArtifactPath(target: string | undefined): boolean {
-  if (target === undefined) return false
+  if (typeof target !== 'string') return false
   return STAGE_ARTIFACT.test(canonicalSegments(target))
 }
 
