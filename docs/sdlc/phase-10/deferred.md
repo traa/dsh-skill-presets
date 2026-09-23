@@ -1,5 +1,8 @@
 # Deferred — Phase 10
 
+> **Status:** D1 and D2 were both closed in Phase 11 (PR #29). A related, older
+> gap found during that review is recorded in `docs/sdlc/phase-11/deferred.md`.
+
 ## D1 — A PR body drafted to `/tmp` still counts as a self-mutation
 
 **What.** `isConductorArtifactPath` exempts only markdown files under a
