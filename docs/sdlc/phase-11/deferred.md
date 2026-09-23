@@ -22,6 +22,12 @@ segment that contains `$(`, a backtick, `<(` or `>(` is no longer skipped as a
 harmless prefix. That fix covers `cd`, `set`, `sleep`, `true` and `:` segments
 (the harmless prefixes), but not the arguments of the git command itself.
 
+Review round 2 found a related, older gap, also fixed in this PR:
+`shellSegments` did not split on an unquoted newline or a background `&`. So
+`cd /x` + newline + `rm src/x.ts && git commit` put the `rm` inside the skipped
+`cd` segment. It now splits on both. Newlines inside quotes are still part of
+the same segment, so multi-line commit messages are unaffected.
+
 **Why not fixed here.** The simple fix is to count any git command that
 contains a substitution as a mutation. That would also flag the common, safe
 `git commit -m "$(cat msg.txt)"` and similar. Getting this right means parsing
