@@ -692,13 +692,31 @@ export function isMutatingCall(call: ObservedCall): boolean {
 }
 
 /**
- * Split a shell command into its top-level segments on `&&`, `||`, `;` and `|`.
+ * Split a shell command into its top-level segments.
  *
- * Quote-aware, because a commit message legitimately contains those characters
- * (`git commit -m "fix: a || b"` is ONE segment), and heredoc-aware: everything
- * from a `<<`/`<<-` operator onward is body text, not commands, so
- * `git commit -F - <<'EOF' …` must not be chopped up by whatever the message
- * happens to contain.
+ * SEPARATORS, all of them recognised only OUTSIDE quotes:
+ * - `&&`, `||`, `;`, `|` and `|&` (pipe carrying stderr);
+ * - a NEWLINE — `\n`, and `\r\n` via the `\r`. A multi-line bash call is a
+ *   script, and every line of it is a command;
+ * - a SINGLE `&`, the background operator (`sleep 1 & rm x`). Not a separator
+ *   when it belongs to another operator: `&&` is consumed above, a `&`
+ *   directly after `>` or `<` is a descriptor target (`2>&1`, `>&2`, `1>&-`),
+ *   and a `&` directly before `>` opens a redirect (`&>file`, `&>>file`).
+ *   Whitespace before the `&` is skipped when looking for that preceding
+ *   operator, so `2> &1` is read as a descriptor too.
+ *
+ * WHY NEWLINE AND `&` MATTER: every segment is judged on its own leading
+ * token, so a missed separator HIDES the command after it inside a harmless
+ * one — `sleep 1\nrm src/x.ts && git commit` was read as one `sleep` segment
+ * and reported clean. A missed separator fails OPEN, which is the one
+ * direction these detectors may not fail.
+ *
+ * Quote-aware, because a commit message legitimately contains every one of
+ * those characters, newline included (`git commit -m "fix: a || b"` and a
+ * multi-line `-m "line one\n\nline two"` are each ONE segment), and
+ * heredoc-aware: everything from a `<<`/`<<-` operator onward is body text,
+ * not commands, so `git commit -F - <<'EOF' …` must not be chopped up by
+ * whatever the message happens to contain.
  */
 export function shellSegments(command: string): string[] {
   const head = command.split(/<<-?\s*['"]?\w/u)[0]
@@ -714,12 +732,26 @@ export function shellSegments(command: string): string[] {
     }
     if (ch === '"' || ch === '\'') { quote = ch; current += ch; continue }
     const two = head.slice(i, i + 2)
-    if (two === '&&' || two === '||') { out.push(current); current = ''; i += 1; continue }
-    if (ch === ';' || ch === '|') { out.push(current); current = ''; continue }
+    if (two === '&&' || two === '||' || two === '|&') { out.push(current); current = ''; i += 1; continue }
+    if (ch === ';' || ch === '|' || ch === '\n' || ch === '\r') { out.push(current); current = ''; continue }
+    if (ch === '&' && isBackgroundAmpersand(head, i)) { out.push(current); current = ''; continue }
     current += ch
   }
   out.push(current)
   return out.map(s => s.trim()).filter(s => s.length > 0)
+}
+
+/**
+ * Whether the `&` at `index` separates commands rather than spelling part of a
+ * redirection. See `shellSegments` for the enumerated forms; `&&` never
+ * reaches here because the two-character check consumes it first.
+ */
+function isBackgroundAmpersand(head: string, index: number): boolean {
+  if (head[index + 1] === '>') return false
+  let back = index - 1
+  while (back >= 0 && (head[back] === ' ' || head[back] === '\t')) back -= 1
+  const prev = back >= 0 ? head[back] : undefined
+  return prev !== '>' && prev !== '<'
 }
 
 /** Commands whose `-C <dir>` really means "run in this directory". */
@@ -1401,16 +1433,20 @@ export function isConductorArtifactPath(target: string | undefined): boolean {
  *
  * `/private/tmp` is macOS's real location for `/tmp`, and `/var/folders` is
  * where its per-user `$TMPDIR` lives; both spellings turn up verbatim in
- * observed calls depending on whether anything resolved the symlink. `$TMPDIR`
- * is read on every call rather than captured at module load so a test can set
- * it, and it is canonicalised before use because the environment routinely
- * carries a trailing slash (`/var/folders/x/T/`).
+ * observed calls depending on whether anything resolved the symlink.
+ *
+ * `$TMPDIR` IS DELIBERATELY NOT HONOURED. It is process environment, so
+ * anything that sets it — a wrapper, a test harness, a `.envrc` — could aim a
+ * temp root at the REPO and turn this exemption into a blanket pardon for
+ * source files: with `TMPDIR=/repo`, writing `/repo/src/index.ts` and passing
+ * it to `gh pr create -F` was reported green. The fixed list cannot be moved
+ * from outside. Almost nothing is lost: macOS's own `$TMPDIR` already lives
+ * under `/var/folders`, and on Linux it is normally unset and falls back to
+ * `/tmp`. A custom `$TMPDIR` somewhere else merely loses the exemption and the
+ * write is reported — failing CLOSED, like every other carve-out here.
  */
 function tempRoots(): string[] {
-  const roots = ['/tmp', '/private/tmp', '/var/folders']
-  const fromEnv = process.env.TMPDIR
-  if (fromEnv !== undefined && fromEnv.length > 0) roots.push(canonicalSegments(fromEnv))
-  return roots
+  return ['/tmp', '/private/tmp', '/var/folders']
 }
 
 /**
@@ -1473,8 +1509,8 @@ export function prBodyFilePaths(calls: readonly ObservedCall[]): Set<string> {
       if (action !== 'create' && action !== 'edit') continue
       for (let i = 0; i < rest.length; i += 1) {
         const token = rest[i]
-        const inline = token.match(/^(--body-file)=(.+)$/u)
-        const value = inline !== null ? inline[2] : (PR_BODY_FILE_FLAGS.has(token) ? rest[i + 1] : undefined)
+        const inline = token.match(/^(?:--body-file|-F)=(.+)$/u)
+        const value = inline !== null ? inline[1] : (PR_BODY_FILE_FLAGS.has(token) ? rest[i + 1] : undefined)
         if (value === undefined || value.startsWith('-')) continue
         if (inline === null) i += 1
         if (isAbsolute(value)) paths.add(canonicalSegments(value))

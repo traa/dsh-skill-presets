@@ -117,7 +117,11 @@ export function validateFixture(raw: unknown, name: string): Fixture {
     if (typeof call.isError !== 'boolean') fail(`calls[${i}].isError must be a boolean, got ${typeName(call.isError)}`)
     if (call.resultHead !== undefined && typeof call.resultHead !== 'string') fail(`calls[${i}].resultHead must be a string or absent, got ${typeName(call.resultHead)}`)
   }
-  return fixture as unknown as Fixture
+  // `name` is part of `Fixture` but never part of the FILE: it is the fixture
+  // directory, known only to the caller. Returning the parsed object alone
+  // left that required field missing behind the cast, so it is attached here —
+  // the one place that has both halves.
+  return { ...fixture, name } as unknown as Fixture
 }
 
 /** Run one fixture through the tracker and folds. Pure apart from the tracker's async plumbing. */

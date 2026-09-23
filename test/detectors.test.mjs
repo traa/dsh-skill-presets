@@ -792,3 +792,40 @@ test('a command substitution inside a harmless leading segment still counts as a
   assert.equal(sm('sleep 1 && git commit -m x'), false, 'plain sleep before commit')
   assert.equal(sm('cd /x && sleep 1 && git add a && git log'), false, 'cd, sleep, add, log')
 })
+
+test('a newline or a background & separates shell segments', () => {
+  const { isConductorSelfMutation, shellSegments } = detectors
+  const sm = (target) => isConductorSelfMutation({ name: 'bash', target })
+  assert.equal(sm('sleep 1\nrm src/x.ts && git commit -m x'), true)
+  assert.equal(sm('cd /x\nrm src/x.ts && git commit -m x'), true)
+  assert.equal(sm('sleep 1 & rm src/x.ts && git commit -m x'), true)
+  
+  assert.equal(sm('git commit -q -m "line one\n\nline two; with a semicolon && more"'), false)
+  assert.equal(sm('git log --oneline 2>&1 | tail -1'), false)
+  assert.equal(sm('sleep 1 && git commit -m x'), false)
+  
+  assert.deepEqual(shellSegments('sleep 1\nrm src/x.ts'), ['sleep 1', 'rm src/x.ts'])
+  assert.deepEqual(shellSegments('git commit -q -m "line one\n\nline two; with a semicolon && more"'), ['git commit -q -m "line one\n\nline two; with a semicolon && more"'])
+})
+
+test('a custom TMPDIR does not widen the PR-body exemption', () => {
+  const original = process.env.TMPDIR
+  process.env.TMPDIR = '/repo'
+  try {
+    const r = detectConductor(conducted([
+      { t: 'm1', turn: 2, name: 'write', target: '/repo/src/index.ts', isError: false },
+      bash('gh pr create --title T -F /repo/src/index.ts', undefined, 2)
+    ]))
+    assert.equal(r.status, 'red')
+  } finally {
+    process.env.TMPDIR = original
+  }
+})
+
+test('the attached -F= form names a PR body file', () => {
+  const r = detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr create -F=/tmp/pr-body.md', undefined, 2)
+  ]))
+  assert.equal(r.status, 'green')
+})

@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runEvals, replay, fakeGit } from '../lib/host/evals.js'
+import { runEvals, replay, fakeGit, validateFixture } from '../lib/host/evals.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -72,4 +72,12 @@ test('evals fixture validation: invalid fixtures throw on parse', async () => {
   await assert.rejects(runWithMutated('bad-target', (f) => { f.calls[0].target = null }), /bad-target.*target/i)
   await assert.rejects(runWithMutated('bad-turn', (f) => { f.calls[0].turn = '1' }), /bad-turn.*turn/i)
   await assert.rejects(runWithMutated('bad-calls', (f) => { f.calls = {} }), /bad-calls.*calls/i)
+})
+
+test('validateFixture returns an object with the fixture name set', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const raw = JSON.parse(await readFile(join(ROOT, 'evals/fixtures/conductor-self-edits/fixture.json'), 'utf8'))
+  delete raw.name
+  const result = validateFixture(raw, 'my-name')
+  assert.equal(result.name, 'my-name')
 })
