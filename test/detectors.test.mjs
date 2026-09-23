@@ -717,3 +717,115 @@ test('conductor artifacts exemption: detectConductor end-to-end', () => {
   assert.equal(noDel.status, 'red')
   assert.match(noDel.evidence[0], /no delegation happened/)
 })
+
+test('conductor artifacts exemption: PR body temp files are exempt if matching gh pr command is present', () => {
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr create --title T --body-file /tmp/pr-body.md', undefined, 2)
+  ])).status, 'green')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr create --title T --body-file=/tmp/pr-body.md', undefined, 2)
+  ])).status, 'green')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr create --title T -F /tmp/pr-body.md', undefined, 2)
+  ])).status, 'green')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr edit 28 --body-file /tmp/pr-body.md', undefined, 2)
+  ])).status, 'green')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/var/folders/xx/T/body.md', isError: false },
+    bash('gh pr create -F /var/folders/xx/T/body.md', undefined, 2)
+  ])).status, 'green')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false }
+  ])).status, 'red')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr create --body-file /tmp/OTHER.md', undefined, 2)
+  ])).status, 'red')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: 'src/x.ts', isError: false },
+    bash('gh pr create --body-file src/x.ts', undefined, 2)
+  ])).status, 'red')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/../Users/me/repo/src/a.ts', isError: false },
+    bash('gh pr create --body-file /tmp/../Users/me/repo/src/a.ts', undefined, 2)
+  ])).status, 'red')
+
+  assert.equal(detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('echo "gh pr create --body-file /tmp/pr-body.md"', undefined, 2)
+  ])).status, 'red')
+})
+
+test('a harmless leading segment does not turn a commit into a self-mutation', () => {
+  const { isConductorSelfMutation } = detectors
+  const sm = (target) => isConductorSelfMutation({ name: 'bash', target })
+  // must be FALSE: these are commits, the conductor's own job
+  assert.equal(sm('git commit -q -m docs'), false, 'plain commit')
+  assert.equal(sm('sleep 1 && git commit -q -m docs'), false, 'sleep before commit')
+  assert.equal(sm('sleep 1 && git add a'), false, 'sleep before add')
+  assert.equal(sm('cd /x && sleep 1 && git add a && git log'), false, 'cd, sleep, add, log')
+  // must stay TRUE: these really write files
+  assert.equal(sm('sleep 1 > out.txt && git commit -m x'), true, 'redirect writes a file')
+  assert.equal(sm('sleep 1 && sed -i s/a/b/ src/x.ts'), true, 'real source edit')
+})
+
+test('a command substitution inside a harmless leading segment still counts as a mutation', () => {
+  const { isConductorSelfMutation } = detectors
+  const sm = (target) => isConductorSelfMutation({ name: 'bash', target })
+  // must be TRUE: the substitution runs a real command
+  assert.equal(sm('sleep $(rm src/x.ts) && git commit -m x'), true, 'dollar-paren substitution in sleep')
+  assert.equal(sm('sleep `rm src/x.ts` && git commit -m x'), true, 'backtick substitution in sleep')
+  // must stay FALSE: the harmless-prefix fix still holds
+  assert.equal(sm('sleep 1 && git commit -m x'), false, 'plain sleep before commit')
+  assert.equal(sm('cd /x && sleep 1 && git add a && git log'), false, 'cd, sleep, add, log')
+})
+
+test('a newline or a background & separates shell segments', () => {
+  const { isConductorSelfMutation, shellSegments } = detectors
+  const sm = (target) => isConductorSelfMutation({ name: 'bash', target })
+  assert.equal(sm('sleep 1\nrm src/x.ts && git commit -m x'), true)
+  assert.equal(sm('cd /x\nrm src/x.ts && git commit -m x'), true)
+  assert.equal(sm('sleep 1 & rm src/x.ts && git commit -m x'), true)
+  
+  assert.equal(sm('git commit -q -m "line one\n\nline two; with a semicolon && more"'), false)
+  assert.equal(sm('git log --oneline 2>&1 | tail -1'), false)
+  assert.equal(sm('sleep 1 && git commit -m x'), false)
+  
+  assert.deepEqual(shellSegments('sleep 1\nrm src/x.ts'), ['sleep 1', 'rm src/x.ts'])
+  assert.deepEqual(shellSegments('git commit -q -m "line one\n\nline two; with a semicolon && more"'), ['git commit -q -m "line one\n\nline two; with a semicolon && more"'])
+})
+
+test('a custom TMPDIR does not widen the PR-body exemption', () => {
+  const original = process.env.TMPDIR
+  process.env.TMPDIR = '/repo'
+  try {
+    const r = detectConductor(conducted([
+      { t: 'm1', turn: 2, name: 'write', target: '/repo/src/index.ts', isError: false },
+      bash('gh pr create --title T -F /repo/src/index.ts', undefined, 2)
+    ]))
+    assert.equal(r.status, 'red')
+  } finally {
+    process.env.TMPDIR = original
+  }
+})
+
+test('the attached -F= form names a PR body file', () => {
+  const r = detectConductor(conducted([
+    { t: 'm1', turn: 2, name: 'write', target: '/tmp/pr-body.md', isError: false },
+    bash('gh pr create -F=/tmp/pr-body.md', undefined, 2)
+  ]))
+  assert.equal(r.status, 'green')
+})
