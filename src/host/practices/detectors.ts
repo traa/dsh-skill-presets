@@ -1023,8 +1023,41 @@ function writesWorkingTree(sub: string, rest: readonly string[]): boolean {
  * out. Redirection is still checked FIRST by the caller, so `sleep 1 > out.txt`
  * disqualifies the chain exactly as before — the skip is about the COMMAND, and
  * a redirect is the shell writing, not the command.
+ *
+ * THE SKIP APPLIES ONLY TO A SEGMENT WITH NO SUBSTITUTION (`hasSubstitution`).
+ * The membership rule above reasons about what the NAMED command can do with
+ * its arguments, and that reasoning is void the moment the shell runs something
+ * else to PRODUCE those arguments: `sleep $(rm src/x.ts) && git commit -m x`
+ * deleted a file before `sleep` was ever reached, yet the first word is still
+ * the harmless `sleep`. The substituted command is arbitrary, so no list of
+ * prefixes can bound it — the only safe move is to stop trusting the prefix.
+ * The check covers every member uniformly rather than just `sleep`, so there is
+ * one rule to remember; `cd $(pwd) && git commit -m x` is consequently NOT
+ * plumbing, which over-reports a harmless chain and is the correct direction
+ * for an exemption that hides a mutation report.
  */
 const NON_WRITING_PREFIXES = new Set(['cd', 'set', 'sleep', 'true', ':'])
+
+/**
+ * Whether a segment contains a command or process substitution, i.e. whether
+ * the shell runs a SECOND, arbitrary command while evaluating this one.
+ *
+ * Used to disqualify a segment from the `NON_WRITING_PREFIXES` skip, where the
+ * whole argument is that the named command cannot write or spawn. `$(…)` and
+ * backticks substitute a command's output; `<(…)`/`>(…)` hand a process's pipe
+ * over as a filename. Any of them can run `rm`.
+ *
+ * Deliberately textual and unanchored: quoted spans are NOT blanked first, so
+ * `sleep '$(x)'`, which is inert, is treated as a substitution too. That
+ * direction is the safe one — this predicate only ever REVOKES an exemption,
+ * and the cost of a false positive is reporting a chain the conductor really
+ * did run. It is not a general "does this command substitute" test and must not
+ * be reused as one; in particular it is NOT applied to a git segment's own
+ * arguments, where quoting is judged by `vcsParts` and friends.
+ */
+function hasSubstitution(segment: string): boolean {
+  return segment.includes('$(') || segment.includes('`') || segment.includes('<(') || segment.includes('>(')
+}
 
 /**
  * Whether a shell command is pure version-control / publishing plumbing.
@@ -1072,8 +1105,11 @@ export function isVcsPlumbing(target: string | undefined): boolean {
     // `isMutatingCommand`, so `git log 2>/dev/null` stays plumbing while
     // `git log > out.txt` does not.
     if (redirectsToFile(segment)) return false
+    // The prefix skip trusts the FIRST WORD, so it is only sound when nothing
+    // else in the segment can run: `sleep $(rm src/x.ts)` has a harmless lead
+    // and still deletes a file. See `hasSubstitution` on `NON_WRITING_PREFIXES`.
     const lead = tokens(segment)[0]?.split('/').pop()
-    if (lead !== undefined && NON_WRITING_PREFIXES.has(lead)) continue
+    if (lead !== undefined && NON_WRITING_PREFIXES.has(lead) && !hasSubstitution(segment)) continue
     // Checked BEFORE `vcsParts` so a filter segment is skipped rather than
     // rejected, and AFTER `redirectsToFile` so `git log | tail > out.txt`
     // still fails: the pager wrote nothing, but the redirection did.

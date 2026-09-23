@@ -781,3 +781,14 @@ test('a harmless leading segment does not turn a commit into a self-mutation', (
   assert.equal(sm('sleep 1 > out.txt && git commit -m x'), true, 'redirect writes a file')
   assert.equal(sm('sleep 1 && sed -i s/a/b/ src/x.ts'), true, 'real source edit')
 })
+
+test('a command substitution inside a harmless leading segment still counts as a mutation', () => {
+  const { isConductorSelfMutation } = detectors
+  const sm = (target) => isConductorSelfMutation({ name: 'bash', target })
+  // must be TRUE: the substitution runs a real command
+  assert.equal(sm('sleep $(rm src/x.ts) && git commit -m x'), true, 'dollar-paren substitution in sleep')
+  assert.equal(sm('sleep `rm src/x.ts` && git commit -m x'), true, 'backtick substitution in sleep')
+  // must stay FALSE: the harmless-prefix fix still holds
+  assert.equal(sm('sleep 1 && git commit -m x'), false, 'plain sleep before commit')
+  assert.equal(sm('cd /x && sleep 1 && git add a && git log'), false, 'cd, sleep, add, log')
+})
