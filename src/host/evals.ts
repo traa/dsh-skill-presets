@@ -54,6 +54,72 @@ export interface EvalResult {
   readonly diffs: string[]
 }
 
+/** What a value IS, for an error message that can be acted on. */
+function typeName(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  return typeof value
+}
+
+/**
+ * Check a parsed fixture against the shape `replay` relies on, and THROW on
+ * anything that fails.
+ *
+ * WHY THIS EXISTS. `JSON.parse(...) as Fixture` is a cast, and a cast checks
+ * nothing: a fixture carrying `"target": null` satisfied the compiler and then
+ * reached predicates whose guard was `=== undefined`, where it threw
+ * `TypeError: Cannot read properties of null` and took down the WHOLE practice
+ * scorecard rather than the one call. Validating at the one place a fixture
+ * enters the program keeps the declared `ObservedCall` type true for
+ * everything downstream, instead of hardening each predicate separately.
+ *
+ * WHY IT THROWS RATHER THAN REPAIRING. A fixture is a TEST INPUT. Dropping a
+ * malformed call, or coercing `null` to undefined, would let the eval pass —
+ * while replaying something other than what the file says, which is the one
+ * outcome worse than a failure. A bad fixture is a bug in the fixture and has
+ * to be visible as one, named by directory and by field.
+ *
+ * SCOPE: the fields `replay` actually consumes — the whole of `calls`, plus the
+ * top-level `calls`/`userTurns`/`teamAttached`/`cwd`. `practices`, `facts` and
+ * `events` are deliberately not walked here: they are structured records served
+ * back through their own readers, and a partial check of them would imply a
+ * completeness this function does not have.
+ *
+ * @param raw - whatever `JSON.parse` produced.
+ * @param name - the fixture DIRECTORY, so the error names the file to fix.
+ * @returns the same value, typed, once every check has passed.
+ */
+export function validateFixture(raw: unknown, name: string): Fixture {
+  const fail = (detail: string): never => {
+    throw new Error(`fixture "${name}": ${detail}`)
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return fail(`must be an object, got ${typeName(raw)}`)
+  }
+  const fixture = raw as Record<string, unknown>
+  if (!Array.isArray(fixture.calls)) fail(`calls must be an array, got ${typeName(fixture.calls)}`)
+  if (!Array.isArray(fixture.userTurns)) fail(`userTurns must be an array, got ${typeName(fixture.userTurns)}`)
+  if (typeof fixture.teamAttached !== 'boolean') fail(`teamAttached must be a boolean, got ${typeName(fixture.teamAttached)}`)
+  if (typeof fixture.cwd !== 'string') fail(`cwd must be a string, got ${typeName(fixture.cwd)}`)
+  const calls = fixture.calls as unknown[]
+  for (const [i, entry] of calls.entries()) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      fail(`calls[${i}] must be an object, got ${typeName(entry)}`)
+    }
+    const call = entry as Record<string, unknown>
+    if (typeof call.t !== 'string') fail(`calls[${i}].t must be a string, got ${typeName(call.t)}`)
+    if (typeof call.turn !== 'number' || !Number.isFinite(call.turn)) fail(`calls[${i}].turn must be a number, got ${typeName(call.turn)}`)
+    if (typeof call.name !== 'string') fail(`calls[${i}].name must be a string, got ${typeName(call.name)}`)
+    // `absent` means the key is missing or explicitly undefined — NOT null:
+    // `"target": null` is precisely the record this validation exists to
+    // reject, and it is the shape an older schema or a hand-edit produces.
+    if (call.target !== undefined && typeof call.target !== 'string') fail(`calls[${i}].target must be a string or absent, got ${typeName(call.target)}`)
+    if (typeof call.isError !== 'boolean') fail(`calls[${i}].isError must be a boolean, got ${typeName(call.isError)}`)
+    if (call.resultHead !== undefined && typeof call.resultHead !== 'string') fail(`calls[${i}].resultHead must be a string or absent, got ${typeName(call.resultHead)}`)
+  }
+  return fixture as unknown as Fixture
+}
+
 /** Run one fixture through the tracker and folds. Pure apart from the tracker's async plumbing. */
 export async function replay(fixture: Fixture): Promise<Expected> {
   const tracker = new PracticeTracker({
@@ -141,7 +207,9 @@ export async function runEvals(root: string, options: { update?: boolean, only?:
   for (const name of names) {
     if (options.only !== undefined && name !== options.only) continue
     const dir = join(root, name)
-    const fixture = JSON.parse(await readFile(join(dir, 'fixture.json'), 'utf8')) as Fixture
+    // Validated, not cast: see `validateFixture` for why a bad fixture must
+    // stop the run rather than be repaired into a passing one.
+    const fixture = validateFixture(JSON.parse(await readFile(join(dir, 'fixture.json'), 'utf8')), name)
     const actual = await replay({ ...fixture, name })
     let expected: Expected | undefined
     try {

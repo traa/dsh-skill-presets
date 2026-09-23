@@ -990,6 +990,43 @@ function writesWorkingTree(sub: string, rest: readonly string[]): boolean {
 }
 
 /**
+ * Segments that carry NO write of their own, so having one in a chain cannot
+ * change what that chain did to the tree.
+ *
+ * `cd`/`set` were the original two: an agent reaches a linked worktree before
+ * committing in it. The rest were added after a live scorecard reported
+ * `sleep 1 && git commit -q -m docs` as "conductor mutated files itself" while
+ * the identical unpaused `git commit -q -m docs` was fine. The cause is
+ * structural, not about sleeping: any segment `vcsParts` cannot parse makes
+ * `isVcsPlumbing` return false for the WHOLE chain, and
+ * `isConductorSelfMutation` then reads the still-mutating `git commit` as a
+ * teammate's job. A verdict that flips on a leading `sleep` is reporting the
+ * pause, not the mutation — the same false-positive class as the `| tail` case
+ * recorded on `isReadOnlyFilter`.
+ *
+ * MEMBERSHIP RULE, and it is deliberately stricter than "usually harmless":
+ * the command must be incapable of creating or modifying a file, and incapable
+ * of running another program, FROM ITS ARGUMENTS ALONE. `sleep`, `true` and
+ * `:` take no path, open nothing and spawn nothing; there is no flag and no
+ * operand that makes any of them write.
+ *
+ * DELIBERATELY ABSENT, each considered:
+ * - `echo` and `printf`: they write nothing by themselves, but their entire
+ *   normal use for writing IS a redirect, and a shell builtin `printf -v` /
+ *   a `printf` into a process substitution is close enough to the line that
+ *   admitting them buys nothing — a chain that only echoes is not plumbing
+ *   anyway, since `sawVcs` still demands a real VCS invocation.
+ * - `false`, `test`, `[`: harmless too, but they gate what RUNS next, and an
+ *   exemption list is not the place to start reasoning about control flow.
+ * - anything that takes a path (`touch`, `tee`, `ln`) — those write.
+ * This list suppresses a report, so it fails CLOSED: when in doubt, leave it
+ * out. Redirection is still checked FIRST by the caller, so `sleep 1 > out.txt`
+ * disqualifies the chain exactly as before — the skip is about the COMMAND, and
+ * a redirect is the shell writing, not the command.
+ */
+const NON_WRITING_PREFIXES = new Set(['cd', 'set', 'sleep', 'true', ':'])
+
+/**
  * Whether a shell command is pure version-control / publishing plumbing.
  *
  * Committing, pushing and opening a PR are EXPLICITLY the conductor's job in
@@ -1036,7 +1073,7 @@ export function isVcsPlumbing(target: string | undefined): boolean {
     // `git log > out.txt` does not.
     if (redirectsToFile(segment)) return false
     const lead = tokens(segment)[0]?.split('/').pop()
-    if (lead === 'cd' || lead === 'set') continue
+    if (lead !== undefined && NON_WRITING_PREFIXES.has(lead)) continue
     // Checked BEFORE `vcsParts` so a filter segment is skipped rather than
     // rejected, and AFTER `redirectsToFile` so `git log | tail > out.txt`
     // still fails: the pager wrote nothing, but the redirection did.
@@ -1324,6 +1361,108 @@ export function isConductorArtifactPath(target: string | undefined): boolean {
 }
 
 /**
+ * The system scratch directories, canonical and without a trailing slash.
+ *
+ * `/private/tmp` is macOS's real location for `/tmp`, and `/var/folders` is
+ * where its per-user `$TMPDIR` lives; both spellings turn up verbatim in
+ * observed calls depending on whether anything resolved the symlink. `$TMPDIR`
+ * is read on every call rather than captured at module load so a test can set
+ * it, and it is canonicalised before use because the environment routinely
+ * carries a trailing slash (`/var/folders/x/T/`).
+ */
+function tempRoots(): string[] {
+  const roots = ['/tmp', '/private/tmp', '/var/folders']
+  const fromEnv = process.env.TMPDIR
+  if (fromEnv !== undefined && fromEnv.length > 0) roots.push(canonicalSegments(fromEnv))
+  return roots
+}
+
+/**
+ * Whether a path names a file INSIDE a system temp directory.
+ *
+ * Absolute-only, and that is load-bearing rather than tidiness:
+ * `canonicalSegments` always returns a leading `/`, so a RELATIVE `tmp/x.md` —
+ * an ordinary directory in the repo — would canonicalise to `/tmp/x.md` and
+ * wear a scratch prefix it never had. The spelling the tools actually produce
+ * for a temp file is absolute, so demanding it costs nothing and closes that
+ * hole. Canonicalising first is the same defence `isConductorArtifactPath`
+ * uses: `/tmp/../Users/x/src/a.ts` climbs out of `/tmp` and is not temp.
+ *
+ * A path EQUAL to a root is not a file in it, hence the `/` on the prefix.
+ */
+function isSystemTempPath(target: string): boolean {
+  if (!isAbsolute(target)) return false
+  const path = canonicalSegments(target)
+  return tempRoots().some(root => path.startsWith(`${root}/`))
+}
+
+/** `gh` flags that name the file a PR body is read FROM. `-F` is `--body-file`'s short form. */
+const PR_BODY_FILE_FLAGS = new Set(['--body-file', '-F'])
+
+/**
+ * Every ABSOLUTE path this session handed to `gh pr create` / `gh pr edit` as
+ * the PR body.
+ *
+ * WHY A SESSION-WIDE SET: the exemption below has to link TWO calls — the
+ * write that drafts the body and the `gh` call that consumes it — and
+ * `isConductorSelfMutation` sees one call at a time. `detectConductor` has
+ * `view.calls`, so the set is built there and passed down.
+ *
+ * PARSED, NOT PATTERN-MATCHED. The tokens come from `shellSegments` +
+ * `vcsParts`, the same pair `isVcsPlumbing` uses, so a flag is only read from a
+ * segment whose LEADING token really is `gh` and whose subcommand really is
+ * `pr create` / `pr edit`. That is what keeps
+ * `echo "--body-file /tmp/x.md"` out: `echo` is not a VCS tool, `vcsParts`
+ * returns undefined, and the segment contributes nothing. A regex over the raw
+ * command would have taken the bait — and the flag value would have been
+ * whatever followed, quoted or not.
+ *
+ * ONLY ABSOLUTE PATHS ARE COLLECTED, for the reason given on
+ * `isSystemTempPath`: the consumer matches canonical strings, and a relative
+ * spelling canonicalises into a shape it cannot safely compare.
+ *
+ * A FAILED `gh` CALL STILL COUNTS. `gh pr create` fails for reasons that have
+ * nothing to do with the body file (no remote, a PR already open, no network),
+ * and the write it was drafting was conductor work either way. The purpose is
+ * what the exemption is tied to, and an error does not retract it.
+ */
+export function prBodyFilePaths(calls: readonly ObservedCall[]): Set<string> {
+  const paths = new Set<string>()
+  for (const call of calls) {
+    if (!isBashTool(call.name) || typeof call.target !== 'string') continue
+    for (const segment of shellSegments(call.target)) {
+      const parts = vcsParts(segment)
+      if (parts?.tool !== 'gh' || parts.sub !== 'pr') continue
+      const [action, ...rest] = parts.rest
+      if (action !== 'create' && action !== 'edit') continue
+      for (let i = 0; i < rest.length; i += 1) {
+        const token = rest[i]
+        const inline = token.match(/^(--body-file)=(.+)$/u)
+        const value = inline !== null ? inline[2] : (PR_BODY_FILE_FLAGS.has(token) ? rest[i + 1] : undefined)
+        if (value === undefined || value.startsWith('-')) continue
+        if (inline === null) i += 1
+        if (isAbsolute(value)) paths.add(canonicalSegments(value))
+      }
+    }
+  }
+  return paths
+}
+
+/**
+ * Whether a written path is a PR body this session actually drafted: in system
+ * scratch space AND consumed by a `gh pr create`/`gh pr edit` body file.
+ *
+ * Both tests run over the CANONICAL path, so the two calls have to agree on
+ * the same file rather than on the same spelling, and a path that climbs out
+ * of `/tmp` satisfies neither.
+ */
+function isPrBodyDraft(target: string | undefined, prBodyFiles: ReadonlySet<string>): boolean {
+  if (typeof target !== 'string' || prBodyFiles.size === 0) return false
+  if (!isSystemTempPath(target)) return false
+  return prBodyFiles.has(canonicalSegments(target))
+}
+
+/**
  * Whether a call is the conductor doing a TEAMMATE's job.
  *
  * Not the same question as `isMutatingCall`, in both directions: recording or
@@ -1335,9 +1474,33 @@ export function isConductorArtifactPath(target: string | undefined): boolean {
  * A write tool is judged by its PATH, not by its name: the conductor's own
  * stage artifacts are exempt (`isConductorArtifactPath`), every other path —
  * `src/**`, `test/**`, configuration, anything a teammate owns — still counts.
+ *
+ * THE SECOND EXEMPTION, and why it takes a second argument. Drafting a PR body
+ * to a scratch file and passing it to `gh pr create --body-file` is conductor
+ * work, but the path alone cannot say so, so BOTH halves are required:
+ * 1. the path is in a system temp directory (`isSystemTempPath`), and
+ * 2. some `gh pr create`/`gh pr edit` in the SAME session named that exact
+ *    path as its body file (`prBodyFilePaths`).
+ * Either half alone is a hole, and they are different holes. Condition 2 alone
+ * lets `write src/x.ts` followed by `gh pr create --body-file src/x.ts` clear a
+ * real source edit — the conductor names its own exemption. Condition 1 alone
+ * exempts every scratch file whatever it holds, which is the blanket
+ * "anything outside the repo" carve-out `isConductorArtifactPath` refuses.
+ * Together the exemption is tied to the PURPOSE of the write, which is what
+ * the practice is actually asking about.
+ *
+ * @param call - the call being judged.
+ * @param prBodyFiles - canonical absolute paths this session passed to
+ *   `gh pr create`/`gh pr edit` as `--body-file`. Optional, defaulting to none,
+ *   because this predicate is exported and called with one argument from tests
+ *   and from any future caller that has no session view; with no set, the
+ *   linked exemption simply never fires and the verdict is the stricter one.
  */
-export function isConductorSelfMutation(call: ObservedCall): boolean {
-  if (isWriteTool(call.name)) return !isConductorArtifactPath(call.target)
+export function isConductorSelfMutation(call: ObservedCall, prBodyFiles: ReadonlySet<string> = new Set()): boolean {
+  if (isWriteTool(call.name)) {
+    if (isConductorArtifactPath(call.target)) return false
+    return !isPrBodyDraft(call.target, prBodyFiles)
+  }
   if (!isBashTool(call.name)) return false
   if (writesWorkingTreeViaVcs(call.target)) return true
   return isMutatingCommand(call.target) && !isVcsPlumbing(call.target)
@@ -1349,7 +1512,11 @@ export function detectConductor(view: SessionView): PracticeResult {
   // artifacts are the conductor's OWN duties in the team protocol, so they
   // cannot count as doing a teammate's job — even though `isMutatingCall`
   // rightly reports them as mutations elsewhere.
-  const selfEdits = view.calls.filter(call => isConductorSelfMutation(call))
+  // The PR-body exemption needs the WHOLE session (a write in one turn, the
+  // `gh` call that consumes it in another), so the link is resolved once here
+  // and handed to the per-call predicate.
+  const prBodyFiles = prBodyFilePaths(view.calls)
+  const selfEdits = view.calls.filter(call => isConductorSelfMutation(call, prBodyFiles))
   const delegations = view.calls.filter(call => call.name === 'team_delegate' && !call.isError)
   const evidence: string[] = []
   let firstViolation: string | undefined

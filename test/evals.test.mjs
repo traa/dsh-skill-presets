@@ -44,3 +44,32 @@ test('replay is deterministic', async () => {
   const b = await replay(fixture)
   assert.deepEqual(a, b)
 })
+
+test('evals fixture validation: invalid fixtures throw on parse', async () => {
+  const { mkdtemp, rm, writeFile, mkdir, readFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  
+  const baseFixture = JSON.parse(await readFile(join(ROOT, 'evals/fixtures/conductor-self-edits/fixture.json'), 'utf8'))
+
+  const runWithMutated = async (name, mutator) => {
+    const d = await mkdtemp(join(tmpdir(), 'dsh-evals-test-'))
+    try {
+      const fd = join(d, name)
+      await mkdir(fd, { recursive: true })
+      const copy = structuredClone(baseFixture)
+      copy.name = name
+      mutator(copy)
+      await writeFile(join(fd, 'fixture.json'), JSON.stringify(copy))
+      return await runEvals(d)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  }
+
+  const validResults = await runWithMutated('valid', () => {})
+  assert.equal(validResults.length, 1)
+
+  await assert.rejects(runWithMutated('bad-target', (f) => { f.calls[0].target = null }), /bad-target.*target/i)
+  await assert.rejects(runWithMutated('bad-turn', (f) => { f.calls[0].turn = '1' }), /bad-turn.*turn/i)
+  await assert.rejects(runWithMutated('bad-calls', (f) => { f.calls = {} }), /bad-calls.*calls/i)
+})
