@@ -453,12 +453,32 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
   function LibraryTab({ snap, status }: { snap: SettingsSnapshot, status: Status }): unknown {
     const checks = snap.checks ?? []
     const job = snap.job
+    const link = snap.skillLink ?? ''
     return h('div', { className: 'skp-col', style: { gap: '12px' } },
       h('div', { className: 'skp-row' },
         h('button', { className: 'skp-btn', disabled: snap.busy !== undefined, onClick: () => { void controller.check() } }, 'Check for updates'),
         h('button', { className: 'skp-btn primary', disabled: snap.busy !== undefined, onClick: () => { void controller.updateSource() } }, status.foundationInstalled ? 'Update all' : 'Install foundation'),
         h('span', { className: 'skp-sub' }, `${status.lock.skills.length} installed · library at ${status.root}/skills/library`),
         snap.lint !== undefined ? h('span', { className: `skp-pill ${snap.lint.counts.error > 0 ? 'red' : snap.lint.counts.warn > 0 ? 'amber' : 'green'}`, title: 'Skill lint: vendor terms, missing triggers, long bodies, never-loaded skills' }, `lint: ${snap.lint.counts.error} err · ${snap.lint.counts.warn} warn · ${snap.lint.counts.info} notes`) : null,
+      ),
+      // Add ONE skill from a public GitHub link. The typed value lives in the
+      // controller snapshot, not component state, so it survives re-renders.
+      h('div', { className: 'skp-row' },
+        h('input', {
+          className: 'skp-input',
+          style: { flex: '1 1 360px', minWidth: 0 },
+          type: 'url',
+          placeholder: 'https://github.com/owner/repo/blob/main/path/SKILL.md',
+          'aria-label': 'GitHub link to a SKILL.md',
+          value: link,
+          onChange: (event: { target: { value: string } }) => { controller.setSkillLink(event.target.value) },
+        }),
+        h('button', {
+          className: 'skp-btn',
+          disabled: snap.busy !== undefined || link.trim().length === 0,
+          title: 'Install one skill from a GitHub SKILL.md link',
+          onClick: () => { void controller.addSkill(link.trim()) },
+        }, 'Add skill'),
       ),
       job !== undefined ? h('div', { className: 'skp-card' },
         h('div', { style: { fontWeight: 650 } }, job.done ? 'Done' : 'Working…'),
@@ -473,6 +493,9 @@ export function makeSettingsPage(React: ReactLike, controller: SettingsControlle
           h('div', { className: 'skp-row' },
             h('strong', null, source.title),
             source.repo !== undefined ? h('a', { className: 'skp-sub', href: `https://github.com/${source.repo}`, target: '_blank', rel: 'noreferrer' }, source.repo) : null,
+            source.skills !== undefined && source.skills.length > 0
+              ? h('span', { className: 'skp-sub', title: source.skills.map(s => s.path).join('\n') }, `${source.skills.length} picked skill${source.skills.length === 1 ? '' : 's'}`)
+              : null,
             h('span', { style: { flex: 1 } }),
             locked !== undefined ? h('span', { className: 'skp-sub skp-mono' }, `${locked.commit.slice(0, 7)} · ${new Date(locked.fetchedAt).toLocaleDateString()}`) : h('span', { className: 'skp-sub' }, 'not installed'),
             source.kind === 'github' ? h('button', { className: 'skp-btn small', disabled: snap.busy !== undefined, onClick: () => { void controller.updateSource(source.id) } }, locked !== undefined ? 'Update' : 'Install') : null,

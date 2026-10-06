@@ -58,7 +58,10 @@ export interface Preset {
 }
 export interface Overlay { id: string, title: string, when: string, skills: PresetSkillRef[], enabled: boolean }
 export interface SkillSource {
-  id: string, title: string, kind: 'github' | 'local', repo?: string, ref?: string, paths?: string[], enabled: boolean, note?: string
+  id: string, title: string, kind: 'github' | 'local', repo?: string, ref?: string, paths?: string[],
+  /** Install exactly these skill directories instead of scanning `paths` (mirrors host `SkillSource.skills`). */
+  skills?: { path: string }[],
+  enabled: boolean, note?: string
 }
 export interface LockedSkill {
   source: string, dir: string, name: string, description: string, digest: string, upstreamDigest?: string,
@@ -210,6 +213,8 @@ export interface FoundationDiff { kind: 'preset' | 'overlay', id: string, title:
 export interface FoundationReport { diffs: FoundationDiff[], updatable: number, customized: number, added: number }
 export interface CheckReport { source: string, lockedCommit?: string, upstreamCommit: string, changed: string[], newUpstream: string[], removedUpstream: string[], note?: string }
 export interface JobState { id: string, done: boolean, progress: string[], reports: { source: string, added: string[], updated: string[], unchanged: string[], orphaned: string[], failed: { dir: string, error: string }[], note?: string }[] }
+/** `sources/add-skill`: the source the pick landed in, the skill's dir, and the install job. */
+export interface AddSkillResult { source: SkillSource, dir: string, created: boolean, job: string }
 export interface SkillDetail { ref: string, text?: string, files: { path: string, bytes: number }[], locked?: LockedSkill, usedBy: string[] }
 
 /** Minimal external store: snapshot + subscribe, the shape `useSyncExternalStore` wants. */

@@ -5,7 +5,7 @@
  * @module dsh-skill-presets/client/controller
  */
 
-import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard, type Flow } from './api.ts'
+import { Store, rpc, type ActivateScope, type CheckReport, type CleanupResult, type DoctorReport, type ExperimentsAggregate, type FoundationReport, type ImpactReport, type LibraryLint, type OrphanSkill, type Placement, type StrictPresets, type InsightCandidate, type PeerComparison, type PruningReport, type TeamTemplate, type CompareCard, type AddSkillResult, type JobState, type Preset, type PracticesDoc, type Rollup, type Scorecard, type SessionSummary, type SkillDetail, type Status, type PositionCard, type Flow } from './api.ts'
 
 /**
  * The right-sidebar page type's KIND, as registered with `sidebarRightTabs` and
@@ -38,6 +38,8 @@ export interface SettingsSnapshot {
   /** After a promotion: where the new skill could go. */
   lastPromotion?: { ref: string, name: string, suggestedPresets: Placement[] }
   job?: JobState
+  /** Library tab: the GitHub skill link being typed into the Add skill field. */
+  skillLink?: string
   detail?: SkillDetail
   loading: boolean
   busy?: string
@@ -170,6 +172,25 @@ export class SettingsController extends Store<SettingsSnapshot> {
       const { job } = await rpc<{ job: string }>('library/update', sourceId !== undefined ? { sources: [sourceId] } : {})
       this.pollJob(job)
       return 'Updating… progress below.'
+    })
+  }
+
+  /** Library tab: track the Add skill field as the user types. */
+  setSkillLink(skillLink: string): void {
+    this.set({ skillLink })
+  }
+
+  /**
+   * Add ONE skill from a GitHub link, then follow its install job like
+   * `updateSource`. A rejected link lands in the error banner and the field
+   * keeps the text so it can be corrected; a success clears the field.
+   */
+  async addSkill(url: string): Promise<void> {
+    await this.action('add-skill', async () => {
+      const out = await rpc<AddSkillResult>('sources/add-skill', { url })
+      this.set({ skillLink: '' })
+      this.pollJob(out.job)
+      return `${out.created ? 'Added source' : 'Added to'} "${out.source.id}": installing ${out.dir}… progress below.`
     })
   }
 
