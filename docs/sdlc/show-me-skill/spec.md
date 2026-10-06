@@ -24,7 +24,10 @@ readonly skills?: readonly { readonly path: string }[]
   without the field stay valid; `sources.schema.json`, `validateSourcesFile`,
   `curated.ts` and the client `SkillSource` type all carry the field.
 - Validation drops entries with a path that is empty, absolute, contains `..`, an empty
-  segment or a backslash; and drops a duplicate `dir` within one source (first wins).
+  segment, a backslash or a control character (U+0000–U+001F, U+007F); and drops a
+  duplicate `dir` within one source (first wins). Sources arriving through a shared bundle
+  (`planImport`) pass the same validation before they are saved or synced; a malformed
+  `skills` value (not an array of `{ path: string }`) drops the source, never throws.
 
 ## Behaviour
 
@@ -45,7 +48,18 @@ Returns `{ repo, ref, path }` or `{ error }` (never throws).
 | `.git` suffix on the repo name | stripped |
 
 The ref is the single segment after `blob`/`tree`/the raw prefix. Branch names that
-contain `/` are not supported (documented limitation; the error says to pass a commit).
+contain `/` are not supported (documented limitation); they cannot be told apart from a
+valid link at parse time, so B4 step 2 (verification against the tree) is what rejects them
+with a message that says to link a commit.
+
+Review round 1 additions (all rows return `{ error }` or the stated result, never throw):
+
+| Input | Result |
+|---|---|
+| `raw.githubusercontent.com/o/r/refs/heads/main/a/b/SKILL.md` | `{ repo: 'o/r', ref: 'main', path: 'a/b' }` |
+| `raw.githubusercontent.com/o/r/refs/tags/v1/a/b/SKILL.md` | `{ repo: 'o/r', ref: 'v1', path: 'a/b' }` |
+| `tree` URL whose last segment is `SKILL.md` | trailing `SKILL.md` stripped: `…/tree/main/a/b/SKILL.md` gives path `a/b` |
+| a path segment with a control character (U+0000–U+001F, U+007F), including percent-encoded | `{ error }` |
 
 ### B2. Discovery of picks (`github.ts`)
 `pickSkills(entries, picks)` returns `DiscoveredSkill[]` with `dir` = last segment,
@@ -70,7 +84,22 @@ and is not silently dropped. Bundle file names are relative to the pick path.
    - a pick source with a different `ref`: throw naming the existing ref.
    - a pick source with the same `ref`: append the pick; if the same `path` is already
      present, change nothing (idempotent); if another pick has the same `dir`, throw.
-3. Persist through `saveSources`, return `{ source, dir, created }`.
+   - an existing source that is DISABLED: throw `"<id>" is disabled; enable it first`
+     (the CLI installs regardless of `enabled` but the RPC/UI job does not, so adding into a
+     disabled source would silently install nothing on one surface).
+   - an existing pick source with no `ref`: the different-ref error must tell the user how
+     to proceed (set `ref` on that source in sources.json), not only name the default branch.
+2b. **Verify before saving** (review round 1). After the rules above accept the link and
+   before anything is written, resolve the repo at the link's ref with the injected
+   `GithubClient.tree` and require that the pick exists (`pickSkills` returns it). If the
+   tree cannot be fetched, or the pick is not found, throw and leave `sources.json`
+   untouched. The not-found message names the path and ref and says that branch names
+   containing `/` are unsupported and a commit can be linked instead. Consequence: no source
+   or pick is ever saved that the install cannot find, so a bad link never blocks the
+   corrected one. Verification fetches the tree only (no bundle files).
+3. Persist through `saveSources`, return `{ source, dir, created }`. All writes to
+   `sources.json` (`saveSources` included, not only `addSkillFromUrl`) go through the same
+   serialised edit queue, and concurrent writes never collide on a temp file name.
 4. The caller then installs only that skill: `startSync([source], [dir])` for RPC/UI,
    `library.sync(source, { dirs: [dir] })` for the CLI.
 
@@ -85,6 +114,9 @@ and is not silently dropped. Bundle file names are relative to the pick path.
   disabled while busy or the input is empty. It calls `controller.addSkill(url)`, which
   calls the RPC, then follows the returned job like `updateSource`. A rejected link
   shows in the existing error banner. Pick sources list their skills like any source.
+  The typed link is cleared only when the add succeeds; a rejected link keeps its text so
+  it can be corrected. `addSkill` ignores a call made while another action is busy (a
+  double click starts one job, not two).
 
 ### B6. Recommending `show-me`
 - `CURATED_SOURCES` gains `humanlayer-skills`:
