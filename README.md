@@ -264,6 +264,7 @@ restart, no filesystem watching.
 |---|---|---|
 | `team-attached` | `team_delegate` is visible to the agent (dsh-agent-teams installs it per attached session) | `conductor-protocol` |
 | `git-repo` | the session cwd is inside a git work tree | `worktree-first`, `pr` (mattpocock), `pr-always` |
+| `recommended` | `always` | `show-me` (humanlayer; user-invoked, see below) |
 
 Enforcement is **additive** by default: skills from `~/.dsh/skills` or a
 project's `.dsh/skills` stay visible. **Strict** mode narrows the catalog
@@ -271,11 +272,94 @@ itself (see *Strict catalog*).
 
 ## The foundation
 
-Three curated sources, fetched only when you click **Install foundation**:
+Four curated sources, fetched only when you click **Install foundation**:
 
 - [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) — `skills/`
 - [obra/superpowers](https://github.com/obra/superpowers) — `skills/`
 - [mattpocock/skills](https://github.com/mattpocock/skills) — `skills/engineering`, `skills/productivity`
+- [humanlayer/skills](https://github.com/humanlayer/skills) — one pick only: `plugins/show-me/skills/show-me`
+  (`show-me` by Dex Horthy / HumanLayer, carried by the `recommended` overlay)
+
+`show-me` keeps upstream's `disable-model-invocation: true`: it is listed in
+every conversation and runs when you invoke it; the model does not pick it on
+its own.
+
+### Install one skill from a link
+
+A github source normally scans `paths` for `<dir>/SKILL.md` bundles. Give it a
+`skills` pick list instead and it installs exactly those directories, nothing
+else from the repository (`paths` is then ignored). `skills` absent, `null` or
+`[]` all mean a whole-repository source; a pick entry that is not
+`{ "path": "<dir>" }` or has an unsafe path is dropped, and a source whose picks
+are all dropped is dropped too (it never turns into a whole-repository install).
+One trailing `/` on a pick path is accepted and stored without it (`skills/tool/`
+becomes `skills/tool`); `skills/tool//` or a leading `/` is still dropped:
+
+```json
+{ "id": "humanlayer-skills", "title": "humanlayer/skills", "kind": "github",
+  "repo": "humanlayer/skills", "ref": "main",
+  "skills": [{ "path": "plugins/show-me/skills/show-me" }], "enabled": true }
+```
+
+You rarely write that by hand. Paste the link to a skill's `SKILL.md`:
+
+```
+dsh-skill-presets add-skill https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md
+```
+
+or use the **Add skill** field on the Library tab (RPC `sources/add-skill`
+`{ url }` → `{ source, dir, created, job }`). Either way:
+
+- Accepted links: a github.com `blob/<ref>/…/SKILL.md` link, a `tree/<ref>/<dir>`
+  link (a trailing `/SKILL.md` on it is ignored), or a
+  `raw.githubusercontent.com/<owner>/<repo>/<ref>/…/SKILL.md` link, including the
+  `…/refs/heads/<branch>/…` and `…/refs/tags/<tag>/…` forms. Query strings and
+  fragments are ignored; a path segment with a control character is refused.
+- **Checked when it is first added.** Every add, including a second pick into an
+  existing source, reads the repository tree at the link's ref (the tree only; no
+  skill file is downloaded), and the pick must be there: a directory holding a
+  `SKILL.md`. A pick already in `sources.json`, including one edited there by
+  hand, is not re-checked when the same link is added again; if it is missing
+  upstream, the next install reports `skill "<path>" not found at <ref>`.
+- If GitHub truncates the tree listing (very large repositories), a pick not in
+  the listing cannot be proven absent: the add is accepted without that check,
+  and the install then reports the truncation note.
+- The source follows the ref in the link (usually a branch); the lock records the
+  commit each install resolved to. Branch names containing `/` are not supported:
+  such a link reads as a shorter branch plus a longer path, and the add is
+  rejected with a hint to link a commit instead, whether GitHub says that shorter
+  branch does not exist (the ref lookup answers 404 or 422) or the branch exists
+  but lacks the path. A network error, rate limit or server error while reading
+  the tree is reported without that hint.
+- A new repository becomes a new source with id `<owner>-<repo>`; a second link
+  into the same repository and ref is appended to that source's picks.
+- Rejected, with `sources.json` left as it was: a link that is not one of the
+  forms above; a pick not found at that ref; a tree that cannot be read (network
+  error, unknown repository or ref); a repository already installed as a
+  whole-repo source (enabled or not); an existing pick source for that repository
+  that is disabled (enable it first); a link at a different ref than the existing pick source (a
+  pick source with no `ref` must be given one in `sources.json` first); a pick
+  whose directory name (the last path segment) is already used by another pick
+  in that source. A rejected link saves nothing, so the corrected link works next.
+- Only the added skill is installed; the CLI prints `<source>/<dir>: +1 …` and
+  exits 1 on a rejected link. The install is a separate step after the save: if
+  it fails (for example the network drops), the verified pick stays in
+  `sources.json`, and **Install**/**Update** on that source retries it.
+- Writes to `sources.json` made through the plugin's service (Add skill, the
+  `sources/save` RPC, bundle imports) are applied in order within one process,
+  and no two writes collide on a temporary file. That ordering is all it
+  guarantees: a whole-list writer (the `sources/save` RPC, a bundle import)
+  writes the list it read earlier, so it can overwrite a pick added in between;
+  and a separate CLI process is not ordered against the running web server.
+
+**Existing workbenches.** The foundation adopter (`foundation --adopt`, or the
+banner in the UI) merges presets and overlays, not sources. A workbench seeded
+before `humanlayer-skills` existed is offered the `recommended` overlay, but the
+source is not added, so `show-me` shows as unresolved until you run once:
+
+```
+dsh-skill-presets add-skill https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md
+```
 
 plus **local** skills this plugin authors and seeds into the workbench (edit
 them there; they are yours):
@@ -398,12 +482,13 @@ foundation** is clicked (or `dsh-skill-presets install` is run).
 
 The workbench is resolved from `ctx.get('workbench')` when dsh-workbench is
 composed, else `$DSH_WORKBENCH` → `$DSH_SETTINGS_REPO` → `$DSH_HOME/settings-repo`.
-`GITHUB_TOKEN` is honoured for the API; unauthenticated works for three sources.
+`GITHUB_TOKEN` is honoured for the API; unauthenticated works for the four curated sources.
 
 ## CLI
 
 ```
 dsh-skill-presets status | install [source…] | update [source…] | check-updates [source…]
+                  | add-skill <url>
                   | activate <id|none> | summary <usage.jsonl> | rollup
                   | worktrees [cwd] [--dry-run|--clean]
                   | hooks generate [dir]

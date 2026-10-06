@@ -72,6 +72,30 @@ test('curated refs all point at declared sources', () => {
   for (const o of CURATED_OVERLAYS) for (const s of o.skills) assert.ok(ids.has(splitRef(s.ref).source), s.ref)
 })
 
+test('curated humanlayer-skills source picks only show-me, on main, credited to HumanLayer', () => {
+  const source = CURATED_SOURCES.find(s => s.id === 'humanlayer-skills')
+  assert.ok(source, 'CURATED_SOURCES must carry humanlayer-skills')
+  assert.equal(source.kind, 'github')
+  assert.equal(source.repo, 'humanlayer/skills')
+  assert.equal(source.ref, 'main')
+  assert.deepEqual(source.skills, [{ path: 'plugins/show-me/skills/show-me' }])
+  assert.equal(source.enabled, true)
+  assert.match(source.note ?? '', /Dex Horthy/)
+  assert.match(source.note ?? '', /HumanLayer/)
+})
+
+test('curated recommended overlay is always on and carries humanlayer-skills/show-me without overriding upstream invocation', () => {
+  const overlay = CURATED_OVERLAYS.find(o => o.id === 'recommended')
+  assert.ok(overlay, 'CURATED_OVERLAYS must carry recommended')
+  assert.equal(overlay.when, 'always')
+  assert.equal(overlay.enabled, true)
+  const entry = overlay.skills.find(s => s.ref === 'humanlayer-skills/show-me')
+  assert.ok(entry, 'recommended must carry humanlayer-skills/show-me')
+  // Upstream's `disable-model-invocation: true` is kept: the curated entry adds no invocation override.
+  for (const key of Object.keys(entry)) assert.ok(['ref', 'as', 'whenToUse'].includes(key), `unexpected key ${key}`)
+  assert.ok(CURATED_SOURCES.some(s => s.id === splitRef(entry.ref).source), 'the overlay ref resolves to a curated source')
+})
+
 test('validatePresetsFile tolerates junk entries', () => {
   const out = validatePresetsFile([{ id: 'ok', skills: [{ ref: 'a/b' }, 'junk'] }, 'junk', { skills: [] }])
   assert.equal(out.length, 1)

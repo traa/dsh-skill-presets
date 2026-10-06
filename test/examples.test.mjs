@@ -16,6 +16,16 @@ test('examples/ matches the declaration (run `npm run gen:examples` after changi
   }
 })
 
+test('sources.schema.json admits a `skills` pick list of { path } objects', () => {
+  const item = SCHEMAS['sources.schema.json'].items
+  const skills = item.properties.skills
+  assert.ok(skills, 'sources.schema.json has additionalProperties: false, so `skills` must be declared')
+  assert.equal(skills.type, 'array')
+  assert.equal(skills.items.type, 'object')
+  assert.deepEqual(skills.items.required, ['path'])
+  assert.equal(skills.items.properties.path.type, 'string')
+})
+
 test('every curated preset skill ref names a local skill that ships, or an upstream dir', async () => {
   const presets = EXAMPLES['presets.json']
   const { readdir } = await import('node:fs/promises')

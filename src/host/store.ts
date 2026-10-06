@@ -119,14 +119,20 @@ export async function readJson<T>(
   }
 }
 
+/** Per-process sequence, so two writes in the same millisecond get different temp files. */
+let tempSequence = 0
+
 /**
- * Write JSON atomically: temp file in the same directory, then rename.
+ * Write JSON atomically: temp file in the same directory, then rename. The
+ * temp name is unique per call (pid + time + a per-process sequence), so
+ * concurrent writes never collide on it; the last rename wins.
  * @param path - destination.
  * @param value - JSON-serialisable value.
  */
 export async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  const temp = `${path}.${process.pid}.${Date.now()}.tmp`
+  tempSequence += 1
+  const temp = `${path}.${process.pid}.${Date.now()}.${tempSequence}.tmp`
   await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
   await rename(temp, path)
 }

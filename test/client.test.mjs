@@ -54,11 +54,11 @@ function text(tree, out = []) {
   return out
 }
 
-async function load() {
+async function load(makeReact = fakeReact) {
   const source = await readFile(ARTIFACT, 'utf8')
   assert.match(source, /^window\.__ModuleLoader__\.load\(\{\s*id:\s*"dsh-skill-presets"/, 'artifact must be a loader closure factory')
   let captured
-  const React = fakeReact()
+  const React = makeReact()
   const win = { __ModuleLoader__: { load: (entry) => { captured = entry } } }
   const fn = new Function('window', 'document', source)
   fn(win, undefined)
@@ -543,4 +543,236 @@ test('phase 9 shape 4: neither present: nothing throws, popover closes', async (
   assert.deepEqual(calls.openTab, [])
   assert.deepEqual(calls.openRightbar, [])
   assert.equal(popoverNodes.length, 0, 'popover must close')
+})
+
+// ------------------------------------------------ Add skill from a GitHub link --
+// docs/sdlc/show-me-skill/spec.md B5: the Library tab's source list (the
+// "Sources view") gets a link input and an "Add skill" button.
+
+/**
+ * A React stand-in whose hook cells are keyed PER COMPONENT, so a tab
+ * component holding its own state (the typed link) does not share cell 0
+ * with the page's store hook, as it would with `fakeReact`.
+ */
+function keyedReact() {
+  const cells = new Map()
+  let current = null
+  let effects = []
+  const slot = () => {
+    if (current === null) throw new Error('hook called outside a render')
+    if (!cells.has(current.type)) cells.set(current.type, [])
+    return [cells.get(current.type), current.i++]
+  }
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
+    useState(initial) {
+      const [store, i] = slot()
+      if (!(i in store)) store[i] = typeof initial === 'function' ? initial() : initial
+      return [store[i], (next) => { store[i] = typeof next === 'function' ? next(store[i]) : next }]
+    },
+    useEffect(effect) { effects.push(effect) },
+    useRef(initial) {
+      const [store, i] = slot()
+      if (!(i in store)) store[i] = { current: initial }
+      return store[i]
+    },
+    Fragment: 'Fragment',
+    __render(component, props = {}) {
+      const outer = current
+      current = { type: component, i: 0 }
+      try { return typeof component === 'function' ? component(props) : component } finally { current = outer }
+    },
+    __runEffects() { const fx = effects; effects = []; for (const f of fx) f() },
+    __dropEffects() { effects = [] },
+  }
+  return React
+}
+
+/** Let promise chains settle without sleeping on wall-clock time. */
+async function settle(rounds = 25) {
+  for (let i = 0; i < rounds; i += 1) await new Promise(resolve => setImmediate(resolve))
+}
+
+/** Route RPC calls to canned answers and record every call with its body. */
+function fakeRpc(answers) {
+  const calls = []
+  const fetch = async (url, init) => {
+    const method = url.slice(url.indexOf('/rpc/') + '/rpc/'.length)
+    const body = init?.body !== undefined ? JSON.parse(init.body) : {}
+    calls.push({ method, body })
+    const answer = answers[method]
+    if (answer === undefined) return { ok: false, status: 404, text: async () => JSON.stringify({ error: `no fake for ${method}` }) }
+    const value = typeof answer === 'function' ? await answer(body) : answer
+    if (value instanceof Error) return { ok: false, status: 400, text: async () => JSON.stringify({ error: value.message }) }
+    return { ok: true, status: 200, text: async () => JSON.stringify(value) }
+  }
+  return { calls, fetch }
+}
+
+const LINK = 'https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md'
+const PLACEHOLDER = 'https://github.com/owner/repo/blob/main/path/SKILL.md'
+
+/** Mount the real settings page from the built artifact and open the Library tab. */
+async function openLibraryTab(extraAnswers = {}) {
+  const { mod, React } = await load(keyedReact)
+  const { ctx, registrations } = fakeCtx(mod.inject)
+  const { status } = mixedFixture()
+  status.sources = [{ id: 'obra-superpowers', title: 'obra/superpowers', kind: 'github', repo: 'obra/superpowers', paths: ['skills'], enabled: true }]
+  const rpcFake = fakeRpc({
+    'status': status,
+    'doctor': { worst: 'ok', findings: [] },
+    'placement/orphans': [],
+    'flows/list': { flows: [] },
+    ...extraAnswers,
+  })
+  globalThis.fetch = rpcFake.fetch
+  mod.apply(ctx)
+  const Page = registrations.find(r => r.options.name === 'settings.section').component
+  const view = () => render(React, React.createElement(Page, {}))
+  view()
+  React.__runEffects()
+  await settle()
+  const tab = flatten(view()).find(n => n.type === 'button' && text(n).join('').trim() === 'Library')
+  assert.ok(tab, 'the settings page has a Library tab')
+  tab.props.onClick()
+  await settle()
+  React.__dropEffects()
+  return { view, calls: rpcFake.calls }
+}
+
+function linkInput(tree) {
+  return flatten(tree).find(n => n.type === 'input' && n.props?.placeholder === PLACEHOLDER)
+}
+
+function addSkillButton(tree) {
+  return flatten(tree).find(n => n.type === 'button' && text(n).join('').trim() === 'Add skill')
+}
+
+/** Type into an input the way React delivers it, whichever handler it uses. */
+function typeInto(input, value) {
+  const event = { target: { value }, currentTarget: { value }, preventDefault: () => {}, stopPropagation: () => {} }
+  if (typeof input.props.ref === 'function') input.props.ref({ value })
+  else if (input.props.ref !== undefined && input.props.ref !== null) input.props.ref.current = { value }
+  const handler = input.props.onChange ?? input.props.onInput
+  assert.equal(typeof handler, 'function', 'the link input reacts to typing')
+  handler(event)
+}
+
+test('Library tab renders the add-skill link input and an Add skill button', async () => {
+  const { view } = await openLibraryTab()
+  const tree = view()
+  assert.ok(linkInput(tree), `an input with placeholder ${PLACEHOLDER}`)
+  assert.ok(addSkillButton(tree), 'an "Add skill" button')
+})
+
+test('Add skill is disabled while the link input is empty', async () => {
+  const { view } = await openLibraryTab()
+  const button = addSkillButton(view())
+  assert.ok(button, 'an "Add skill" button')
+  assert.equal(Boolean(button.props.disabled), true)
+})
+
+test('typing a link and clicking Add skill calls sources/add-skill with that exact value, then follows the job', async () => {
+  const report = { source: 'humanlayer-skills', commit: 'c1', added: ['show-me'], updated: [], unchanged: [], orphaned: [], failed: [] }
+  const { view, calls } = await openLibraryTab({
+    'sources/add-skill': { source: { id: 'humanlayer-skills' }, dir: 'show-me', created: true, job: 'job-7' },
+    'library/job': { id: 'job-7', kind: 'sync', startedAt: 'a', done: true, progress: [], reports: [report] },
+  })
+  const input = linkInput(view())
+  assert.ok(input, `an input with placeholder ${PLACEHOLDER}`)
+  typeInto(input, LINK)
+  const button = addSkillButton(view())
+  assert.ok(button, 'an "Add skill" button')
+  assert.equal(Boolean(button.props.disabled), false, 'a typed link enables the button')
+  const before = calls.length
+  button.props.onClick?.({ preventDefault: () => {}, stopPropagation: () => {} })
+  await settle()
+  const after = calls.slice(before)
+  const add = after.find(c => c.method === 'sources/add-skill')
+  assert.ok(add, `sources/add-skill was called (saw ${after.map(c => c.method).join(', ')})`)
+  assert.deepEqual(add.body, { url: LINK })
+  const job = after.find(c => c.method === 'library/job')
+  assert.ok(job, 'the returned job is followed like updateSource')
+  assert.deepEqual(job.body, { id: 'job-7' })
+  assert.ok(after.indexOf(job) > after.indexOf(add))
+  assert.match(text(view()).join(' '), /humanlayer-skills: \+1 added/)
+})
+
+test('a rejected link shows in the existing error banner', async () => {
+  const { view } = await openLibraryTab({ 'sources/add-skill': new Error('not a GitHub SKILL.md link') })
+  const input = linkInput(view())
+  assert.ok(input, `an input with placeholder ${PLACEHOLDER}`)
+  typeInto(input, 'https://gitlab.com/o/r/blob/main/a/SKILL.md')
+  addSkillButton(view())?.props.onClick?.({ preventDefault: () => {}, stopPropagation: () => {} })
+  await settle()
+  const banner = nodesWithClass(view(), 'error').find(n => (n.props.className ?? '').includes('skp-msg'))
+  assert.ok(banner, 'the error banner renders')
+  assert.match(text(banner).join(''), /not a GitHub SKILL\.md link/)
+})
+
+test('Add skill is disabled while another library action is busy, even with a link typed', async () => {
+  const { view } = await openLibraryTab({ 'library/check': () => new Promise(() => {}) })
+  const input = linkInput(view())
+  assert.ok(input, `an input with placeholder ${PLACEHOLDER}`)
+  typeInto(input, LINK)
+  assert.equal(Boolean(addSkillButton(view())?.props.disabled), false, 'enabled before the busy action')
+  const check = flatten(view()).find(n => n.type === 'button' && text(n).join('').trim() === 'Check for updates')
+  check.props.onClick()
+  await settle()
+  const button = addSkillButton(view())
+  assert.ok(button, 'an "Add skill" button')
+  assert.equal(Boolean(button.props.disabled), true, 'busy disables Add skill')
+})
+
+// Review round 1 (spec B5): the link clears only on success; a busy controller
+// ignores a second add, so a double click starts one job, not two.
+
+const ADD_OK = {
+  'sources/add-skill': { source: { id: 'humanlayer-skills' }, dir: 'show-me', created: true, job: 'job-7' },
+  'library/job': { id: 'job-7', kind: 'sync', startedAt: 'a', done: true, progress: [], reports: [] },
+}
+const click = button => button.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} })
+
+test('a successful add clears the link input and disables Add skill again', async () => {
+  const { view } = await openLibraryTab(ADD_OK)
+  typeInto(linkInput(view()), LINK)
+  click(addSkillButton(view()))
+  await settle()
+  const tree = view()
+  assert.equal(linkInput(tree).props.value ?? '', '', 'the field is cleared after success')
+  assert.equal(Boolean(addSkillButton(tree).props.disabled), true, 'an empty field disables the button')
+})
+
+test('a rejected add keeps the typed link so it can be corrected', async () => {
+  const typed = 'https://github.com/o/r/blob/main/a/SKILL.md'
+  const { view } = await openLibraryTab({ 'sources/add-skill': new Error('skill "a" not found at main') })
+  typeInto(linkInput(view()), typed)
+  click(addSkillButton(view()))
+  await settle()
+  const tree = view()
+  assert.equal(linkInput(tree).props.value, typed)
+  assert.equal(Boolean(addSkillButton(tree).props.disabled), false)
+})
+
+test('a double click on Add skill while the first add is pending sends one sources/add-skill', async () => {
+  const { view, calls } = await openLibraryTab({ 'sources/add-skill': () => new Promise(() => {}) })
+  typeInto(linkInput(view()), LINK)
+  const button = addSkillButton(view()) // both clicks land on the same rendered button, as a fast double click does
+  click(button)
+  await settle()
+  click(button)
+  await settle()
+  assert.equal(calls.filter(c => c.method === 'sources/add-skill').length, 1)
+})
+
+test('Add skill clicked while another action is busy sends no sources/add-skill', async () => {
+  const { view, calls } = await openLibraryTab({ 'library/check': () => new Promise(() => {}), ...ADD_OK })
+  typeInto(linkInput(view()), LINK)
+  const button = addSkillButton(view())
+  const check = flatten(view()).find(n => n.type === 'button' && text(n).join('').trim() === 'Check for updates')
+  check.props.onClick()
+  await settle()
+  click(button) // rendered before the check started, so not yet disabled
+  await settle()
+  assert.equal(calls.filter(c => c.method === 'sources/add-skill').length, 0)
 })

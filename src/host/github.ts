@@ -9,6 +9,8 @@
  * @module dsh-skill-presets/host/github
  */
 
+import { hasControlChar } from './sources.ts'
+
 /** The slice of `fetch` this module uses. */
 export type FetchLike = (url: string, init?: { headers?: Record<string, string>, signal?: AbortSignal }) => Promise<{
   ok: boolean
@@ -28,6 +30,8 @@ export interface TreeEntry {
 export interface RepoTree {
   /** Commit sha the tree was read at. */
   readonly commit: string
+  /** The ref that was resolved: the one asked for, or the default branch. */
+  readonly ref: string
   readonly entries: readonly TreeEntry[]
   /** Set when GitHub truncated the listing. */
   readonly truncated: boolean
@@ -43,6 +47,21 @@ export interface GithubOptions {
 }
 
 const DEFAULT_TIMEOUT = 20_000
+
+/**
+ * The ref lookup (`/commits/<ref>`) answered 404 or 422: GitHub does not know
+ * that ref (or, for a 404, the repository). Thrown only by that step of
+ * `GithubClient.tree`, so a caller can tell "no such ref" apart from a tree
+ * fetch failure, a rate limit or a network error. The message is GitHub's.
+ */
+export class RefNotFoundError extends Error {
+  readonly status: number
+  constructor(readonly repo: string, readonly ref: string, status: number, message: string) {
+    super(message)
+    this.name = 'RefNotFoundError'
+    this.status = status
+  }
+}
 
 /** Validate `owner/name`. */
 export function isRepoSlug(repo: string): boolean {
@@ -115,7 +134,15 @@ export class GithubClient {
       const meta = JSON.parse((await this.get(`${this.apiBase}/repos/${repo}`, signal)).text) as { default_branch?: string }
       target = meta.default_branch ?? 'main'
     }
-    const commitText = (await this.get(`${this.apiBase}/repos/${repo}/commits/${encodeURIComponent(target)}`, signal)).text
+    let commitText: string
+    try {
+      commitText = (await this.get(`${this.apiBase}/repos/${repo}/commits/${encodeURIComponent(target)}`, signal)).text
+    } catch (error) {
+      // Only THIS step can say "no such ref"; a 404 from the tree fetch below is not one.
+      const status = (error as { status?: number }).status
+      if (status === 404 || status === 422) throw new RefNotFoundError(repo, target, status, error instanceof Error ? error.message : String(error))
+      throw error
+    }
     const commit = (JSON.parse(commitText) as { sha?: string }).sha
     if (commit === undefined) throw new Error(`could not resolve ${repo}@${target} to a commit`)
     const treeText = (await this.get(`${this.apiBase}/repos/${repo}/git/trees/${commit}?recursive=1`, signal)).text
@@ -123,7 +150,7 @@ export class GithubClient {
     const entries = (tree.tree ?? [])
       .filter(entry => entry.type === 'blob')
       .map(entry => ({ path: entry.path, sha: entry.sha, ...(entry.size !== undefined ? { size: entry.size } : {}) }))
-    return { commit, entries, truncated: tree.truncated === true }
+    return { commit, ref: target, entries, truncated: tree.truncated === true }
   }
 
   /** Fetch one file's raw content at a commit. */
@@ -144,6 +171,18 @@ export interface DiscoveredSkill {
 }
 
 /**
+ * Strip leading and trailing `/` in one linear pass. The regex form
+ * `/^\/+|\/+$/g` backtracks quadratically on a long interior run of slashes.
+ */
+export function trimSlashes(path: string): string {
+  let start = 0
+  let end = path.length
+  while (start < end && path.charCodeAt(start) === 0x2f) start += 1
+  while (end > start && path.charCodeAt(end - 1) === 0x2f) end -= 1
+  return path.slice(start, end)
+}
+
+/**
  * Find `<root>/<name>/SKILL.md` bundles under each configured root.
  *
  * Only one level deep by design — that is the layout all three curated sources
@@ -156,7 +195,7 @@ export interface DiscoveredSkill {
 export function discoverSkills(entries: readonly TreeEntry[], roots: readonly string[]): DiscoveredSkill[] {
   const found = new Map<string, DiscoveredSkill>()
   for (const rawRoot of roots) {
-    const root = rawRoot.replace(/^\/+|\/+$/gu, '')
+    const root = trimSlashes(rawRoot)
     const prefix = root.length > 0 ? `${root}/` : ''
     for (const entry of entries) {
       if (!entry.path.startsWith(prefix)) continue
@@ -171,4 +210,97 @@ export function discoverSkills(entries: readonly TreeEntry[], roots: readonly st
     }
   }
   return [...found.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/**
+ * Find exactly the picked skill directories in a tree.
+ *
+ * A pick counts only when a `SKILL.md` blob sits directly in its directory; a
+ * pick without one is left out (the caller reports it). `dir` is the pick's
+ * last path segment.
+ * @param entries - repo blobs.
+ * @param picks - repo-relative skill directories.
+ */
+export function pickSkills(entries: readonly TreeEntry[], picks: readonly { readonly path: string }[]): DiscoveredSkill[] {
+  const found = new Map<string, DiscoveredSkill>()
+  for (const pick of picks) {
+    const path = trimSlashes(pick.path)
+    if (path.length === 0 || found.has(path)) continue
+    if (!entries.some(entry => entry.path === `${path}/SKILL.md`)) continue
+    const dir = path.slice(path.lastIndexOf('/') + 1)
+    const files = entries.filter(entry => entry.path.startsWith(`${path}/`))
+    found.set(path, { dir, path, files })
+  }
+  return [...found.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** A parsed link to one skill, or why it was refused. */
+export type ParsedSkillUrl = { readonly repo: string, readonly ref: string, readonly path: string } | { readonly error: string }
+
+const SKILL_URL_SHAPE = 'expected https://github.com/<owner>/<repo>/blob/<ref>/<path>/SKILL.md, '
+  + 'https://github.com/<owner>/<repo>/tree/<ref>/<path> or https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>/SKILL.md '
+  + '(branch names containing "/" are not supported; link a commit instead)'
+
+/**
+ * Parse a GitHub link to one skill (a `SKILL.md` blob, its directory, or the
+ * raw file) into `{ repo, ref, path }`. Never throws.
+ *
+ * The ref is the single segment after `blob`/`tree` (or after the repo, or
+ * after `refs/heads/` / `refs/tags/`, on `raw.githubusercontent.com`), so
+ * branch names containing `/` cannot be expressed; link a commit instead. A
+ * parse cannot tell such a link from a valid one; `addSkillFromUrl` rejects it
+ * when the pick is not in the tree. Segments are checked as written, before
+ * any URL normalization could collapse a `..`, and a segment with a control
+ * character (raw or percent-encoded) is refused.
+ * @param url - the link as pasted.
+ */
+export function parseSkillUrl(url: string): ParsedSkillUrl {
+  const text = String(url).trim().replace(/[?#].*$/su, '')
+  const match = /^https:\/\/([^/]+)\/(.*)$/iu.exec(text)
+  if (match === null) return { error: `not an https GitHub link: ${SKILL_URL_SHAPE}` }
+  const host = match[1].toLowerCase()
+  const raw = host === 'raw.githubusercontent.com'
+  if (!raw && host !== 'github.com' && host !== 'www.github.com') {
+    return { error: `"${host}" is not github.com or raw.githubusercontent.com` }
+  }
+  const segments = match[2].replace(/\/$/u, '').split('/')
+  const decoded: string[] = []
+  for (const segment of segments) {
+    let value: string
+    try {
+      value = decodeURIComponent(segment)
+    } catch {
+      return { error: `invalid escape in "${segment}"` }
+    }
+    if (value.length === 0 || value === '.' || value === '..') {
+      return { error: `the link has an empty, "." or ".." path segment: ${SKILL_URL_SHAPE}` }
+    }
+    if (value.includes('/') || value.includes('\\')) return { error: `invalid path segment "${segment}"` }
+    if (hasControlChar(value)) return { error: `the link has a control character in a path segment (${JSON.stringify(value)})` }
+    decoded.push(value)
+  }
+  const [owner, rawRepo, ...rest] = decoded
+  const name = (rawRepo ?? '').replace(/\.git$/u, '')
+  const repo = `${owner ?? ''}/${name}`
+  if (!isRepoSlug(repo)) return { error: `no valid <owner>/<repo> in the link: ${SKILL_URL_SHAPE}` }
+  let kind: 'blob' | 'tree'
+  if (raw) {
+    kind = 'blob'
+  } else {
+    const mode = rest.shift()
+    if (mode !== 'blob' && mode !== 'tree') return { error: `the link does not point into the repository's files: ${SKILL_URL_SHAPE}` }
+    kind = mode
+  }
+  // raw.githubusercontent.com also serves `refs/heads/<branch>` and `refs/tags/<tag>`.
+  if (raw && rest[0] === 'refs' && (rest[1] === 'heads' || rest[1] === 'tags')) rest.splice(0, 2)
+  const ref = rest.shift()
+  if (ref === undefined) return { error: `the link names no ref: ${SKILL_URL_SHAPE}` }
+  if (kind === 'blob') {
+    if (rest.pop() !== 'SKILL.md') return { error: `the link must point at a SKILL.md file: ${SKILL_URL_SHAPE}` }
+  } else if (rest.at(-1) === 'SKILL.md') {
+    // A tree link copied with the file still on it: the directory is meant.
+    rest.pop()
+  }
+  if (rest.length === 0) return { error: 'the link points at the repository root, which is not a skill directory; link the skill\'s own SKILL.md or directory' }
+  return { repo, ref, path: rest.join('/') }
 }

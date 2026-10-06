@@ -69,6 +69,16 @@ export const SCHEMAS: Record<string, unknown> = {
         repo: { type: 'string', pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' },
         ref: { type: 'string' },
         paths: { type: 'array', items: { type: 'string' } },
+        skills: {
+          description: 'Install exactly these skill directories instead of scanning `paths`.',
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['path'],
+            properties: { path: { type: 'string' } },
+          },
+        },
         enabled: { type: 'boolean' },
         note: { type: 'string' },
       },

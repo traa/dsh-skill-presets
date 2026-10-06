@@ -64,3 +64,58 @@ test('planImport reports collisions per mode, new sources disabled, installs pin
   assert.deepEqual(result.written, ['local/mine', 'preset build-imported', 'preset fresh'])
   assert.deepEqual(await readLocalSkill(lib, 'mine'), { 'SKILL.md': '---\nname: mine\ndescription: d\n---\nbody' })
 })
+
+// docs/sdlc/show-me-skill/spec.md data model: sources arriving through a bundle
+// pass the same validation as sources.json before they are saved or synced.
+test('planImport/applyImport validate bundle pick sources: unsafe or malformed picks are never added or synced', async () => {
+  const { SkillPresetsService } = await import('../lib/host/service.js')
+  const pickSource = (id, skills) => ({ id, title: id, kind: 'github', repo: `o/${id}`, ref: 'main', skills, enabled: true })
+  const bundle = validateBundle({
+    version: 1, exportedAt: 't',
+    presets: [preset('fresh', ['safe/ok', 'unsafe/x', 'malformed/y'])],
+    overlays: [],
+    sources: [
+      pickSource('safe', [{ path: 'skills/ok' }]),
+      pickSource('unsafe', [{ path: '../../outside/x' }]),
+      pickSource('malformed', 'skills/y'),
+    ],
+    lock: [],
+    localSkills: {},
+  })
+  const root = await mkdtemp(join(tmpdir(), 'skp-bundle-pick-'))
+  const service = new SkillPresetsService({ root: () => root })
+  await service.saveSources([sources[1]])
+  const ctx = { presets: [], sources: await service.sources(), lock: { version: 1, sources: {}, skills: [] } }
+
+  const plan = planImport(bundle, ctx)
+  assert.deepEqual(plan.newSources.map(s => s.id), ['safe'], 'only the safe pick source is added')
+  assert.equal(plan.newSources[0].enabled, false, 'added disabled')
+  assert.deepEqual(plan.newSources[0].skills, [{ path: 'skills/ok' }], 'its pick is kept')
+
+  const synced = []
+  await applyImport(bundle, plan, {
+    savePreset: async () => {}, saveSources: s => service.saveSources(s), libraryRoot: join(root, 'library'),
+    sync: async (source, dirs) => { synced.push([source.id, dirs]) }, sources: ctx.sources,
+  })
+  const saved = new Set((await service.sources()).map(s => s.id))
+  assert.ok(saved.has('safe'))
+  for (const [id] of synced) assert.ok(saved.has(id), `sync ran for "${id}", which is not in sources.json, so its lock entries would have no source`)
+  assert.ok(!synced.some(([id]) => id === 'unsafe' || id === 'malformed'))
+})
+
+// Review round 2: an invalid source is a BLOCKING problem (the bundle/apply RPC
+// refuses while plan.problems is non-empty), so the message must say so.
+test('an invalid bundle source is a problem that says it blocks the import', () => {
+  const bundle = validateBundle({
+    version: 1, exportedAt: 't', presets: [preset('fresh', ['bad/x'])], overlays: [],
+    sources: [{ id: 'bad', title: 'bad', kind: 'github', repo: 'o/bad', ref: 'main', skills: [{ path: '../x' }], enabled: true }],
+    lock: [], localSkills: {},
+  })
+  const plan = planImport(bundle, { presets: [], sources: [sources[1]], lock: { version: 1, sources: {}, skills: [] } })
+  assert.ok(plan.problems.length > 0, 'the plan carries a blocking problem')
+  const problem = plan.problems.find(p => p.includes('"bad"'))
+  assert.ok(problem, `the problem names the source: ${plan.problems.join(' | ')}`)
+  // Spec B4 2b (round 3): the same text serves the bundle/plan preview and apply.
+  assert.match(problem, /blocks the import/i)
+  assert.deepEqual(plan.newSources, [])
+})

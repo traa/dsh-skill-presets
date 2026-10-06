@@ -213,6 +213,20 @@ test('changing only the color makes a preset customized, not updatable', () => {
   assert.equal(report.customized, 1)
 })
 
+test('an existing workbench without the recommended overlay is offered it, and adopting adds show-me', () => {
+  const stored = CURATED_OVERLAYS.filter(o => o.id !== 'recommended')
+  const report = foundationReport(CURATED_PRESETS, CURATED_PRESETS, CURATED_OVERLAYS, stored)
+  const diff = report.diffs.find(d => d.kind === 'overlay' && d.id === 'recommended')
+  assert.ok(diff, 'the shipped recommended overlay is part of the report')
+  assert.equal(diff.status, 'new')
+  assert.deepEqual(diff.missingSkills, ['humanlayer-skills/show-me'])
+  const res = adoptFoundation(report, CURATED_PRESETS, CURATED_PRESETS, CURATED_OVERLAYS, stored, ['recommended'])
+  const adopted = res.overlays.find(o => o.id === 'recommended')
+  assert.ok(adopted)
+  assert.equal(adopted.when, 'always')
+  assert.deepEqual(adopted.skills.map(s => s.ref), ['humanlayer-skills/show-me'])
+})
+
 test('short collapses whitespace, trims, and truncates', async () => {
   const { short } = await import('../lib/host/practices/detectors.js')
   assert.equal(short('  hello   world  '), 'hello world')

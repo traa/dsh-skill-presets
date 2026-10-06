@@ -10,7 +10,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC, STAGE_ORDER, defaultPractices } from './curated.ts'
 import { adoptFoundation, foundationReport, type FoundationReport } from './foundation.ts'
+import { RefNotFoundError, parseSkillUrl } from './github.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
+import { pickDir, validateSource } from './sources.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import {
   BUILTIN_FLOWS, DEFAULT_POSITION, defaultPositions, flowsDoc, moveTo, positionFromPreset, presetForStage, resolvePosition, switchFlow, validateFlow, validateFlows, validatePositions,
@@ -83,6 +85,13 @@ export class SkillPresetsService {
   /** Long-running jobs (install/update), polled by the UI. */
   private readonly jobs = new Map<string, JobState>()
   private nextJob = 1
+  /**
+   * Queue for every edit of `sources.json` made through this service
+   * (`saveSources`, `addSkillFromUrl`): one edit's read, checks and write
+   * finish before the next starts. A failed edit does not block later ones.
+   * Writers that bypass the service are not covered.
+   */
+  private sourcesEdit: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly deps: ServiceDeps) {
     this.log = deps.log ?? (() => {})
@@ -735,8 +744,98 @@ export class SkillPresetsService {
   }
 
   async saveSources(sources: SkillSource[]): Promise<void> {
+    await this.editSources(async () => { await this.writeSources(sources) })
+  }
+
+  /** Run one `sources.json` edit after every earlier one has settled. */
+  private async editSources<T>(edit: () => Promise<T>): Promise<T> {
+    const run = this.sourcesEdit.then(edit)
+    this.sourcesEdit = run.catch(() => undefined)
+    return await run
+  }
+
+  /** Validate and write `sources.json`; only call inside `editSources`. */
+  private async writeSources(sources: SkillSource[]): Promise<void> {
     await this.ensure()
     await writeJson(this.paths().sources, validateSourcesFile(sources))
+  }
+
+  /**
+   * Add one skill from a GitHub link to `sources.json` as a pick. Before
+   * saving, the pick is verified against the repository tree at the link's
+   * ref (the tree only; no skill file is downloaded); the caller installs it
+   * (`startSync([id], [dir])`). A new repo gets a new pick source; a pick
+   * source for the same repo and ref gains the pick; a repeated pick changes
+   * nothing and is not re-verified. Every rejection, including an unreachable
+   * tree or a pick not found there, throws and leaves `sources.json` untouched.
+   * @param url - a blob, tree or raw link to the skill (see `parseSkillUrl`).
+   */
+  async addSkillFromUrl(url: string): Promise<{ source: SkillSource, dir: string, created: boolean }> {
+    return await this.editSources(async () => await this.addSkillNow(url))
+  }
+
+  /**
+   * Throw unless `path` is a skill in `repo` at `ref` (spec B4 step 2b). A
+   * truncated listing cannot prove absence, so a pick missing from it is
+   * accepted unverified; the install then reports the truncation note.
+   */
+  private async verifyPick(repo: string, ref: string, path: string): Promise<void> {
+    let found: boolean
+    let truncated: boolean
+    try {
+      ({ found, truncated } = await this.library.hasPick(repo, ref, path))
+    } catch (error) {
+      const cause = `could not read ${repo} at "${ref}" to verify the skill: ${(error as Error).message}`
+      // Only "no such ref" (the ref lookup's 404/422) can come from a branch name with "/";
+      // a tree fetch failure, rate limit, 5xx or network error says nothing about the link.
+      if (error instanceof RefNotFoundError) throw new Error(`${cause}. If the branch name contains "/", link a commit instead.`)
+      throw new Error(cause)
+    }
+    if (!found && truncated) return
+    if (!found) {
+      throw new Error(`skill "${path}" not found in ${repo} at "${ref}" (no ${path}/SKILL.md there). `
+        + 'Branch names containing "/" are not supported; link a commit instead.')
+    }
+  }
+
+  private async addSkillNow(url: string): Promise<{ source: SkillSource, dir: string, created: boolean }> {
+    const parsed = parseSkillUrl(url)
+    if ('error' in parsed) throw new Error(parsed.error)
+    const { repo, ref, path } = parsed
+    const dir = pickDir(path)
+    await this.ensure()
+    const sources = await this.sources()
+    const existing = sources.find(s => s.kind === 'github' && s.repo?.toLowerCase() === repo.toLowerCase())
+    if (existing === undefined) {
+      const id = sourceIdForRepo(repo)
+      if (!/^[a-z0-9][a-z0-9._-]*$/u.test(id)) throw new Error(`cannot derive a source id from "${repo}" (got "${id}")`)
+      const taken = sources.find(s => s.id === id)
+      if (taken !== undefined) throw new Error(`source id "${id}" is already used by ${taken.repo !== undefined ? `"${taken.repo}"` : `a ${taken.kind} source`}`)
+      const source: SkillSource = { id, title: repo, kind: 'github', repo, ref, skills: [{ path }], enabled: true }
+      await this.verifyPick(repo, ref, path)
+      await this.writeSources([...sources, source])
+      return { source, dir, created: true }
+    }
+    // Whole-repo first: enabling such a source would not make the add valid, so do not suggest it.
+    if (existing.skills === undefined || existing.skills.length === 0) {
+      throw new Error(`"${existing.id}" already installs the whole repository ${existing.repo ?? repo}`)
+    }
+    // The RPC/UI install job skips disabled sources, so adding into one would install nothing there.
+    if (!existing.enabled) throw new Error(`"${existing.id}" is disabled; enable it first`)
+    if (existing.ref === undefined) {
+      throw new Error(`"${existing.id}" has no ref (it follows the default branch), so a link at "${ref}" cannot be matched to it; `
+        + `set "ref" on "${existing.id}" in sources.json to the branch it should follow, then add the link again`)
+    }
+    if (existing.ref !== ref) {
+      throw new Error(`"${existing.id}" follows ref "${existing.ref}", not "${ref}"; link the skill at "${existing.ref}"`)
+    }
+    if (existing.skills.some(pick => pick.path === path)) return { source: existing, dir, created: false }
+    const clash = existing.skills.find(pick => pickDir(pick.path) === dir)
+    if (clash !== undefined) throw new Error(`"${existing.id}" already has a skill named "${dir}" (from ${clash.path})`)
+    const source: SkillSource = { ...existing, skills: [...existing.skills, { path }] }
+    await this.verifyPick(existing.repo ?? repo, ref, path)
+    await this.writeSources(sources.map(s => s === existing ? source : s))
+    return { source, dir, created: false }
   }
 
   // -------------------------------------------------------------- library --
@@ -838,25 +937,17 @@ export function validateSourcesFile(raw: unknown): SkillSource[] {
   if (!Array.isArray(raw)) throw new TypeError('sources must be an array')
   const out: SkillSource[] = []
   for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const s = entry as Partial<SkillSource>
-    if (typeof s.id !== 'string' || !/^[a-z0-9][a-z0-9._-]*$/u.test(s.id)) continue
-    const kind = s.kind === 'local' ? 'local' : 'github'
-    if (kind === 'github' && (typeof s.repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(s.repo))) continue
-    out.push({
-      id: s.id,
-      title: typeof s.title === 'string' ? s.title : s.id,
-      kind,
-      ...(typeof s.repo === 'string' ? { repo: s.repo } : {}),
-      ...(typeof s.ref === 'string' ? { ref: s.ref } : {}),
-      ...(Array.isArray(s.paths) && s.paths.every(p => typeof p === 'string') ? { paths: s.paths } : {}),
-      enabled: s.enabled !== false,
-      ...(typeof s.note === 'string' ? { note: s.note } : {}),
-    })
+    const source = validateSource(entry)
+    if (source !== undefined) out.push(source)
   }
   // Local is always present so seeding has somewhere to go.
   if (!out.some(s => s.id === SRC.local)) out.push(CURATED_SOURCES.find(s => s.id === SRC.local)!)
   return out
+}
+
+/** `<owner>-<repo>` lowercased, characters outside `[a-z0-9._-]` replaced by `-`. */
+function sourceIdForRepo(repo: string): string {
+  return repo.toLowerCase().replace('/', '-').replace(/[^a-z0-9._-]/gu, '-')
 }
 
 async function copyDir(from: string, to: string): Promise<void> {
