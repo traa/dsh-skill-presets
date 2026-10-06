@@ -19,6 +19,9 @@
         "ref": "local/worktree-first"
       },
       {
+        "ref": "mattpocock-skills/pr"
+      },
+      {
         "ref": "local/pr-always"
       },
       {

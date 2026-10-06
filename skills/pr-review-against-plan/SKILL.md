@@ -15,8 +15,8 @@ recorded.
 
 - The diff (`gh pr diff <n>` or the branch compare).
 - `docs/sdlc/<slug>/plan.md` and `spec.md` if present; the PR body otherwise.
-- The tests that ran (from the PR body's Evidence section) — rerun them if
-  you can.
+- The PR body, written to the `pr` skill's template (Summary, Evidence, Merge
+  Danger). Rerun the tests named in Evidence if you can.
 
 ## Passes, in order
 
@@ -34,6 +34,22 @@ recorded.
 5. **Security** — where attacker-controllable input enters and how it is
    validated; secrets; injection surfaces; dependency changes.
 
+## Checking the PR body itself
+
+The body is part of the diff under review. Check it against the `pr` skill:
+
+- **Summary** shows the change as the smallest useful view (tree, diff-sketch,
+  diagram) and agrees with the diff — not a prose recap.
+- **Evidence** has a real before *and* after (output, test run, screenshot).
+  Missing or "tests pass" with no before state is a should-fix.
+- **Merge Danger** names the door (one-way / two-way) and a blast radius, and
+  you agree with the call. A one-way door the author called two-way is a
+  blocker; confirm it yourself from the diff (migrations, deletions, public
+  API, published artifacts).
+
+A body missing these sections goes back to the author before the code review
+proceeds.
+
 ## Writing findings
 
 For each finding: **severity** (blocker / should-fix / nit), **where**
@@ -41,7 +57,8 @@ For each finding: **severity** (blocker / should-fix / nit), **where**
 spec line), and **a proposed fix**. Prove a blocker — a reviewer who cannot
 show the failure has a hunch, not a finding.
 
-Post them on the PR (`gh pr review --comment -b …` or the forge equivalent)
+Open with your agreement or disagreement with Merge Danger, then the
+findings. Post them on the PR (`gh pr review --comment -b …` or the forge equivalent)
 or, if you cannot, return them to the author verbatim and say they must land
 in the PR.
 

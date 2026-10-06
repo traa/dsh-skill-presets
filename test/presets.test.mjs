@@ -78,3 +78,14 @@ test('validatePresetsFile tolerates junk entries', () => {
   assert.equal(out[0].skills.length, 1)
   assert.throws(() => validatePresetsFile({}), /array/)
 })
+
+test('mattpocock-skills/pr drives the PR body wherever pr-always opens one', () => {
+  const refs = skills => skills.map(s => s.ref)
+  for (const id of ['build', 'test-review', 'deploy']) {
+    const skills = refs(CURATED_PRESETS.find(p => p.id === id).skills)
+    assert.ok(skills.includes('mattpocock-skills/pr'), `${id} must carry the pr skill`)
+    assert.ok(skills.indexOf('mattpocock-skills/pr') < skills.indexOf('local/pr-always'), `${id}: pr before pr-always`)
+  }
+  const git = refs(CURATED_OVERLAYS.find(o => o.id === 'git-repo').skills)
+  assert.ok(git.includes('mattpocock-skills/pr'), 'git-repo overlay must carry the pr skill')
+})

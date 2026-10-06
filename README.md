@@ -263,7 +263,7 @@ restart, no filesystem watching.
 | Overlay | Condition (harness seam) | Adds |
 |---|---|---|
 | `team-attached` | `team_delegate` is visible to the agent (dsh-agent-teams installs it per attached session) | `conductor-protocol` |
-| `git-repo` | the session cwd is inside a git work tree | `worktree-first`, `pr-always` |
+| `git-repo` | the session cwd is inside a git work tree | `worktree-first`, `pr` (mattpocock), `pr-always` |
 
 Enforcement is **additive** by default: skills from `~/.dsh/skills` or a
 project's `.dsh/skills` stay visible. **Strict** mode narrows the catalog
@@ -295,9 +295,9 @@ them there; they are yours):
 |---|---|
 | `plan` | brainstorming, idea-refine, interview-me, spec-driven-development, grill-me, to-spec, sdlc-stage-handoff |
 | `design` | writing-plans, planning-and-task-breakdown, api-and-interface-design, documentation-and-adrs, codebase-design, domain-modeling, to-tickets, sdlc-stage-handoff |
-| `build` | executing-plans, test-driven-development, using-git-worktrees, verification-before-completion, incremental-implementation, git-workflow-and-versioning, implement, worktree-first, pr-always |
-| `test-review` | requesting-code-review, receiving-code-review, finishing-a-development-branch, code-review-and-quality, security-and-hardening, browser-testing-with-devtools, code-review, pr-review-against-plan, pr-always |
-| `deploy` | ci-cd-and-automation, shipping-and-launch, deprecation-and-migration, pr-always |
+| `build` | executing-plans, test-driven-development, using-git-worktrees, verification-before-completion, incremental-implementation, git-workflow-and-versioning, implement, worktree-first, pr, pr-always |
+| `test-review` | requesting-code-review, receiving-code-review, finishing-a-development-branch, code-review-and-quality, security-and-hardening, browser-testing-with-devtools, code-review, pr-review-against-plan, pr, pr-always |
+| `deploy` | ci-cd-and-automation, shipping-and-launch, deprecation-and-migration, pr, pr-always |
 | `maintain` | systematic-debugging, debugging-and-error-recovery, observability-and-instrumentation, performance-optimization, diagnosing-bugs, triage, incident-to-intent |
 | `delegate` | dispatching-parallel-agents, subagent-driven-development, conductor-protocol, gemini-agent, qoder-agent |
 
