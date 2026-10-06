@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { splitRef, validatePreset } from './presets.ts'
+import { validateSource } from './sources.ts'
 import type { Lock, LockedSkill, Overlay, Preset, SkillSource } from './types.ts'
 
 export interface Bundle {
@@ -115,7 +116,19 @@ export function planImport(bundle: Bundle, ctx: ImportContext): ImportPlan {
     else if (mode === 'rename') presets.push({ id: `${p.id}${suffix}`, from: p.id, action: 'create' })
     else presets.push({ id: p.id, from: p.id, action: 'skip' })
   }
-  const newSources = bundle.sources.filter(s => !ctx.sources.some(x => x.id === s.id)).map(s => ({ ...s, enabled: false }))
+  // Bundle sources pass the same validation as sources.json: a malformed or
+  // unsafe one is reported and never added, so nothing is synced for it.
+  const newSources: SkillSource[] = []
+  for (const raw of bundle.sources) {
+    const source = validateSource(raw)
+    if (source === undefined) {
+      const id: unknown = typeof raw === 'object' && raw !== null ? (raw as { id?: unknown }).id : undefined
+      problems.push(`source ${typeof id === 'string' ? `"${id}"` : '(unnamed)'} is not a valid source and was not added`)
+      continue
+    }
+    if (ctx.sources.some(x => x.id === source.id) || newSources.some(x => x.id === source.id)) continue
+    newSources.push({ ...source, enabled: false })
+  }
   const installed = new Set(ctx.lock.skills.map(s => `${s.source}/${s.dir}`))
   const toInstall: ImportPlan['toInstall'] = []
   const localSkills: ImportPlan['localSkills'] = []

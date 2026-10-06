@@ -184,8 +184,12 @@ export class SettingsController extends Store<SettingsSnapshot> {
    * Add ONE skill from a GitHub link, then follow its install job like
    * `updateSource`. A rejected link lands in the error banner and the field
    * keeps the text so it can be corrected; a success clears the field.
+   * Ignored while any action is busy (an add in flight included): `action`
+   * sets `busy` before its first await, so a double click, or a click on a
+   * button rendered before another action started, sends nothing more.
    */
   async addSkill(url: string): Promise<void> {
+    if (this.get().busy !== undefined) return
     await this.action('add-skill', async () => {
       const out = await rpc<AddSkillResult>('sources/add-skill', { url })
       this.set({ skillLink: '' })

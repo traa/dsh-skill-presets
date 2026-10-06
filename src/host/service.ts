@@ -12,6 +12,7 @@ import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC,
 import { adoptFoundation, foundationReport, type FoundationReport } from './foundation.ts'
 import { parseSkillUrl } from './github.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
+import { pickDir, validateSource } from './sources.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
 import {
   BUILTIN_FLOWS, DEFAULT_POSITION, defaultPositions, flowsDoc, moveTo, positionFromPreset, presetForStage, resolvePosition, switchFlow, validateFlow, validateFlows, validatePositions,
@@ -84,7 +85,12 @@ export class SkillPresetsService {
   /** Long-running jobs (install/update), polled by the UI. */
   private readonly jobs = new Map<string, JobState>()
   private nextJob = 1
-  /** Serialises `addSkillFromUrl` so its read, check and write are one step. */
+  /**
+   * Queue for every edit of `sources.json` made through this service
+   * (`saveSources`, `addSkillFromUrl`): one edit's read, checks and write
+   * finish before the next starts. A failed edit does not block later ones.
+   * Writers that bypass the service are not covered.
+   */
   private sourcesEdit: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly deps: ServiceDeps) {
@@ -738,22 +744,49 @@ export class SkillPresetsService {
   }
 
   async saveSources(sources: SkillSource[]): Promise<void> {
+    await this.editSources(async () => { await this.writeSources(sources) })
+  }
+
+  /** Run one `sources.json` edit after every earlier one has settled. */
+  private async editSources<T>(edit: () => Promise<T>): Promise<T> {
+    const run = this.sourcesEdit.then(edit)
+    this.sourcesEdit = run.catch(() => undefined)
+    return await run
+  }
+
+  /** Validate and write `sources.json`; only call inside `editSources`. */
+  private async writeSources(sources: SkillSource[]): Promise<void> {
     await this.ensure()
     await writeJson(this.paths().sources, validateSourcesFile(sources))
   }
 
   /**
-   * Add one skill from a GitHub link to `sources.json` as a pick, without
-   * touching the network; the caller installs it (`startSync([id], [dir])`).
-   * A new repo gets a new pick source; a pick source for the same repo and ref
-   * gains the pick; a repeated pick changes nothing. Every rejection throws and
-   * leaves `sources.json` untouched.
+   * Add one skill from a GitHub link to `sources.json` as a pick. Before
+   * saving, the pick is verified against the repository tree at the link's
+   * ref (the tree only; no skill file is downloaded); the caller installs it
+   * (`startSync([id], [dir])`). A new repo gets a new pick source; a pick
+   * source for the same repo and ref gains the pick; a repeated pick changes
+   * nothing and is not re-verified. Every rejection, including an unreachable
+   * tree or a pick not found there, throws and leaves `sources.json` untouched.
    * @param url - a blob, tree or raw link to the skill (see `parseSkillUrl`).
    */
   async addSkillFromUrl(url: string): Promise<{ source: SkillSource, dir: string, created: boolean }> {
-    const run = this.sourcesEdit.then(async () => await this.addSkillNow(url))
-    this.sourcesEdit = run.catch(() => undefined)
-    return await run
+    return await this.editSources(async () => await this.addSkillNow(url))
+  }
+
+  /** Throw unless `path` is a skill in `repo` at `ref` (spec B4 step 2b). */
+  private async verifyPick(repo: string, ref: string, path: string): Promise<void> {
+    let found: boolean
+    try {
+      found = (await this.library.hasPick(repo, ref, path)).found
+    } catch (error) {
+      throw new Error(`could not read ${repo} at "${ref}" to verify the skill: ${(error as Error).message}. `
+        + 'If the branch name contains "/", link a commit instead.')
+    }
+    if (!found) {
+      throw new Error(`skill "${path}" not found in ${repo} at "${ref}" (no ${path}/SKILL.md there). `
+        + 'Branch names containing "/" are not supported; link a commit instead.')
+    }
   }
 
   private async addSkillNow(url: string): Promise<{ source: SkillSource, dir: string, created: boolean }> {
@@ -770,20 +803,28 @@ export class SkillPresetsService {
       const taken = sources.find(s => s.id === id)
       if (taken !== undefined) throw new Error(`source id "${id}" is already used by ${taken.repo !== undefined ? `"${taken.repo}"` : `a ${taken.kind} source`}`)
       const source: SkillSource = { id, title: repo, kind: 'github', repo, ref, skills: [{ path }], enabled: true }
-      await this.saveSources([...sources, source])
+      await this.verifyPick(repo, ref, path)
+      await this.writeSources([...sources, source])
       return { source, dir, created: true }
     }
+    // The RPC/UI install job skips disabled sources, so adding into one would install nothing there.
+    if (!existing.enabled) throw new Error(`"${existing.id}" is disabled; enable it first`)
     if (existing.skills === undefined || existing.skills.length === 0) {
       throw new Error(`"${existing.id}" already installs the whole repository ${existing.repo ?? repo}`)
     }
+    if (existing.ref === undefined) {
+      throw new Error(`"${existing.id}" has no ref (it follows the default branch), so a link at "${ref}" cannot be matched to it; `
+        + `set "ref" on "${existing.id}" in sources.json to the branch it should follow, then add the link again`)
+    }
     if (existing.ref !== ref) {
-      throw new Error(`"${existing.id}" follows ${existing.ref !== undefined ? `ref "${existing.ref}"` : 'the default branch'}, not "${ref}"; link the skill at that ref`)
+      throw new Error(`"${existing.id}" follows ref "${existing.ref}", not "${ref}"; link the skill at "${existing.ref}"`)
     }
     if (existing.skills.some(pick => pick.path === path)) return { source: existing, dir, created: false }
     const clash = existing.skills.find(pick => pickDir(pick.path) === dir)
     if (clash !== undefined) throw new Error(`"${existing.id}" already has a skill named "${dir}" (from ${clash.path})`)
     const source: SkillSource = { ...existing, skills: [...existing.skills, { path }] }
-    await this.saveSources(sources.map(s => s === existing ? source : s))
+    await this.verifyPick(existing.repo ?? repo, ref, path)
+    await this.writeSources(sources.map(s => s === existing ? source : s))
     return { source, dir, created: false }
   }
 
@@ -886,57 +927,11 @@ export function validateSourcesFile(raw: unknown): SkillSource[] {
   if (!Array.isArray(raw)) throw new TypeError('sources must be an array')
   const out: SkillSource[] = []
   for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const s = entry as Partial<SkillSource>
-    if (typeof s.id !== 'string' || !/^[a-z0-9][a-z0-9._-]*$/u.test(s.id)) continue
-    const kind = s.kind === 'local' ? 'local' : 'github'
-    if (kind === 'github' && (typeof s.repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(s.repo))) continue
-    const skills = validatePicks(s.skills)
-    // Picks were asked for but none is safe: dropping them would silently turn
-    // the source into a whole-repository install, so drop the source instead.
-    if (Array.isArray(s.skills) && s.skills.length > 0 && skills.length === 0) continue
-    out.push({
-      id: s.id,
-      title: typeof s.title === 'string' ? s.title : s.id,
-      kind,
-      ...(typeof s.repo === 'string' ? { repo: s.repo } : {}),
-      ...(typeof s.ref === 'string' ? { ref: s.ref } : {}),
-      ...(Array.isArray(s.paths) && s.paths.every(p => typeof p === 'string') ? { paths: s.paths } : {}),
-      ...(skills.length > 0 ? { skills } : {}),
-      enabled: s.enabled !== false,
-      ...(typeof s.note === 'string' ? { note: s.note } : {}),
-    })
+    const source = validateSource(entry)
+    if (source !== undefined) out.push(source)
   }
   // Local is always present so seeding has somewhere to go.
   if (!out.some(s => s.id === SRC.local)) out.push(CURATED_SOURCES.find(s => s.id === SRC.local)!)
-  return out
-}
-
-/**
- * Whether a pick path is a safe repo-relative directory: non-empty, not
- * absolute, no backslash, and no empty, `.` or `..` segment.
- */
-function isSafePickPath(path: string): boolean {
-  if (path.length === 0 || path.startsWith('/') || path.includes('\\')) return false
-  return path.split('/').every(segment => segment.length > 0 && segment !== '.' && segment !== '..')
-}
-
-/** The last segment of a pick path: the skill's `dir`. */
-function pickDir(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1)
-}
-
-/** Keep the safe picks, first one wins per `dir`. */
-function validatePicks(raw: unknown): { path: string }[] {
-  if (!Array.isArray(raw)) return []
-  const out: { path: string }[] = []
-  for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const path: unknown = (entry as { path?: unknown }).path
-    if (typeof path !== 'string' || !isSafePickPath(path)) continue
-    if (out.some(pick => pickDir(pick.path) === pickDir(path))) continue
-    out.push({ path })
-  }
   return out
 }
 

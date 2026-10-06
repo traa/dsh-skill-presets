@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { parseSkill } from './frontmatter.ts'
-import { GithubClient, discoverSkills, pickSkills, type DiscoveredSkill, type RepoTree } from './github.ts'
+import { GithubClient, discoverSkills, pickSkills, trimSlashes, type DiscoveredSkill, type RepoTree } from './github.ts'
 import { isNormalizable, normalizeText } from './normalize.ts'
 import { emptyLock, readJson, validateLock, writeJson, type StorePaths } from './store.ts'
 import type { Lock, LockedSkill, NormalizeRule, SkillSource } from './types.ts'
@@ -68,7 +68,7 @@ export function discoverSourceSkills(source: SkillSource, tree: Pick<RepoTree, '
   if (source.skills !== undefined && source.skills.length > 0) {
     const skills = pickSkills(tree.entries, source.skills)
     const missing = source.skills
-      .map(pick => pick.path.replace(/^\/+|\/+$/gu, ''))
+      .map(pick => trimSlashes(pick.path))
       .filter(path => !skills.some(skill => skill.path === path))
     return { skills, missing }
   }
@@ -278,6 +278,18 @@ export class Library {
       skills: [...current.skills.filter(entry => entry.source !== source.id), ...installed],
     }))
     return report
+  }
+
+  /**
+   * Whether one pick exists in `repo` at `ref`: reads the tree only (no skill
+   * file is downloaded) and asks the same discovery `sync` uses. Throws when
+   * the tree cannot be read.
+   * @returns whether the pick was found, and the commit the ref resolved to.
+   */
+  async hasPick(repo: string, ref: string, path: string, signal?: AbortSignal): Promise<{ found: boolean, commit: string }> {
+    const tree = await this.github.tree(repo, ref, signal)
+    const probe: SkillSource = { id: 'probe', title: repo, kind: 'github', repo, ref, skills: [{ path }], enabled: true }
+    return { found: discoverSourceSkills(probe, tree).missing.length === 0, commit: tree.commit }
   }
 
   /** Compare upstream against the lock without downloading bundles. */

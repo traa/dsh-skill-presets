@@ -9,6 +9,8 @@
  * @module dsh-skill-presets/host/github
  */
 
+import { hasControlChar } from './sources.ts'
+
 /** The slice of `fetch` this module uses. */
 export type FetchLike = (url: string, init?: { headers?: Record<string, string>, signal?: AbortSignal }) => Promise<{
   ok: boolean
@@ -146,6 +148,18 @@ export interface DiscoveredSkill {
 }
 
 /**
+ * Strip leading and trailing `/` in one linear pass. The regex form
+ * `/^\/+|\/+$/g` backtracks quadratically on a long interior run of slashes.
+ */
+export function trimSlashes(path: string): string {
+  let start = 0
+  let end = path.length
+  while (start < end && path.charCodeAt(start) === 0x2f) start += 1
+  while (end > start && path.charCodeAt(end - 1) === 0x2f) end -= 1
+  return path.slice(start, end)
+}
+
+/**
  * Find `<root>/<name>/SKILL.md` bundles under each configured root.
  *
  * Only one level deep by design — that is the layout all three curated sources
@@ -158,7 +172,7 @@ export interface DiscoveredSkill {
 export function discoverSkills(entries: readonly TreeEntry[], roots: readonly string[]): DiscoveredSkill[] {
   const found = new Map<string, DiscoveredSkill>()
   for (const rawRoot of roots) {
-    const root = rawRoot.replace(/^\/+|\/+$/gu, '')
+    const root = trimSlashes(rawRoot)
     const prefix = root.length > 0 ? `${root}/` : ''
     for (const entry of entries) {
       if (!entry.path.startsWith(prefix)) continue
@@ -187,7 +201,7 @@ export function discoverSkills(entries: readonly TreeEntry[], roots: readonly st
 export function pickSkills(entries: readonly TreeEntry[], picks: readonly { readonly path: string }[]): DiscoveredSkill[] {
   const found = new Map<string, DiscoveredSkill>()
   for (const pick of picks) {
-    const path = pick.path.replace(/^\/+|\/+$/gu, '')
+    const path = trimSlashes(pick.path)
     if (path.length === 0 || found.has(path)) continue
     if (!entries.some(entry => entry.path === `${path}/SKILL.md`)) continue
     const dir = path.slice(path.lastIndexOf('/') + 1)
@@ -208,10 +222,13 @@ const SKILL_URL_SHAPE = 'expected https://github.com/<owner>/<repo>/blob/<ref>/<
  * Parse a GitHub link to one skill (a `SKILL.md` blob, its directory, or the
  * raw file) into `{ repo, ref, path }`. Never throws.
  *
- * The ref is the single segment after `blob`/`tree` (or after the repo on
- * `raw.githubusercontent.com`), so branch names containing `/` cannot be
- * expressed; link a commit instead. Segments are checked as written, before
- * any URL normalization could collapse a `..`.
+ * The ref is the single segment after `blob`/`tree` (or after the repo, or
+ * after `refs/heads/` / `refs/tags/`, on `raw.githubusercontent.com`), so
+ * branch names containing `/` cannot be expressed; link a commit instead. A
+ * parse cannot tell such a link from a valid one; `addSkillFromUrl` rejects it
+ * when the pick is not in the tree. Segments are checked as written, before
+ * any URL normalization could collapse a `..`, and a segment with a control
+ * character (raw or percent-encoded) is refused.
  * @param url - the link as pasted.
  */
 export function parseSkillUrl(url: string): ParsedSkillUrl {
@@ -236,6 +253,7 @@ export function parseSkillUrl(url: string): ParsedSkillUrl {
       return { error: `the link has an empty, "." or ".." path segment: ${SKILL_URL_SHAPE}` }
     }
     if (value.includes('/') || value.includes('\\')) return { error: `invalid path segment "${segment}"` }
+    if (hasControlChar(value)) return { error: `the link has a control character in a path segment (${JSON.stringify(value)})` }
     decoded.push(value)
   }
   const [owner, rawRepo, ...rest] = decoded
@@ -250,10 +268,15 @@ export function parseSkillUrl(url: string): ParsedSkillUrl {
     if (mode !== 'blob' && mode !== 'tree') return { error: `the link does not point into the repository's files: ${SKILL_URL_SHAPE}` }
     kind = mode
   }
+  // raw.githubusercontent.com also serves `refs/heads/<branch>` and `refs/tags/<tag>`.
+  if (raw && rest[0] === 'refs' && (rest[1] === 'heads' || rest[1] === 'tags')) rest.splice(0, 2)
   const ref = rest.shift()
   if (ref === undefined) return { error: `the link names no ref: ${SKILL_URL_SHAPE}` }
   if (kind === 'blob') {
     if (rest.pop() !== 'SKILL.md') return { error: `the link must point at a SKILL.md file: ${SKILL_URL_SHAPE}` }
+  } else if (rest.at(-1) === 'SKILL.md') {
+    // A tree link copied with the file still on it: the directory is meant.
+    rest.pop()
   }
   if (rest.length === 0) return { error: 'the link points at the repository root, which is not a skill directory; link the skill\'s own SKILL.md or directory' }
   return { repo, ref, path: rest.join('/') }

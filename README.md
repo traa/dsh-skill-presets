@@ -306,20 +306,35 @@ or use the **Add skill** field on the Library tab (RPC `sources/add-skill`
 `{ url }` → `{ source, dir, created, job }`). Either way:
 
 - Accepted links: a github.com `blob/<ref>/…/SKILL.md` link, a `tree/<ref>/<dir>`
-  link, or a `raw.githubusercontent.com/<owner>/<repo>/<ref>/…/SKILL.md` link.
-  Query strings and fragments are ignored.
+  link (a trailing `/SKILL.md` on it is ignored), or a
+  `raw.githubusercontent.com/<owner>/<repo>/<ref>/…/SKILL.md` link, including the
+  `…/refs/heads/<branch>/…` and `…/refs/tags/<tag>/…` forms. Query strings and
+  fragments are ignored; a path segment with a control character is refused.
+- **Verified before it is saved.** The repository tree at the link's ref is read
+  (the tree only; no skill file is downloaded) and the pick must be there: a
+  directory holding a `SKILL.md`. A link that is accepted has been checked against
+  that tree. Repeating a pick that is already saved changes nothing and is not
+  re-checked.
 - The source follows the ref in the link (usually a branch); the lock records the
   commit each install resolved to. Branch names containing `/` are not supported:
-  link a commit instead.
+  such a link reads as a shorter branch plus a longer path, the check fails, and
+  the message says to link a commit instead.
 - A new repository becomes a new source with id `<owner>-<repo>`; a second link
-  into the same repository and ref is appended to that source's picks, and the
-  same link twice changes nothing.
+  into the same repository and ref is appended to that source's picks.
 - Rejected, with `sources.json` left as it was: a link that is not one of the
-  forms above; a repository already installed as a whole-repo source; a link at
-  a different ref than the existing pick source; a pick whose directory name
-  (the last path segment) is already used by another pick in that source.
+  forms above; a pick not found at that ref; a tree that cannot be read (network
+  error, unknown repository or ref); a repository already installed as a
+  whole-repo source; an existing source for that repository that is disabled
+  (enable it first); a link at a different ref than the existing pick source (a
+  pick source with no `ref` must be given one in `sources.json` first); a pick
+  whose directory name (the last path segment) is already used by another pick
+  in that source. A rejected link saves nothing, so the corrected link works next.
 - Only the added skill is installed; the CLI prints `<source>/<dir>: +1 …` and
-  exits 1 on a rejected link.
+  exits 1 on a rejected link. The install is a separate step after the save: if
+  it fails (for example the network drops), the verified pick stays in
+  `sources.json`, and **Install**/**Update** on that source retries it.
+- Writes to `sources.json` through the plugin (Add skill, saving sources, bundle
+  imports) run one at a time, so a concurrent add and save do not interleave.
 
 **Existing workbenches.** The foundation adopter (`foundation --adopt`, or the
 banner in the UI) merges presets and overlays, not sources. A workbench seeded
