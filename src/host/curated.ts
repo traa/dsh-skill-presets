@@ -22,6 +22,7 @@ export const SRC = {
   addy: 'addyosmani-agent-skills',
   superpowers: 'obra-superpowers',
   matt: 'mattpocock-skills',
+  humanlayer: 'humanlayer-skills',
   local: 'local',
 } as const
 
@@ -52,6 +53,17 @@ export const CURATED_SOURCES: readonly SkillSource[] = [
     paths: ['skills/engineering', 'skills/productivity'],
     enabled: true,
     note: 'Engineering and productivity skills; `in-progress` and `misc` are excluded by default.',
+  },
+  {
+    // A pick source: installs exactly this one directory, never the rest of the repo.
+    id: SRC.humanlayer,
+    title: 'humanlayer/skills (show-me)',
+    kind: 'github',
+    repo: 'humanlayer/skills',
+    ref: 'main',
+    skills: [{ path: 'plugins/show-me/skills/show-me' }],
+    enabled: true,
+    note: '`show-me` by Dex Horthy / HumanLayer: explains the current topic visually (diagrams, code-shape sketches, focused HTML). User-invoked: upstream sets disable-model-invocation.',
   },
   {
     id: SRC.local,
@@ -167,6 +179,15 @@ export const CURATED_OVERLAYS: readonly Overlay[] = [
     title: 'Inside a git repository',
     when: 'git-work-tree',
     skills: [ref(SRC.local, 'worktree-first'), ref(SRC.matt, 'pr'), ref(SRC.local, 'pr-always'), ref(SRC.local, 'worktree-cleanup'), ref(SRC.local, 'post-merge-sync')],
+    enabled: true,
+  },
+  {
+    // Ref only: upstream's `disable-model-invocation: true` is kept, so show-me
+    // is listed in every conversation and runs when the user invokes it.
+    id: 'recommended',
+    title: 'Recommended everywhere',
+    when: 'always',
+    skills: [ref(SRC.humanlayer, 'show-me')],
     enabled: true,
   },
 ]

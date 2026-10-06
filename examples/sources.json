@@ -34,6 +34,20 @@
     "note": "Engineering and productivity skills; `in-progress` and `misc` are excluded by default."
   },
   {
+    "id": "humanlayer-skills",
+    "title": "humanlayer/skills (show-me)",
+    "kind": "github",
+    "repo": "humanlayer/skills",
+    "ref": "main",
+    "skills": [
+      {
+        "path": "plugins/show-me/skills/show-me"
+      }
+    ],
+    "enabled": true,
+    "note": "`show-me` by Dex Horthy / HumanLayer: explains the current topic visually (diagrams, code-shape sketches, focused HTML). User-invoked: upstream sets disable-model-invocation."
+  },
+  {
     "id": "local",
     "title": "Local (this workbench)",
     "kind": "local",

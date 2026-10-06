@@ -32,5 +32,16 @@
       }
     ],
     "enabled": true
+  },
+  {
+    "id": "recommended",
+    "title": "Recommended everywhere",
+    "when": "always",
+    "skills": [
+      {
+        "ref": "humanlayer-skills/show-me"
+      }
+    ],
+    "enabled": true
   }
 ]
