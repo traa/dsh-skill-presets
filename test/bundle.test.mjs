@@ -102,3 +102,19 @@ test('planImport/applyImport validate bundle pick sources: unsafe or malformed p
   for (const [id] of synced) assert.ok(saved.has(id), `sync ran for "${id}", which is not in sources.json, so its lock entries would have no source`)
   assert.ok(!synced.some(([id]) => id === 'unsafe' || id === 'malformed'))
 })
+
+// Review round 2: an invalid source is a BLOCKING problem (the bundle/apply RPC
+// refuses while plan.problems is non-empty), so the message must say so.
+test('an invalid bundle source is a problem that says the bundle was not imported', () => {
+  const bundle = validateBundle({
+    version: 1, exportedAt: 't', presets: [preset('fresh', ['bad/x'])], overlays: [],
+    sources: [{ id: 'bad', title: 'bad', kind: 'github', repo: 'o/bad', ref: 'main', skills: [{ path: '../x' }], enabled: true }],
+    lock: [], localSkills: {},
+  })
+  const plan = planImport(bundle, { presets: [], sources: [sources[1]], lock: { version: 1, sources: {}, skills: [] } })
+  assert.ok(plan.problems.length > 0, 'the plan carries a blocking problem')
+  const problem = plan.problems.find(p => p.includes('"bad"'))
+  assert.ok(problem, `the problem names the source: ${plan.problems.join(' | ')}`)
+  assert.match(problem, /not imported/i)
+  assert.deepEqual(plan.newSources, [])
+})

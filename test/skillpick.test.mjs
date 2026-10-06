@@ -355,6 +355,21 @@ test('validateSourcesFile drops a source whose `skills` is not an array of { pat
   }
 })
 
+// Review round 2 (spec B4 2b): `skills: null` reads as absent; a malformed pick
+// ENTRY is dropped like an unsafe one, and the source survives while a safe pick remains.
+
+test('validateSourcesFile keeps a stored source with `skills: null` as a whole-repo source', () => {
+  const out = validateSourcesFile([{ id: 'o-r', title: 'o/r', kind: 'github', repo: 'o/r', paths: ['a'], skills: null, enabled: true }])
+  assert.deepEqual(out.find(s => s.id === 'o-r'), { id: 'o-r', title: 'o/r', kind: 'github', repo: 'o/r', paths: ['a'], enabled: true })
+})
+
+test('validateSourcesFile drops a malformed pick entry but keeps the source while a safe pick remains', () => {
+  for (const bad of [{}, 1, null, { path: 7 }]) {
+    const out = validateSourcesFile([{ ...PICK_SOURCE, skills: [{ path: 'a/ok' }, bad] }])
+    assert.deepEqual(out.find(s => s.id === 'humanlayer-skills')?.skills, [{ path: 'a/ok' }], `entry ${JSON.stringify(bad)} is dropped, the source kept`)
+  }
+})
+
 // ------------------------------------------------------------ B4 addSkillFromUrl --
 
 /**
@@ -373,16 +388,19 @@ const SERVED = {
 
 /**
  * A fake GitHub serving `served` (never the network). `mode.down` makes every
- * call fail like a dropped connection. Records every URL so a test can tell a
- * tree lookup from a bundle download.
+ * call fail like a dropped connection; `mode.status` answers every call with
+ * that HTTP error (e.g. a 403 rate limit); `mode.truncated` marks every tree
+ * listing as truncated. Records every URL so a test can tell a tree lookup
+ * from a bundle download.
  */
 function servingGithub(served, mode = {}) {
   const calls = []
-  const ok = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), arrayBuffer: async () => new ArrayBuffer(0) })
+  const ok = body => ({ ok: true, status: 200, text: async () => JSON.stringify(mode.truncated === true && body.tree !== undefined ? { ...body, truncated: true } : body), arrayBuffer: async () => new ArrayBuffer(0) })
   const missing = { ok: false, status: 404, text: async () => 'Not Found', arrayBuffer: async () => new ArrayBuffer(0) }
   const fetch = async (url) => {
     calls.push(url)
     if (mode.down === true) throw new Error('ECONNRESET')
+    if (mode.status !== undefined) return { ok: false, status: mode.status, text: async () => 'API rate limit exceeded', arrayBuffer: async () => new ArrayBuffer(0) }
     const c = url.match(/^https:\/\/api\/repos\/([^/]+)\/([^/]+)\/commits\/([^?]+)$/)
     if (c) {
       const repo = `${c[1]}/${c[2]}`.toLowerCase()
@@ -631,6 +649,65 @@ test('addSkillFromUrl racing saveSources in the same millisecond neither throws 
   const ids = JSON.parse(await raw()).map(s => s.id).sort()
   const outcomes = [['humanlayer-skills', 'local', 'obra-superpowers'], ['local', 'obra-superpowers', 'other'], ['humanlayer-skills', 'local', 'obra-superpowers', 'other']]
   assert.ok(outcomes.some(o => JSON.stringify(o) === JSON.stringify(ids)), `a complete outcome, got ${ids.join(', ')}`)
+})
+
+// ------------------------------------------- review round 2 (spec B4 2b) --
+
+test('a second pick into an existing source is verified too: a typo is rejected, then the right pick is added', async () => {
+  const { svc, raw } = await serviceSetup([SUPERPOWERS])
+  assert.equal((await add(svc, SHOW_ME)).created, true)
+  const afterFirst = await raw()
+  await rejectsWith(svc, 'https://github.com/humanlayer/skills/blob/main/plugins/typo/skills/second/SKILL.md', (thrown) => {
+    assert.ok(thrown instanceof Error)
+    assert.match(thrown.message, /plugins\/typo\/skills\/second/, 'names the path')
+    assert.match(thrown.message, /main/, 'names the ref')
+    assert.match(thrown.message, /commit/)
+    return true
+  })
+  assert.equal(await raw(), afterFirst, 'sources.json is byte-identical to its state after the first add')
+  const out = await add(svc, 'https://github.com/humanlayer/skills/blob/main/plugins/other/skills/second/SKILL.md')
+  assert.equal(out.created, false)
+  assert.deepEqual((await svc.sources()).find(s => s.id === 'humanlayer-skills').skills, [{ path: 'plugins/show-me/skills/show-me' }, { path: 'plugins/other/skills/second' }])
+})
+
+test('a truncated tree cannot prove a pick absent: the add is accepted without verification', async () => {
+  const { svc } = await serviceSetup([SUPERPOWERS], SERVED, { truncated: true })
+  const out = await add(svc, 'https://github.com/humanlayer/skills/blob/main/plugins/beyond/skills/listing/SKILL.md')
+  assert.equal(out.created, true)
+  assert.deepEqual((await svc.sources()).find(s => s.id === 'humanlayer-skills').skills, [{ path: 'plugins/beyond/skills/listing' }])
+})
+
+test('a truncated tree that does list the pick saves it', async () => {
+  const { svc } = await serviceSetup([SUPERPOWERS], SERVED, { truncated: true })
+  const out = await add(svc, SHOW_ME)
+  assert.equal(out.created, true)
+  assert.deepEqual(out.source.skills, [{ path: 'plugins/show-me/skills/show-me' }])
+})
+
+test('a tree that cannot be read is reported with repo and ref, without the slash-branch hint', async () => {
+  for (const mode of [{ down: true }, { status: 403 }]) {
+    const { svc, raw } = await serviceSetup([SUPERPOWERS], SERVED, mode)
+    const before = await raw()
+    await rejectsWith(svc, SHOW_ME, (thrown) => {
+      assert.ok(thrown instanceof Error)
+      assert.match(thrown.message, /humanlayer\/skills/i, `names the repo (${JSON.stringify(mode)})`)
+      assert.match(thrown.message, /main/, 'names the ref')
+      assert.doesNotMatch(thrown.message, /branch name/i, `a ${JSON.stringify(mode)} failure is not a slash-branch problem: ${thrown.message}`)
+      return true
+    })
+    assert.equal(await raw(), before)
+  }
+})
+
+test('a hand-written source with `skills: null` survives sources() and a later add for another repo', async () => {
+  const { svc, raw } = await serviceSetup([SUPERPOWERS])
+  const { writeFile } = await import('node:fs/promises')
+  const stored = JSON.parse(await raw())
+  await writeFile(svc.paths().sources, JSON.stringify([...stored, { id: 'o-r', title: 'o/r', kind: 'github', repo: 'o/r', paths: ['a'], skills: null, enabled: true }]))
+  assert.ok((await svc.sources()).some(s => s.id === 'o-r'), 'read back as a whole-repo source')
+  await add(svc, SHOW_ME)
+  const kept = (await svc.sources()).find(s => s.id === 'o-r')
+  assert.deepEqual(kept, { id: 'o-r', title: 'o/r', kind: 'github', repo: 'o/r', paths: ['a'], enabled: true }, 'the next write keeps it')
 })
 
 // ------------------------------------------------------------ B5 CLI --
