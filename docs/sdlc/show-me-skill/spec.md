@@ -94,7 +94,16 @@ and is not silently dropped. Bundle file names are relative to the pick path.
    `GithubClient.tree` and require that the pick exists (`pickSkills` returns it). If the
    tree cannot be fetched, or the pick is not found, throw and leave `sources.json`
    untouched. The not-found message names the path and ref and says that branch names
-   containing `/` are unsupported and a commit can be linked instead. Consequence: no source
+   containing `/` are unsupported and a commit can be linked instead. Verification applies to
+   every add, including a second pick into an existing source. The "branch names containing
+   `/`" hint is added only to the not-found error, not to network/rate-limit errors. If GitHub
+   reports the tree as truncated and the pick is not in it, absence cannot be proven: the add
+   is accepted without verification and the later install reports the truncation note.
+   `skills: null` in a stored source is read as absent (whole-repo), not a reason to drop the
+   source. A bundle with an invalid source is reported as a blocking problem whose message says
+   the bundle was not imported. The README claims only that a link is checked when it is first
+   added (an already-saved pick is not re-checked) and that writes made through the service
+   run in order within one process. Consequence: no source
    or pick is ever saved that the install cannot find, so a bad link never blocks the
    corrected one. Verification fetches the tree only (no bundle files).
 3. Persist through `saveSources`, return `{ source, dir, created }`. All writes to
