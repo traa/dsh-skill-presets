@@ -159,9 +159,9 @@ export function apply(ctx: Context, config: Config = {}): void {
 
   // ----------------------------------------------------------------- teams --
   // Service first (dsh-agent-teams ≥ the ctx.agentTeams PR), tool visibility else.
-  const teams = new TeamReader(() => ctx.get('agentTeams') as AgentTeamsLike | undefined, agent => teamAttachedFor(ctx, agent))
-  ctx.inject(['agentTeams'], (teamsCtx) => {
-    const service = (teamsCtx as unknown as { agentTeams: AgentTeamsLike }).agentTeams
+  const teams = new TeamReader(() => ctx.get('agentTeamsTraa') as AgentTeamsLike | undefined, agent => teamAttachedFor(ctx, agent))
+  ctx.inject(['agentTeamsTraa'], (teamsCtx) => {
+    const service = (teamsCtx as unknown as { agentTeamsTraa: AgentTeamsLike }).agentTeamsTraa
     teamsCtx.effect(() => service.onAttachmentChange((sessionId) => {
       teams.invalidate(sessionId)
       invalidate?.() // the team-attached overlay may have flipped
@@ -874,7 +874,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       host: {
         startedAt,
         ...([...strictSupport.values()].some(Boolean) ? { restrictSeam: true } : strictSupport.size > 0 ? { restrictSeam: false } : {}),
-        agentTeams: ctx.get('agentTeams') !== undefined,
+        agentTeams: ctx.get('agentTeamsTraa') !== undefined,
       },
       runEvals: async () => {
         const shipped = await runEvals(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'evals', 'fixtures'))
@@ -995,7 +995,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
   rpc.handle('teams/templates', async () => {
     const { templates, problems } = await loadTemplates(join(service.paths().root, 'teams', 'templates'))
-    return { templates, problems, agentTeamsPresent: ctx.get('agentTeams') !== undefined }
+    return { templates, problems, agentTeamsPresent: ctx.get('agentTeamsTraa') !== undefined }
   })
   rpc.handle('teams/attach-template', async (args) => {
     const sessionId = str(args, 'sessionId')
@@ -1003,7 +1003,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const { templates } = await loadTemplates(join(service.paths().root, 'teams', 'templates'))
     const template = templates.find(t => t.id === templateId)
     if (template === undefined) throw new Error(`unknown template ${templateId}`)
-    if (ctx.get('agentTeams') === undefined && ctx.get('webServer') === undefined) {
+    if (ctx.get('agentTeamsTraa') === undefined && ctx.get('webServer') === undefined) {
       return { ok: false, message: 'dsh-agent-teams is not composed; install it to attach teams' }
     }
     try {
