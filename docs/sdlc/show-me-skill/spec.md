@@ -24,7 +24,8 @@ readonly skills?: readonly { readonly path: string }[]
   without the field stay valid; `sources.schema.json`, `validateSourcesFile`,
   `curated.ts` and the client `SkillSource` type all carry the field.
 - Validation drops entries with a path that is empty, absolute, contains `..`, an empty
-  segment, a backslash or a control character (U+0000–U+001F, U+007F); and drops a
+  segment, a backslash or a control character (U+0000–U+001F, U+007F); a single trailing `/`
+  is stripped first (`skills/tool/` is the pick `skills/tool`); and drops a
   duplicate `dir` within one source (first wins). Sources arriving through a shared bundle
   (`planImport`) pass the same validation before they are saved or synced; a malformed
   `skills` value (not an array of `{ path: string }`) drops the source, never throws.
@@ -71,7 +72,11 @@ directly in it is not returned. Sorted by path, like `discoverSkills`.
 set, otherwise `paths`. The orphan, `newUpstream`, `removedUpstream` and `changed`
 logic is unchanged and works on whichever set was discovered. A pick that is missing at
 the ref produces a `SyncReport.note` of the form `skill "<path>" not found at <ref>`
-and is not silently dropped. Bundle file names are relative to the pick path.
+and is not silently dropped. A scoped sync (`options.dirs`, as add-skill runs) whose pick has
+gone missing upstream marks the existing lock entry orphaned (files kept), exactly as an
+unscoped sync does; it never deletes the lock entry. Bundle file names are relative to the
+pick path. A sync over a truncated tree that lacks an accepted pick reports the truncation note
+together with the not-found note.
 
 ### B4. `Service.addSkillFromUrl(url)`
 1. Parse (B1); on error throw with the parser's message.
@@ -86,7 +91,10 @@ and is not silently dropped. Bundle file names are relative to the pick path.
      present, change nothing (idempotent); if another pick has the same `dir`, throw.
    - an existing source that is DISABLED: throw `"<id>" is disabled; enable it first`
      (the CLI installs regardless of `enabled` but the RPC/UI job does not, so adding into a
-     disabled source would silently install nothing on one surface).
+     disabled source would silently install nothing on one surface). Order matters: the
+     whole-repo rule comes BEFORE the disabled rule, so a disabled whole-repo source says
+     "already installs the whole repository" and the user is never told to enable a source
+     that would still refuse the add.
    - an existing pick source with no `ref`: the different-ref error must tell the user how
      to proceed (set `ref` on that source in sources.json), not only name the default branch.
 2b. **Verify before saving** (review round 1). After the rules above accept the link and
@@ -96,12 +104,16 @@ and is not silently dropped. Bundle file names are relative to the pick path.
    untouched. The not-found message names the path and ref and says that branch names
    containing `/` are unsupported and a commit can be linked instead. Verification applies to
    every add, including a second pick into an existing source. The "branch names containing
-   `/`" hint is added only to the not-found error, not to network/rate-limit errors. If GitHub
+   `/`" hint is added to the not-found error AND to a ref-lookup failure where GitHub says the
+   ref does not exist (HTTP 404 or 422 on resolving the ref, which is what a link into branch
+   `feature/x` produces, read as ref `feature`); it is NOT added to network errors, 403, 429 or
+   5xx. If GitHub
    reports the tree as truncated and the pick is not in it, absence cannot be proven: the add
    is accepted without verification and the later install reports the truncation note.
    `skills: null` in a stored source is read as absent (whole-repo), not a reason to drop the
    source. A bundle with an invalid source is reported as a blocking problem whose message says
-   the bundle was not imported. The README claims only that a link is checked when it is first
+   the bundle will not be imported (wording valid for both the `bundle/plan` preview and apply:
+"blocks the import"). The README claims only that a link is checked when it is first
    added (an already-saved pick is not re-checked) and that writes made through the service
    run in order within one process. Consequence: no source
    or pick is ever saved that the install cannot find, so a bad link never blocks the
