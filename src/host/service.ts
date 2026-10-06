@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CURATED_OVERLAYS, CURATED_PRESETS, CURATED_SOURCES, PRACTICE_INFO, SRC, STAGE_ORDER, defaultPractices } from './curated.ts'
 import { adoptFoundation, foundationReport, type FoundationReport } from './foundation.ts'
-import { parseSkillUrl } from './github.ts'
+import { RefNotFoundError, parseSkillUrl } from './github.ts'
 import { Library, type CheckReport, type SyncReport } from './library.ts'
 import { pickDir, validateSource } from './sources.ts'
 import { emptySuggestions, recordAcceptance, recordDismissal, validateSuggestions, type SuggestionsDoc } from './stage.ts'
@@ -785,8 +785,11 @@ export class SkillPresetsService {
     try {
       ({ found, truncated } = await this.library.hasPick(repo, ref, path))
     } catch (error) {
-      // A network or rate-limit failure says nothing about the link's shape: no slash-branch hint here.
-      throw new Error(`could not read ${repo} at "${ref}" to verify the skill: ${(error as Error).message}`)
+      const cause = `could not read ${repo} at "${ref}" to verify the skill: ${(error as Error).message}`
+      // Only "no such ref" (the ref lookup's 404/422) can come from a branch name with "/";
+      // a tree fetch failure, rate limit, 5xx or network error says nothing about the link.
+      if (error instanceof RefNotFoundError) throw new Error(`${cause}. If the branch name contains "/", link a commit instead.`)
+      throw new Error(cause)
     }
     if (!found && truncated) return
     if (!found) {
@@ -813,11 +816,12 @@ export class SkillPresetsService {
       await this.writeSources([...sources, source])
       return { source, dir, created: true }
     }
-    // The RPC/UI install job skips disabled sources, so adding into one would install nothing there.
-    if (!existing.enabled) throw new Error(`"${existing.id}" is disabled; enable it first`)
+    // Whole-repo first: enabling such a source would not make the add valid, so do not suggest it.
     if (existing.skills === undefined || existing.skills.length === 0) {
       throw new Error(`"${existing.id}" already installs the whole repository ${existing.repo ?? repo}`)
     }
+    // The RPC/UI install job skips disabled sources, so adding into one would install nothing there.
+    if (!existing.enabled) throw new Error(`"${existing.id}" is disabled; enable it first`)
     if (existing.ref === undefined) {
       throw new Error(`"${existing.id}" has no ref (it follows the default branch), so a link at "${ref}" cannot be matched to it; `
         + `set "ref" on "${existing.id}" in sources.json to the branch it should follow, then add the link again`)

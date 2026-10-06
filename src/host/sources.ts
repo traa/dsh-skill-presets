@@ -38,7 +38,8 @@ function isSafePickPath(path: string): boolean {
  * source rather than let it fall back to a whole-repository install. For an
  * array, each entry that is not `{ path: string }` or whose path is unsafe is
  * dropped on its own; the remaining safe picks are returned, first one wins
- * per `dir`.
+ * per `dir`. ONE trailing `/` is stripped before the checks (`a/b/` is kept
+ * as `a/b`); `a/b//` still has an empty segment and is dropped.
  */
 function validatePicks(raw: unknown): { path: string }[] | undefined {
   if (raw === undefined || raw === null) return []
@@ -46,8 +47,10 @@ function validatePicks(raw: unknown): { path: string }[] | undefined {
   const out: { path: string }[] = []
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) continue
-    const path: unknown = (entry as { path?: unknown }).path
-    if (typeof path !== 'string' || !isSafePickPath(path)) continue
+    const written: unknown = (entry as { path?: unknown }).path
+    if (typeof written !== 'string') continue
+    const path = written.endsWith('/') ? written.slice(0, -1) : written
+    if (!isSafePickPath(path)) continue
     if (out.some(pick => pickDir(pick.path) === pickDir(path))) continue
     out.push({ path })
   }

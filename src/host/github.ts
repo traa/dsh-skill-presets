@@ -48,6 +48,21 @@ export interface GithubOptions {
 
 const DEFAULT_TIMEOUT = 20_000
 
+/**
+ * The ref lookup (`/commits/<ref>`) answered 404 or 422: GitHub does not know
+ * that ref (or, for a 404, the repository). Thrown only by that step of
+ * `GithubClient.tree`, so a caller can tell "no such ref" apart from a tree
+ * fetch failure, a rate limit or a network error. The message is GitHub's.
+ */
+export class RefNotFoundError extends Error {
+  readonly status: number
+  constructor(readonly repo: string, readonly ref: string, status: number, message: string) {
+    super(message)
+    this.name = 'RefNotFoundError'
+    this.status = status
+  }
+}
+
 /** Validate `owner/name`. */
 export function isRepoSlug(repo: string): boolean {
   return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repo)
@@ -119,7 +134,15 @@ export class GithubClient {
       const meta = JSON.parse((await this.get(`${this.apiBase}/repos/${repo}`, signal)).text) as { default_branch?: string }
       target = meta.default_branch ?? 'main'
     }
-    const commitText = (await this.get(`${this.apiBase}/repos/${repo}/commits/${encodeURIComponent(target)}`, signal)).text
+    let commitText: string
+    try {
+      commitText = (await this.get(`${this.apiBase}/repos/${repo}/commits/${encodeURIComponent(target)}`, signal)).text
+    } catch (error) {
+      // Only THIS step can say "no such ref"; a 404 from the tree fetch below is not one.
+      const status = (error as { status?: number }).status
+      if (status === 404 || status === 422) throw new RefNotFoundError(repo, target, status, error instanceof Error ? error.message : String(error))
+      throw error
+    }
     const commit = (JSON.parse(commitText) as { sha?: string }).sha
     if (commit === undefined) throw new Error(`could not resolve ${repo}@${target} to a commit`)
     const treeText = (await this.get(`${this.apiBase}/repos/${repo}/git/trees/${commit}?recursive=1`, signal)).text

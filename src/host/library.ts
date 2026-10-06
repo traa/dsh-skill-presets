@@ -225,8 +225,16 @@ export class Library {
         }
       }
     } else {
-      for (const entry of lock.skills.filter(e => e.source === source.id && !options.dirs!.includes(e.dir))) {
-        installed.push(entry)
+      // Scoped: entries outside `dirs` are untouched; an asked-for dir that
+      // upstream no longer has is orphaned exactly as in an unscoped sync.
+      const dirs = options.dirs
+      for (const entry of lock.skills.filter(e => e.source === source.id)) {
+        if (!dirs.includes(entry.dir)) {
+          installed.push(entry)
+        } else if (!discovered.some(skill => skill.dir === entry.dir)) {
+          report.orphaned.push(entry.dir)
+          installed.push({ ...entry, orphaned: true })
+        }
       }
     }
 

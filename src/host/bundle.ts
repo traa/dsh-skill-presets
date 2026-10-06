@@ -124,7 +124,7 @@ export function planImport(bundle: Bundle, ctx: ImportContext): ImportPlan {
     const source = validateSource(raw)
     if (source === undefined) {
       const id: unknown = typeof raw === 'object' && raw !== null ? (raw as { id?: unknown }).id : undefined
-      problems.push(`source ${typeof id === 'string' ? `"${id}"` : '(unnamed)'} is not a valid source; the bundle was not imported`)
+      problems.push(`source ${typeof id === 'string' ? `"${id}"` : '(unnamed)'} is not a valid source; it blocks the import`)
       continue
     }
     if (ctx.sources.some(x => x.id === source.id) || newSources.some(x => x.id === source.id)) continue
