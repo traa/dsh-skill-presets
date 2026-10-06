@@ -179,7 +179,7 @@ function fakeGithub(state) {
     const t = url.match(/^https:\/\/api\/repos\/[^/]+\/[^/]+\/git\/trees\/([^?]+)/)
     if (t) {
       const files = state.history[t[1]] ?? state.files
-      return ok({ tree: Object.keys(files).map(path => ({ path, type: 'blob', sha: `${path}:${files[path]}` })) })
+      return ok({ tree: Object.keys(files).map(path => ({ path, type: 'blob', sha: `${path}:${files[path]}` })), ...(state.truncated === true ? { truncated: true } : {}) })
     }
     if (/^https:\/\/api\/repos\/[^/]+\/[^/]+$/.test(url)) return ok({ default_branch: 'main' })
     const m = url.match(/^https:\/\/raw\/[^/]+\/[^/]+\/([^/]+)\/(.+)$/)
@@ -277,6 +277,34 @@ test('Library.sync with options.dirs reports only the missing picks inside those
   assert.ok(!(scoped.note ?? '').includes('plugins/gone/skills/gone'), `a pick outside dirs is not reported: ${scoped.note}`)
   const asked = await lib.sync(source, { dirs: ['gone'] })
   assert.ok((asked.note ?? '').includes('skill "plugins/gone/skills/gone" not found at main'), `the asked-for missing pick is reported: ${asked.note}`)
+})
+
+// Review round 3 (spec B3).
+
+test('a scoped sync whose pick vanished upstream keeps the lock entry as orphaned, like an unscoped sync', async () => {
+  const { lib, paths, state } = await librarySetup()
+  const source = { ...PICK_SOURCE, skills: [{ path: 'plugins/show-me/skills/show-me' }, { path: 'plugins/show-me/skills/other' }] }
+  await lib.sync(source)
+  const before = (await lib.lock()).skills.find(s => s.dir === 'show-me')
+  const { 'plugins/show-me/skills/other/SKILL.md': _gone, ...rest } = HUMANLAYER_TREE
+  state.commit = 'c2'; state.files = rest; state.history.c2 = rest
+  const report = await lib.sync(source, { dirs: ['other'] })
+  assert.deepEqual(report.orphaned, ['other'])
+  const lock = await lib.lock()
+  const other = lock.skills.find(s => s.source === 'humanlayer-skills' && s.dir === 'other')
+  assert.ok(other, 'the lock entry is kept, never deleted')
+  assert.equal(other.orphaned, true)
+  await access(join(paths.skillDir('humanlayer-skills', 'other'), 'SKILL.md'))
+  assert.deepEqual(lock.skills.find(s => s.dir === 'show-me'), before, 'the pick outside dirs is untouched')
+})
+
+test('a sync over a truncated tree lacking an accepted pick reports both the truncation and the missing pick', async () => {
+  const { lib, state } = await librarySetup()
+  state.truncated = true
+  const source = { ...PICK_SOURCE, skills: [{ path: 'plugins/beyond/skills/listing' }] }
+  const report = await lib.sync(source, { dirs: ['listing'] })
+  assert.match(report.note ?? '', /truncated/)
+  assert.ok((report.note ?? '').includes('skill "plugins/beyond/skills/listing" not found at main'), report.note)
 })
 
 // A run of slashes inside a pick path made the trim regex backtrack
@@ -401,6 +429,10 @@ function servingGithub(served, mode = {}) {
     calls.push(url)
     if (mode.down === true) throw new Error('ECONNRESET')
     if (mode.status !== undefined) return { ok: false, status: mode.status, text: async () => 'API rate limit exceeded', arrayBuffer: async () => new ArrayBuffer(0) }
+    // `mode.commitStatus`: only the ref lookup (`/commits/<ref>`) fails, answering `mode.commitBody`.
+    if (mode.commitStatus !== undefined && /\/commits\//.test(url)) {
+      return { ok: false, status: mode.commitStatus, text: async () => mode.commitBody ?? 'Not Found', arrayBuffer: async () => new ArrayBuffer(0) }
+    }
     const c = url.match(/^https:\/\/api\/repos\/([^/]+)\/([^/]+)\/commits\/([^?]+)$/)
     if (c) {
       const repo = `${c[1]}/${c[2]}`.toLowerCase()
@@ -708,6 +740,64 @@ test('a hand-written source with `skills: null` survives sources() and a later a
   await add(svc, SHOW_ME)
   const kept = (await svc.sources()).find(s => s.id === 'o-r')
   assert.deepEqual(kept, { id: 'o-r', title: 'o/r', kind: 'github', repo: 'o/r', paths: ['a'], enabled: true }, 'the next write keeps it')
+})
+
+// ------------------------------------------- review round 3 --
+
+test('validateSourcesFile strips a single trailing slash from a pick path; double or leading slashes are still dropped', () => {
+  const keepOne = validateSourcesFile([{ ...PICK_SOURCE, skills: [{ path: 'skills/tool/' }] }])
+  assert.deepEqual(keepOne.find(s => s.id === 'humanlayer-skills')?.skills, [{ path: 'skills/tool' }])
+  const out = validateSourcesFile([{ ...PICK_SOURCE, skills: [{ path: 'skills/ok' }, { path: 'skills/two//' }, { path: '/skills/lead' }] }])
+  assert.deepEqual(out.find(s => s.id === 'humanlayer-skills').skills, [{ path: 'skills/ok' }])
+})
+
+test('a stored pick with a trailing slash survives sources() and a later add for another repo, as the bare path', async () => {
+  const { svc, raw } = await serviceSetup([SUPERPOWERS])
+  const { writeFile } = await import('node:fs/promises')
+  const stored = JSON.parse(await raw())
+  await writeFile(svc.paths().sources, JSON.stringify([...stored, { id: 'o-r', title: 'o/r', kind: 'github', repo: 'o/r', ref: 'main', skills: [{ path: 'skills/tool/' }], enabled: true }]))
+  assert.deepEqual((await svc.sources()).find(s => s.id === 'o-r')?.skills, [{ path: 'skills/tool' }])
+  await add(svc, SHOW_ME)
+  assert.deepEqual((await svc.sources()).find(s => s.id === 'o-r')?.skills, [{ path: 'skills/tool' }], 'the next write keeps it')
+})
+
+test('a disabled whole-repo source rejects the add as a whole-repo install, not as disabled', async () => {
+  const { svc, raw } = await serviceSetup([{ ...SUPERPOWERS, enabled: false }])
+  const before = await raw()
+  await rejectsWith(svc, 'https://github.com/obra/superpowers/blob/main/skills/brainstorming/SKILL.md', (thrown) => {
+    assert.ok(thrown instanceof Error)
+    assert.match(thrown.message, /already installs the whole repository/)
+    assert.doesNotMatch(thrown.message, /disabled/, 'enabling the source would not help, so do not suggest it')
+    return true
+  })
+  assert.equal(await raw(), before)
+})
+
+test('a ref GitHub says does not exist (404/422) gets the link-a-commit hint; rate limits, 5xx and network errors do not', async () => {
+  const link = 'https://github.com/humanlayer/skills/blob/feature/x/skills/a/SKILL.md' // branch "feature/x" read as ref "feature"
+  const hinted = [{ commitStatus: 404 }, { commitStatus: 422, commitBody: '{"message":"No commit found for SHA: feature"}' }]
+  for (const mode of hinted) {
+    const { svc, raw } = await serviceSetup([SUPERPOWERS], SERVED, mode)
+    const before = await raw()
+    await rejectsWith(svc, link, (thrown) => {
+      assert.ok(thrown instanceof Error)
+      assert.match(thrown.message, /humanlayer\/skills/i, `names the repo (${JSON.stringify(mode)})`)
+      assert.match(thrown.message, /feature/, 'names the ref')
+      assert.match(thrown.message, /link a commit/i, `HTTP ${mode.commitStatus} on the ref lookup means the ref does not exist: ${thrown.message}`)
+      return true
+    })
+    assert.equal(await raw(), before)
+  }
+  for (const mode of [{ status: 403 }, { status: 429 }, { status: 500 }, { status: 503 }, { down: true }]) {
+    const { svc, raw } = await serviceSetup([SUPERPOWERS], SERVED, mode)
+    const before = await raw()
+    await rejectsWith(svc, SHOW_ME, (thrown) => {
+      assert.ok(thrown instanceof Error)
+      assert.doesNotMatch(thrown.message, /link a commit|branch name/i, `${JSON.stringify(mode)} says nothing about the ref: ${thrown.message}`)
+      return true
+    })
+    assert.equal(await raw(), before)
+  }
 })
 
 // ------------------------------------------------------------ B5 CLI --

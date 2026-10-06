@@ -105,7 +105,7 @@ test('planImport/applyImport validate bundle pick sources: unsafe or malformed p
 
 // Review round 2: an invalid source is a BLOCKING problem (the bundle/apply RPC
 // refuses while plan.problems is non-empty), so the message must say so.
-test('an invalid bundle source is a problem that says the bundle was not imported', () => {
+test('an invalid bundle source is a problem that says it blocks the import', () => {
   const bundle = validateBundle({
     version: 1, exportedAt: 't', presets: [preset('fresh', ['bad/x'])], overlays: [],
     sources: [{ id: 'bad', title: 'bad', kind: 'github', repo: 'o/bad', ref: 'main', skills: [{ path: '../x' }], enabled: true }],
@@ -115,6 +115,7 @@ test('an invalid bundle source is a problem that says the bundle was not importe
   assert.ok(plan.problems.length > 0, 'the plan carries a blocking problem')
   const problem = plan.problems.find(p => p.includes('"bad"'))
   assert.ok(problem, `the problem names the source: ${plan.problems.join(' | ')}`)
-  assert.match(problem, /not imported/i)
+  // Spec B4 2b (round 3): the same text serves the bundle/plan preview and apply.
+  assert.match(problem, /blocks the import/i)
   assert.deepEqual(plan.newSources, [])
 })
