@@ -103,6 +103,9 @@
         "ref": "local/worktree-first"
       },
       {
+        "ref": "mattpocock-skills/pr"
+      },
+      {
         "ref": "local/pr-always"
       },
       {
@@ -145,6 +148,9 @@
         "ref": "local/pr-review-against-plan"
       },
       {
+        "ref": "mattpocock-skills/pr"
+      },
+      {
         "ref": "local/pr-always"
       },
       {
@@ -170,6 +176,9 @@
       },
       {
         "ref": "addyosmani-agent-skills/deprecation-and-migration"
+      },
+      {
+        "ref": "mattpocock-skills/pr"
       },
       {
         "ref": "local/pr-always"

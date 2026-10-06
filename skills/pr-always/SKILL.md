@@ -35,24 +35,24 @@ explicitly that the PR still needs to be created.
 
 ## The body
 
+**Load the `pr` skill (mattpocock) and write the body with its template** —
+Summary, Evidence, Merge Danger. It is the only body format; do not invent
+another. Its rules apply: no preamble, brief prose, the smallest visual that
+makes the point, a real before/after in Evidence, and an honest one-way /
+two-way door call in Merge Danger.
+
+If `pr` is not in the skills you were given, say so and fall back to the same
+three headings (`## Summary`, `## Evidence`, `## Merge Danger`) rather than a
+free-form body.
+
+`pr` has no slot for the SDLC chain, so end the body with one line of links
+below the template, and put departures from the plan in Merge Danger:
+
 ```
-## Why
-Link to docs/sdlc/<slug>/intent.md (or one paragraph if none).
-
-## What
-Link to spec.md / plan.md. Bullet the user-visible change.
-
-## Evidence
-- `<test command>` → <summary line>
-- Manual checks performed, if any.
-
-## Review focus
-- The riskiest part and where it lives.
-- Anything that departs from plan.md and why.
-
-## Not in this PR
-Deferred items, with reasons.
+Intent: docs/sdlc/<slug>/intent.md · Spec: …/spec.md · Plan: …/plan.md
 ```
+
+Pass the finished body to the forge CLI with `--body-file`.
 
 ## After opening
 
