@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as github from '../lib/host/github.js'
 import { Library } from '../lib/host/library.js'
+import * as libraryModule from '../lib/host/library.js'
 import { StorePaths } from '../lib/host/store.js'
 import { BUILTIN_NORMALIZE_RULES } from '../lib/host/normalize.js'
 import { SkillPresetsService, validateSourcesFile } from '../lib/host/service.js'
@@ -91,6 +92,29 @@ test('parseSkillUrl: a path with a .. segment or an empty segment is rejected, n
   assertRejected('https://github.com/o/r/blob/main/a/../b/SKILL.md')
   assertRejected('https://github.com/o/r/tree/main/a/..')
   assertRejected('https://github.com/o/r/blob/main/a//b/SKILL.md')
+})
+
+// Review round 1 rows (spec B1, second table).
+
+test('parseSkillUrl: a raw link through refs/heads/<branch> yields the branch as ref', () => {
+  assert.deepEqual(parse('https://raw.githubusercontent.com/o/r/refs/heads/main/a/b/SKILL.md'), { repo: 'o/r', ref: 'main', path: 'a/b' })
+})
+
+test('parseSkillUrl: a raw link through refs/tags/<tag> yields the tag as ref', () => {
+  assert.deepEqual(parse('https://raw.githubusercontent.com/o/r/refs/tags/v1/a/b/SKILL.md'), { repo: 'o/r', ref: 'v1', path: 'a/b' })
+})
+
+test('parseSkillUrl: a tree link ending in SKILL.md has the trailing SKILL.md stripped', () => {
+  assert.deepEqual(parse('https://github.com/o/r/tree/main/a/b/SKILL.md'), { repo: 'o/r', ref: 'main', path: 'a/b' })
+})
+
+test('parseSkillUrl: a path segment with a control character, raw or percent-encoded, is rejected', () => {
+  assertRejected('https://github.com/o/r/blob/main/a/b%00c/SKILL.md')
+  assertRejected('https://github.com/o/r/blob/main/a/b%1Fc/SKILL.md')
+  assertRejected('https://github.com/o/r/blob/main/a/b%7Fc/SKILL.md')
+  assertRejected('https://github.com/o/r/tree/main/a/b%0Ac')
+  assertRejected('https://raw.githubusercontent.com/o/r/main/a/b\u0001c/SKILL.md')
+  assertRejected('https://github.com/o/r/blob/main/a/b\tc/SKILL.md')
 })
 
 // ------------------------------------------------------------ B2 pickSkills --
@@ -245,6 +269,36 @@ test('Library.sync reports a pick missing at the ref as a note, and still instal
   assert.ok(report.note.includes('skill "plugins/gone/skills/gone" not found at main'), report.note)
 })
 
+test('Library.sync with options.dirs reports only the missing picks inside those dirs', async () => {
+  const { lib } = await librarySetup()
+  const source = { ...PICK_SOURCE, skills: [{ path: 'plugins/show-me/skills/show-me' }, { path: 'plugins/gone/skills/gone' }] }
+  const scoped = await lib.sync(source, { dirs: ['show-me'] })
+  assert.deepEqual(scoped.added, ['show-me'])
+  assert.ok(!(scoped.note ?? '').includes('plugins/gone/skills/gone'), `a pick outside dirs is not reported: ${scoped.note}`)
+  const asked = await lib.sync(source, { dirs: ['gone'] })
+  assert.ok((asked.note ?? '').includes('skill "plugins/gone/skills/gone" not found at main'), `the asked-for missing pick is reported: ${asked.note}`)
+})
+
+// A run of slashes inside a pick path made the trim regex backtrack
+// quadratically (measured ~4 s for pickSkills, ~8 s for discoverSourceSkills at
+// 50 000 slashes). The bound is generous; linear work takes well under 50 ms.
+const SLASH_RUN = `a${'/'.repeat(50000)}x`
+
+test('pickSkills handles a pick path with a long run of slashes in linear time', () => {
+  const started = performance.now()
+  pick([{ path: 'x/SKILL.md', sha: '1' }], [{ path: SLASH_RUN }])
+  const ms = performance.now() - started
+  assert.ok(ms < 1500, `took ${Math.round(ms)} ms`)
+})
+
+test('discoverSourceSkills handles a pick path with a long run of slashes in linear time', () => {
+  assert.equal(typeof libraryModule.discoverSourceSkills, 'function', 'library.js exports discoverSourceSkills')
+  const started = performance.now()
+  libraryModule.discoverSourceSkills({ ...PICK_SOURCE, skills: [{ path: SLASH_RUN }] }, { entries: [{ path: 'x/SKILL.md', sha: '1' }] })
+  const ms = performance.now() - started
+  assert.ok(ms < 1500, `took ${Math.round(ms)} ms`)
+})
+
 // ------------------------------------------------------------ data model --
 
 test('validateSourcesFile round-trips `skills` on a github source', () => {
@@ -276,19 +330,89 @@ test('validateSourcesFile drops unsafe pick paths and duplicate dirs (first wins
   assert.deepEqual(out.find(s => s.id === 'humanlayer-skills').skills, [{ path: 'plugins/show-me/skills/show-me' }, { path: 'skills/foo' }])
 })
 
+test('validateSourcesFile drops pick paths containing a control character', () => {
+  const out = validateSourcesFile([{
+    ...PICK_SOURCE,
+    skills: [
+      { path: 'plugins/show-me/skills/show-me' },
+      { path: 'a/b\u0000c' },
+      { path: 'a/b\u001fd' },
+      { path: 'a/b\u007fe' },
+      { path: 'a/b\tf' },
+      { path: 'skills/foo' },
+    ],
+  }])
+  assert.deepEqual(out.find(s => s.id === 'humanlayer-skills').skills, [{ path: 'plugins/show-me/skills/show-me' }, { path: 'skills/foo' }])
+})
+
+test('validateSourcesFile drops a source whose `skills` is not an array of { path: string }, without throwing', () => {
+  const keep = { id: 'obra-superpowers', title: 'obra/superpowers', kind: 'github', repo: 'obra/superpowers', paths: ['skills'], enabled: true }
+  for (const malformed of ['abc', [1], [{}], { path: 'x' }, 42]) {
+    let out
+    assert.doesNotThrow(() => { out = validateSourcesFile([keep, { ...PICK_SOURCE, skills: malformed }]) }, JSON.stringify(malformed))
+    assert.equal(out.find(s => s.id === 'humanlayer-skills'), undefined, `skills ${JSON.stringify(malformed)} drops the source (it must not become a whole-repo install)`)
+    assert.deepEqual(out.find(s => s.id === 'obra-superpowers'), keep)
+  }
+})
+
 // ------------------------------------------------------------ B4 addSkillFromUrl --
 
-/** A service whose GitHub client fails the test if it is ever called. */
-async function serviceSetup(sources) {
+/**
+ * Repos the add tests link into, as `owner/name` (lowercase) -> ref -> blob paths.
+ * Spec B4 step 2b: adding resolves the link's ref and requires the pick in the tree.
+ */
+const SERVED = {
+  'humanlayer/skills': {
+    main: ['plugins/show-me/skills/show-me/SKILL.md', 'plugins/other/skills/second/SKILL.md', 'elsewhere/show-me/SKILL.md', 'a/b/SKILL.md'],
+    stable: ['plugins/show-me/skills/show-me/SKILL.md'],
+    v2: ['plugins/x/skills/y/SKILL.md'],
+  },
+  'some.org/my_repo': { 'v1.2': ['skills/thing/SKILL.md'] },
+  'obra/superpowers': { main: ['skills/brainstorming/SKILL.md'] },
+}
+
+/**
+ * A fake GitHub serving `served` (never the network). `mode.down` makes every
+ * call fail like a dropped connection. Records every URL so a test can tell a
+ * tree lookup from a bundle download.
+ */
+function servingGithub(served, mode = {}) {
+  const calls = []
+  const ok = body => ({ ok: true, status: 200, text: async () => JSON.stringify(body), arrayBuffer: async () => new ArrayBuffer(0) })
+  const missing = { ok: false, status: 404, text: async () => 'Not Found', arrayBuffer: async () => new ArrayBuffer(0) }
+  const fetch = async (url) => {
+    calls.push(url)
+    if (mode.down === true) throw new Error('ECONNRESET')
+    const c = url.match(/^https:\/\/api\/repos\/([^/]+)\/([^/]+)\/commits\/([^?]+)$/)
+    if (c) {
+      const repo = `${c[1]}/${c[2]}`.toLowerCase()
+      const ref = decodeURIComponent(c[3])
+      return served[repo]?.[ref] !== undefined ? ok({ sha: `${repo}@${ref}` }) : missing
+    }
+    const t = url.match(/^https:\/\/api\/repos\/[^/]+\/[^/]+\/git\/trees\/([^?]+)/)
+    if (t) {
+      const [repo, ref] = decodeURIComponent(t[1]).split('@')
+      const files = served[repo]?.[ref]
+      return files === undefined ? missing : ok({ tree: files.map(path => ({ path, type: 'blob', sha: `${path}@${ref}` })) })
+    }
+    const meta = url.match(/^https:\/\/api\/repos\/([^/]+)\/([^/]+)$/)
+    if (meta) return served[`${meta[1]}/${meta[2]}`.toLowerCase()] !== undefined ? ok({ default_branch: 'main' }) : missing
+    return missing
+  }
+  return { calls, client: new github.GithubClient({ fetch, apiBase: 'https://api', rawBase: 'https://raw', timeoutMs: 1000 }) }
+}
+
+/** A service over a temp workbench whose GitHub is `servingGithub(served, mode)`. */
+async function serviceSetup(sources, served = SERVED, mode = {}) {
   const root = await mkdtemp(join(tmpdir(), 'skp-add-'))
   const paths = new StorePaths(root)
-  const network = []
-  const client = new github.GithubClient({ fetch: async (url) => { network.push(url); throw new Error(`network touched: ${url}`) }, apiBase: 'https://api', rawBase: 'https://raw', timeoutMs: 1000 })
-  const library = new Library({ paths: () => paths, github: client, rules: async () => BUILTIN_NORMALIZE_RULES, now: () => new Date('2026-01-02T00:00:00Z') })
+  const gh = servingGithub(served, mode)
+  const library = new Library({ paths: () => paths, github: gh.client, rules: async () => BUILTIN_NORMALIZE_RULES, now: () => new Date('2026-01-02T00:00:00Z') })
   const svc = new SkillPresetsService({ root: () => root, library, now: () => new Date('2026-01-02T00:00:00Z') })
   await svc.saveSources(sources)
   const raw = async () => await readFile(svc.paths().sources, 'utf8')
-  return { svc, raw, network }
+  const rawFetches = () => gh.calls.filter(url => url.startsWith('https://raw/'))
+  return { svc, raw, calls: gh.calls, rawFetches, mode }
 }
 
 const SUPERPOWERS = { id: 'obra-superpowers', title: 'obra/superpowers', kind: 'github', repo: 'obra/superpowers', paths: ['skills'], enabled: true }
@@ -304,7 +428,7 @@ async function rejectsWith(svc, url, pattern) {
 }
 
 test('addSkillFromUrl creates a pick source for a new repo and persists it', async () => {
-  const { svc, network } = await serviceSetup([SUPERPOWERS])
+  const { svc, calls, rawFetches } = await serviceSetup([SUPERPOWERS])
   const out = await add(svc, SHOW_ME)
   const expected = {
     id: 'humanlayer-skills', title: 'humanlayer/skills', kind: 'github', repo: 'humanlayer/skills', ref: 'main',
@@ -315,7 +439,9 @@ test('addSkillFromUrl creates a pick source for a new repo and persists it', asy
   assert.deepEqual(out.source, expected)
   assert.deepEqual((await svc.sources()).find(s => s.id === 'humanlayer-skills'), expected)
   assert.ok((await svc.sources()).some(s => s.id === 'obra-superpowers'), 'other sources are kept')
-  assert.deepEqual(network, [], 'adding never fetches; installing is the caller\'s step')
+  // Spec B4 2b: the pick is verified against the link's tree, but no bundle file is downloaded.
+  assert.ok(calls.some(url => /\/repos\/humanlayer\/skills\/git\/trees\//.test(url)), `the tree at the link's ref is read (calls: ${calls.join(', ')})`)
+  assert.deepEqual(rawFetches(), [], 'adding downloads no skill files; installing is the caller\'s step')
 })
 
 test('addSkillFromUrl takes the ref from the link and derives a sanitized lowercase id', async () => {
@@ -341,7 +467,7 @@ test('addSkillFromUrl appends a second pick to the same repo and ref', async () 
 })
 
 test('addSkillFromUrl is idempotent for a repeated identical pick', async () => {
-  const { svc, raw } = await serviceSetup([SUPERPOWERS])
+  const { svc, raw, rawFetches } = await serviceSetup([SUPERPOWERS])
   await add(svc, SHOW_ME)
   const before = await raw()
   const out = await add(svc, `${SHOW_ME}?plain=1`)
@@ -349,6 +475,8 @@ test('addSkillFromUrl is idempotent for a repeated identical pick', async () => 
   assert.equal(out.dir, 'show-me')
   assert.deepEqual(out.source.skills, [{ path: 'plugins/show-me/skills/show-me' }])
   assert.equal(await raw(), before, 'sources.json is unchanged')
+  // Whether the repeat re-reads the tree is left open; it never downloads files.
+  assert.deepEqual(rawFetches(), [])
 })
 
 test('addSkillFromUrl rejects a pick whose dir clashes with another pick in the source', async () => {
@@ -390,6 +518,119 @@ test('addSkillFromUrl rejects an invalid link with the parser\'s message', async
   assert.equal(typeof error, 'string')
   await rejectsWith(svc, bad, (thrown) => thrown instanceof Error && thrown.message.includes(error))
   assert.equal(await raw(), before)
+})
+
+// ------------------------------------------- B4 2b: verify the pick before saving --
+
+test('addSkillFromUrl rejects a pick absent at the link\'s ref, naming path and ref and suggesting a commit', async () => {
+  const { svc, raw, rawFetches } = await serviceSetup([SUPERPOWERS])
+  const before = await raw()
+  await rejectsWith(svc, 'https://github.com/humanlayer/skills/blob/main/plugins/nope/skills/nope/SKILL.md', (thrown) => {
+    assert.ok(thrown instanceof Error)
+    assert.match(thrown.message, /plugins\/nope\/skills\/nope/, 'names the path')
+    assert.match(thrown.message, /main/, 'names the ref')
+    assert.match(thrown.message, /commit/, 'says a commit can be linked instead')
+    return true
+  })
+  assert.equal(await raw(), before, 'sources.json is byte-identical')
+  assert.deepEqual(rawFetches(), [])
+})
+
+test('addSkillFromUrl rejects a link on a branch whose name contains "/" (ref resolves elsewhere or not at all)', async () => {
+  const link = 'https://github.com/humanlayer/skills/blob/feature/x/skills/a/SKILL.md'
+  // The parser sees ref "feature" and path "x/skills/a". First: no "feature" ref upstream (404).
+  const gone = await serviceSetup([SUPERPOWERS])
+  const goneBefore = await gone.raw()
+  await rejectsWith(gone.svc, link, /./)
+  assert.equal(await gone.raw(), goneBefore, 'sources.json is byte-identical after a 404')
+  // Second: a "feature" branch exists but has no x/skills/a.
+  const served = { ...SERVED, 'humanlayer/skills': { ...SERVED['humanlayer/skills'], feature: ['other/SKILL.md'] } }
+  const other = await serviceSetup([SUPERPOWERS], served)
+  const otherBefore = await other.raw()
+  await rejectsWith(other.svc, link, /x\/skills\/a[\s\S]*commit|commit[\s\S]*x\/skills\/a/)
+  assert.equal(await other.raw(), otherBefore, 'sources.json is byte-identical when the pick is absent')
+})
+
+test('addSkillFromUrl rejects when the tree cannot be fetched, leaving sources.json untouched', async () => {
+  const { svc, raw, mode } = await serviceSetup([SUPERPOWERS])
+  const before = await raw()
+  mode.down = true
+  await rejectsWith(svc, SHOW_ME, /./)
+  assert.equal(await raw(), before, 'a network failure saves nothing')
+  mode.down = false
+  const unknown = await serviceSetup([SUPERPOWERS])
+  const unknownBefore = await unknown.raw()
+  await rejectsWith(unknown.svc, 'https://github.com/ghost/repo/blob/main/skills/a/SKILL.md', /./)
+  assert.equal(await unknown.raw(), unknownBefore, 'a 404 saves nothing')
+})
+
+test('addSkillFromUrl saves a raw refs/heads/main link under ref "main", so a later blob link on main appends', async () => {
+  const { svc } = await serviceSetup([SUPERPOWERS])
+  const first = await add(svc, 'https://raw.githubusercontent.com/humanlayer/skills/refs/heads/main/a/b/SKILL.md')
+  assert.equal(first.source.ref, 'main')
+  assert.deepEqual(first.source.skills, [{ path: 'a/b' }])
+  const second = await add(svc, SHOW_ME)
+  assert.equal(second.created, false)
+  assert.deepEqual(second.source.skills, [{ path: 'a/b' }, { path: 'plugins/show-me/skills/show-me' }])
+})
+
+test('a rejected add leaves no source behind, so the corrected link then creates the source', async () => {
+  const { svc } = await serviceSetup([SUPERPOWERS])
+  await rejectsWith(svc, 'https://github.com/humanlayer/skills/blob/main/plugins/typo/skills/show-me/SKILL.md', /./)
+  assert.equal((await svc.sources()).find(s => s.repo?.toLowerCase() === 'humanlayer/skills'), undefined, 'nothing saved for the bad link')
+  const out = await add(svc, SHOW_ME)
+  assert.equal(out.created, true)
+  assert.deepEqual(out.source.skills, [{ path: 'plugins/show-me/skills/show-me' }])
+})
+
+test('addSkillFromUrl rejects adding into a disabled source', async () => {
+  const disabled = { ...PICK_SOURCE, skills: [{ path: 'plugins/other/skills/second' }], enabled: false }
+  const { svc, raw } = await serviceSetup([SUPERPOWERS, disabled])
+  const before = await raw()
+  await rejectsWith(svc, SHOW_ME, /disabled/)
+  assert.equal(await raw(), before)
+})
+
+test('addSkillFromUrl, for a pick source without a ref, tells the user to set `ref` in sources.json', async () => {
+  const { ref: _ref, ...noRef } = { ...PICK_SOURCE, skills: [{ path: 'plugins/other/skills/second' }] }
+  const { svc, raw } = await serviceSetup([SUPERPOWERS, noRef])
+  const before = await raw()
+  await rejectsWith(svc, SHOW_ME, (thrown) => {
+    assert.ok(thrown instanceof Error)
+    assert.match(thrown.message, /sources\.json/)
+    assert.match(thrown.message, /\bref\b/)
+    return true
+  })
+  assert.equal(await raw(), before)
+})
+
+// ------------------------------------------- B4 3: sources.json write safety --
+
+/** Run `body` with Date.now frozen, so writes in "the same millisecond" are certain, not lucky. */
+async function withFrozenClock(body) {
+  const real = Date.now
+  const frozen = real()
+  Date.now = () => frozen
+  try { return await body() } finally { Date.now = real }
+}
+
+test('concurrent saveSources calls in the same millisecond all succeed and leave one complete sources.json', async () => {
+  const { svc, raw } = await serviceSetup([SUPERPOWERS])
+  const variants = Array.from({ length: 20 }, (_, i) => [SUPERPOWERS, { id: `extra-${i}`, title: `e${i}`, kind: 'github', repo: `o/e${i}`, enabled: true }])
+  const results = await withFrozenClock(async () => await Promise.allSettled(variants.map(v => svc.saveSources(v))))
+  assert.deepEqual(results.filter(r => r.status === 'rejected').map(r => r.reason?.message), [], 'no write collides')
+  const stored = JSON.stringify(JSON.parse(await raw()))
+  assert.ok(variants.some(v => JSON.stringify(validateSourcesFile(v)) === stored), `the file is exactly one of the written lists: ${stored}`)
+})
+
+test('addSkillFromUrl racing saveSources in the same millisecond neither throws nor corrupts sources.json', async () => {
+  const { svc, raw } = await serviceSetup([SUPERPOWERS])
+  const other = [SUPERPOWERS, { id: 'other', title: 'o', kind: 'github', repo: 'o/o', enabled: true }]
+  const results = await withFrozenClock(async () => await Promise.allSettled([svc.addSkillFromUrl(SHOW_ME), svc.saveSources(other)]))
+  assert.deepEqual(results.filter(r => r.status === 'rejected').map(r => r.reason?.message), [])
+  const ids = JSON.parse(await raw()).map(s => s.id).sort()
+  const outcomes = [['humanlayer-skills', 'local', 'obra-superpowers'], ['local', 'obra-superpowers', 'other'], ['humanlayer-skills', 'local', 'obra-superpowers', 'other']]
+  assert.ok(outcomes.some(o => JSON.stringify(o) === JSON.stringify(ids)), `a complete outcome, got ${ids.join(', ')}`)
 })
 
 // ------------------------------------------------------------ B5 CLI --

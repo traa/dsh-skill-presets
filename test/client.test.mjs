@@ -723,3 +723,56 @@ test('Add skill is disabled while another library action is busy, even with a li
   assert.ok(button, 'an "Add skill" button')
   assert.equal(Boolean(button.props.disabled), true, 'busy disables Add skill')
 })
+
+// Review round 1 (spec B5): the link clears only on success; a busy controller
+// ignores a second add, so a double click starts one job, not two.
+
+const ADD_OK = {
+  'sources/add-skill': { source: { id: 'humanlayer-skills' }, dir: 'show-me', created: true, job: 'job-7' },
+  'library/job': { id: 'job-7', kind: 'sync', startedAt: 'a', done: true, progress: [], reports: [] },
+}
+const click = button => button.props.onClick({ preventDefault: () => {}, stopPropagation: () => {} })
+
+test('a successful add clears the link input and disables Add skill again', async () => {
+  const { view } = await openLibraryTab(ADD_OK)
+  typeInto(linkInput(view()), LINK)
+  click(addSkillButton(view()))
+  await settle()
+  const tree = view()
+  assert.equal(linkInput(tree).props.value ?? '', '', 'the field is cleared after success')
+  assert.equal(Boolean(addSkillButton(tree).props.disabled), true, 'an empty field disables the button')
+})
+
+test('a rejected add keeps the typed link so it can be corrected', async () => {
+  const typed = 'https://github.com/o/r/blob/main/a/SKILL.md'
+  const { view } = await openLibraryTab({ 'sources/add-skill': new Error('skill "a" not found at main') })
+  typeInto(linkInput(view()), typed)
+  click(addSkillButton(view()))
+  await settle()
+  const tree = view()
+  assert.equal(linkInput(tree).props.value, typed)
+  assert.equal(Boolean(addSkillButton(tree).props.disabled), false)
+})
+
+test('a double click on Add skill while the first add is pending sends one sources/add-skill', async () => {
+  const { view, calls } = await openLibraryTab({ 'sources/add-skill': () => new Promise(() => {}) })
+  typeInto(linkInput(view()), LINK)
+  const button = addSkillButton(view()) // both clicks land on the same rendered button, as a fast double click does
+  click(button)
+  await settle()
+  click(button)
+  await settle()
+  assert.equal(calls.filter(c => c.method === 'sources/add-skill').length, 1)
+})
+
+test('Add skill clicked while another action is busy sends no sources/add-skill', async () => {
+  const { view, calls } = await openLibraryTab({ 'library/check': () => new Promise(() => {}), ...ADD_OK })
+  typeInto(linkInput(view()), LINK)
+  const button = addSkillButton(view())
+  const check = flatten(view()).find(n => n.type === 'button' && text(n).join('').trim() === 'Check for updates')
+  check.props.onClick()
+  await settle()
+  click(button) // rendered before the check started, so not yet disabled
+  await settle()
+  assert.equal(calls.filter(c => c.method === 'sources/add-skill').length, 0)
+})
