@@ -56,6 +56,23 @@ async function main(): Promise<number> {
       }
       return 0
     }
+    case 'add-skill': {
+      const url = rest[0]
+      if (url === undefined) { console.error('usage: add-skill <url>'); return 2 }
+      let added: Awaited<ReturnType<typeof service.addSkillFromUrl>>
+      try {
+        added = await service.addSkillFromUrl(url)
+      } catch (error) {
+        console.error((error as Error).message)
+        return 1
+      }
+      const { source, dir } = added
+      process.stdout.write(`${source.id}/${dir}: `)
+      const report = await service.library.sync(source, { dirs: [dir], onProgress: e => { if (e.step === 'error') console.error(`\n  ${e.dir}: ${e.message}`) } })
+      console.log(`+${report.added.length} ~${report.updated.length} =${report.unchanged.length}${report.failed.length > 0 ? ` failed ${report.failed.length}` : ''}`)
+      if (report.note !== undefined) console.error(report.note)
+      return report.failed.length > 0 || (report.added.length + report.updated.length + report.unchanged.length) === 0 ? 1 : 0
+    }
     case 'check-updates': {
       for (const report of await service.check(rest.length > 0 ? rest : undefined)) {
         console.log(`${report.source}: ${report.lockedCommit?.slice(0, 7) ?? '-'} → ${report.upstreamCommit.slice(0, 7)} · changed ${report.changed.length}, new ${report.newUpstream.length}, removed ${report.removedUpstream.length}`)
@@ -392,6 +409,7 @@ async function main(): Promise<number> {
         '  status                 store, active preset, install state',
         '  install [source…]      install/update sources (all enabled by default)',
         '  update  [source…]      alias of install',
+        '  add-skill <url>        add one skill from a GitHub SKILL.md link and install it',
         '  check-updates [source…] compare upstream with the lock, no download',
         '  activate <id|none>     set the active preset',
         '  summary <usage.jsonl>  fold one session log',

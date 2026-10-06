@@ -20,6 +20,12 @@ export interface SkillSource {
   readonly ref?: string
   /** Directories that hold `<skill>/SKILL.md` bundles; defaults to `['skills']`. */
   readonly paths?: readonly string[]
+  /**
+   * Install exactly these skill directories instead of scanning `paths`.
+   * Each `path` is a repo-relative skill directory; its last segment is the
+   * skill's `dir`. When present and non-empty, `paths` is ignored.
+   */
+  readonly skills?: readonly { readonly path: string }[]
   /** Whether the source is enabled for install/update. */
   readonly enabled: boolean
   /** Optional homepage/license note shown in the UI. */

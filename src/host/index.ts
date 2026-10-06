@@ -32,7 +32,8 @@ import { presetImpact, sessionVsPeers, skillImpact } from './impact.ts'
 import { lintLibrary } from './lint.ts'
 import { orphanSkills, suggestPlacement } from './placement.ts'
 import { createStrictPreset, listStrictPresets, planStrictPreset, shippedPresetsDir } from './strictpreset.ts'
-import { discoverSkills, GithubClient } from './github.ts'
+import { GithubClient, type DiscoveredSkill } from './github.ts'
+import { discoverSourceSkills } from './library.ts'
 import { renderHookFile } from './hooks.ts'
 import { runEvals, saveFixture } from './evals.ts'
 import { randomUUID } from 'node:crypto'
@@ -640,6 +641,11 @@ export function apply(ctx: Context, config: Config = {}): void {
   rpc.handle('library/remove', async (args) => { await service.removeSkill(str(args, 'ref')); return { ok: true } })
   rpc.handle('library/skill', async args => await service.skillDetail(str(args, 'ref')))
   rpc.handle('sources/save', async (args) => { await service.saveSources(args.sources as SkillSource[]); return { ok: true } })
+  rpc.handle('sources/add-skill', async (args) => {
+    // Add the pick, then install only that skill; the job is followed like library/install.
+    const added = await service.addSkillFromUrl(str(args, 'url'))
+    return { ...added, job: service.startSync([added.source.id], [added.dir]) }
+  })
   rpc.handle('presets/save', async args => await service.savePreset(args.preset as Preset))
   rpc.handle('presets/delete', async (args) => { await service.deletePreset(str(args, 'id')); return { ok: true } })
   rpc.handle('presets/duplicate', async args => await service.duplicatePreset(str(args, 'id'), str(args, 'newId'), optStr(args, 'title')))
@@ -922,14 +928,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     const inPresets = new Set<string>()
     for (const p of presets) for (const e of p.skills) inPresets.add(e.as ?? lock.skills.find(s => `${s.source}/${s.dir}` === e.ref)?.name ?? e.ref.split('/').pop()!)
     // Optional upstream lookup for missing names (network; only when asked).
-    let discovered: { source: string, skills: ReturnType<typeof discoverSkills> }[] | undefined
+    let discovered: { source: string, skills: DiscoveredSkill[] }[] | undefined
     if (args.searchUpstream === true) {
       discovered = []
       const gh = new GithubClient()
       for (const source of (await service.sources()).filter(s => s.kind === 'github' && s.enabled && s.repo !== undefined)) {
         try {
           const tree = await gh.tree(source.repo!, source.ref)
-          discovered.push({ source: source.id, skills: discoverSkills(tree.entries, source.paths ?? ['skills']) })
+          discovered.push({ source: source.id, skills: discoverSourceSkills(source, tree).skills })
         } catch { /* offline: no upstream hints */ }
       }
     }

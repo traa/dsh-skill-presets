@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { parseSkill } from './frontmatter.ts'
-import { GithubClient, discoverSkills, type DiscoveredSkill } from './github.ts'
+import { GithubClient, discoverSkills, pickSkills, type DiscoveredSkill, type RepoTree } from './github.ts'
 import { isNormalizable, normalizeText } from './normalize.ts'
 import { emptyLock, readJson, validateLock, writeJson, type StorePaths } from './store.ts'
 import type { Lock, LockedSkill, NormalizeRule, SkillSource } from './types.ts'
@@ -54,6 +54,25 @@ async function writeBundle(dir: string, bundle: Bundle): Promise<void> {
     await mkdir(dirname(full), { recursive: true })
     await writeFile(full, text, 'utf8')
   }
+}
+
+/**
+ * The skills a github source offers in a tree: exactly its picks when
+ * `source.skills` is set and non-empty, otherwise every bundle under
+ * `source.paths` (default `['skills']`). The one discovery path for sync,
+ * check and the missing-skills scan, so a pick source never falls back to a
+ * whole-repo scan.
+ * @returns the discovered skills, and the pick paths absent at the tree's ref.
+ */
+export function discoverSourceSkills(source: SkillSource, tree: Pick<RepoTree, 'entries'>): { skills: DiscoveredSkill[], missing: string[] } {
+  if (source.skills !== undefined && source.skills.length > 0) {
+    const skills = pickSkills(tree.entries, source.skills)
+    const missing = source.skills
+      .map(pick => pick.path.replace(/^\/+|\/+$/gu, ''))
+      .filter(path => !skills.some(skill => skill.path === path))
+    return { skills, missing }
+  }
+  return { skills: discoverSkills(tree.entries, source.paths ?? ['skills']), missing: [] }
 }
 
 /** Options for one install/update run. */
@@ -134,14 +153,20 @@ export class Library {
     if (source.kind === 'local') return await this.syncLocal(source, options)
     if (source.repo === undefined) throw new Error(`source "${source.id}" has no repo`)
     const tree = await this.github.tree(source.repo, source.ref, options.signal)
-    const roots = source.paths ?? ['skills']
-    const discovered = discoverSkills(tree.entries, roots)
+    const found = discoverSourceSkills(source, tree)
+    const discovered = found.skills
       .filter(skill => options.dirs === undefined || options.dirs.includes(skill.dir))
     const rules = await this.deps.rules()
     const lock = await this.lock()
+    const notes = [
+      ...(tree.truncated ? ['GitHub truncated the tree listing; some skills may be missing'] : []),
+      ...found.missing
+        .filter(path => options.dirs === undefined || options.dirs.includes(path.slice(path.lastIndexOf('/') + 1)))
+        .map(path => `skill "${path}" not found at ${tree.ref}`),
+    ]
     const report: SyncReport = {
       source: source.id, commit: tree.commit, added: [], updated: [], unchanged: [], orphaned: [], failed: [],
-      ...(tree.truncated ? { note: 'GitHub truncated the tree listing; some skills may be missing' } : {}),
+      ...(notes.length > 0 ? { note: notes.join('; ') } : {}),
     }
     const installed: LockedSkill[] = []
 
@@ -263,7 +288,7 @@ export class Library {
     const lock = await this.lock()
     const locked = lock.sources[source.id]
     const tree = await this.github.tree(source.repo, source.ref, signal)
-    const discovered = discoverSkills(tree.entries, source.paths ?? ['skills'])
+    const discovered = discoverSourceSkills(source, tree).skills
     const lockedSkills = lock.skills.filter(entry => entry.source === source.id)
     const report: CheckReport = {
       source: source.id,
