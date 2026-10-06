@@ -284,12 +284,13 @@ export class Library {
    * Whether one pick exists in `repo` at `ref`: reads the tree only (no skill
    * file is downloaded) and asks the same discovery `sync` uses. Throws when
    * the tree cannot be read.
-   * @returns whether the pick was found, and the commit the ref resolved to.
+   * @returns whether the pick was found, whether GitHub truncated the listing
+   * (then a pick not found is unproven, not absent), and the resolved commit.
    */
-  async hasPick(repo: string, ref: string, path: string, signal?: AbortSignal): Promise<{ found: boolean, commit: string }> {
+  async hasPick(repo: string, ref: string, path: string, signal?: AbortSignal): Promise<{ found: boolean, truncated: boolean, commit: string }> {
     const tree = await this.github.tree(repo, ref, signal)
     const probe: SkillSource = { id: 'probe', title: repo, kind: 'github', repo, ref, skills: [{ path }], enabled: true }
-    return { found: discoverSourceSkills(probe, tree).missing.length === 0, commit: tree.commit }
+    return { found: discoverSourceSkills(probe, tree).missing.length === 0, truncated: tree.truncated, commit: tree.commit }
   }
 
   /** Compare upstream against the lock without downloading bundles. */

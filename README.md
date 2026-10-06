@@ -288,7 +288,10 @@ its own.
 
 A github source normally scans `paths` for `<dir>/SKILL.md` bundles. Give it a
 `skills` pick list instead and it installs exactly those directories, nothing
-else from the repository (`paths` is then ignored):
+else from the repository (`paths` is then ignored). `skills` absent, `null` or
+`[]` all mean a whole-repository source; a pick entry that is not
+`{ "path": "<dir>" }` or has an unsafe path is dropped, and a source whose picks
+are all dropped is dropped too (it never turns into a whole-repository install):
 
 ```json
 { "id": "humanlayer-skills", "title": "humanlayer/skills", "kind": "github",
@@ -310,15 +313,20 @@ or use the **Add skill** field on the Library tab (RPC `sources/add-skill`
   `raw.githubusercontent.com/<owner>/<repo>/<ref>/…/SKILL.md` link, including the
   `…/refs/heads/<branch>/…` and `…/refs/tags/<tag>/…` forms. Query strings and
   fragments are ignored; a path segment with a control character is refused.
-- **Verified before it is saved.** The repository tree at the link's ref is read
-  (the tree only; no skill file is downloaded) and the pick must be there: a
-  directory holding a `SKILL.md`. A link that is accepted has been checked against
-  that tree. Repeating a pick that is already saved changes nothing and is not
-  re-checked.
+- **Checked when it is first added.** Every add, including a second pick into an
+  existing source, reads the repository tree at the link's ref (the tree only; no
+  skill file is downloaded), and the pick must be there: a directory holding a
+  `SKILL.md`. A pick already in `sources.json`, including one edited there by
+  hand, is not re-checked when the same link is added again; if it is missing
+  upstream, the next install reports `skill "<path>" not found at <ref>`.
+- If GitHub truncates the tree listing (very large repositories), a pick not in
+  the listing cannot be proven absent: the add is accepted without that check,
+  and the install then reports the truncation note.
 - The source follows the ref in the link (usually a branch); the lock records the
   commit each install resolved to. Branch names containing `/` are not supported:
-  such a link reads as a shorter branch plus a longer path, the check fails, and
-  the message says to link a commit instead.
+  such a link reads as a shorter branch plus a longer path. If that shorter branch
+  does not exist the tree cannot be read and the add is rejected; if it exists
+  but lacks the path, the not-found message says to link a commit instead.
 - A new repository becomes a new source with id `<owner>-<repo>`; a second link
   into the same repository and ref is appended to that source's picks.
 - Rejected, with `sources.json` left as it was: a link that is not one of the
@@ -333,8 +341,12 @@ or use the **Add skill** field on the Library tab (RPC `sources/add-skill`
   exits 1 on a rejected link. The install is a separate step after the save: if
   it fails (for example the network drops), the verified pick stays in
   `sources.json`, and **Install**/**Update** on that source retries it.
-- Writes to `sources.json` through the plugin (Add skill, saving sources, bundle
-  imports) run one at a time, so a concurrent add and save do not interleave.
+- Writes to `sources.json` made through the plugin's service (Add skill, saving
+  sources, bundle imports) are applied in order within one process, and no two
+  writes collide on a temporary file. That ordering is all it guarantees: a
+  whole-list writer (saving sources from the UI, a bundle import) writes the list
+  it read earlier, so it can overwrite a pick added in between; and a separate CLI
+  process is not ordered against the running web server.
 
 **Existing workbenches.** The foundation adopter (`foundation --adopt`, or the
 banner in the UI) merges presets and overlays, not sources. A workbench seeded

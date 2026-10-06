@@ -774,15 +774,21 @@ export class SkillPresetsService {
     return await this.editSources(async () => await this.addSkillNow(url))
   }
 
-  /** Throw unless `path` is a skill in `repo` at `ref` (spec B4 step 2b). */
+  /**
+   * Throw unless `path` is a skill in `repo` at `ref` (spec B4 step 2b). A
+   * truncated listing cannot prove absence, so a pick missing from it is
+   * accepted unverified; the install then reports the truncation note.
+   */
   private async verifyPick(repo: string, ref: string, path: string): Promise<void> {
     let found: boolean
+    let truncated: boolean
     try {
-      found = (await this.library.hasPick(repo, ref, path)).found
+      ({ found, truncated } = await this.library.hasPick(repo, ref, path))
     } catch (error) {
-      throw new Error(`could not read ${repo} at "${ref}" to verify the skill: ${(error as Error).message}. `
-        + 'If the branch name contains "/", link a commit instead.')
+      // A network or rate-limit failure says nothing about the link's shape: no slash-branch hint here.
+      throw new Error(`could not read ${repo} at "${ref}" to verify the skill: ${(error as Error).message}`)
     }
+    if (!found && truncated) return
     if (!found) {
       throw new Error(`skill "${path}" not found in ${repo} at "${ref}" (no ${path}/SKILL.md there). `
         + 'Branch names containing "/" are not supported; link a commit instead.')

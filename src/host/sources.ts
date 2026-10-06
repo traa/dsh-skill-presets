@@ -33,20 +33,21 @@ function isSafePickPath(path: string): boolean {
 }
 
 /**
- * The picks of a source. `undefined` when `skills` is present but malformed
- * (not an array of `{ path: string }`): the caller drops the source rather
- * than let it fall back to a whole-repository install. Otherwise the safe
- * picks, first one wins per `dir`.
+ * The picks of a source. `undefined`/`null` read as absent (`[]`). Any other
+ * non-array is malformed: `undefined` is returned and the caller drops the
+ * source rather than let it fall back to a whole-repository install. For an
+ * array, each entry that is not `{ path: string }` or whose path is unsafe is
+ * dropped on its own; the remaining safe picks are returned, first one wins
+ * per `dir`.
  */
 function validatePicks(raw: unknown): { path: string }[] | undefined {
-  if (raw === undefined) return []
+  if (raw === undefined || raw === null) return []
   if (!Array.isArray(raw)) return undefined
   const out: { path: string }[] = []
   for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) return undefined
+    if (typeof entry !== 'object' || entry === null) continue
     const path: unknown = (entry as { path?: unknown }).path
-    if (typeof path !== 'string') return undefined
-    if (!isSafePickPath(path)) continue
+    if (typeof path !== 'string' || !isSafePickPath(path)) continue
     if (out.some(pick => pickDir(pick.path) === pickDir(path))) continue
     out.push({ path })
   }
@@ -56,11 +57,11 @@ function validatePicks(raw: unknown): { path: string }[] | undefined {
 /**
  * Validate one source entry; `undefined` drops it. Never throws.
  *
- * A source keeps `skills` only when it is an array of `{ path: string }`;
- * unsafe pick paths are dropped one by one. A malformed `skills` value, or a
- * non-empty pick list with no safe pick left, drops the whole source: keeping
- * it without picks would silently install the whole repository. `skills: []`
- * is the same as no `skills` (scan `paths`).
+ * `skills` absent, `null` or `[]` means a whole-repository source (scan
+ * `paths`). An array keeps its safe `{ path: string }` entries and drops the
+ * rest one by one. A non-array `skills` value, or a non-empty array with no
+ * safe pick left, drops the whole source: keeping it without picks would
+ * silently install the whole repository.
  */
 export function validateSource(entry: unknown): SkillSource | undefined {
   if (typeof entry !== 'object' || entry === null) return undefined

@@ -117,13 +117,14 @@ export function planImport(bundle: Bundle, ctx: ImportContext): ImportPlan {
     else presets.push({ id: p.id, from: p.id, action: 'skip' })
   }
   // Bundle sources pass the same validation as sources.json: a malformed or
-  // unsafe one is reported and never added, so nothing is synced for it.
+  // unsafe one is never added. It is a problem, and any problem blocks the
+  // whole apply (bundle/apply returns ok:false, the CLI import exits 1).
   const newSources: SkillSource[] = []
   for (const raw of bundle.sources) {
     const source = validateSource(raw)
     if (source === undefined) {
       const id: unknown = typeof raw === 'object' && raw !== null ? (raw as { id?: unknown }).id : undefined
-      problems.push(`source ${typeof id === 'string' ? `"${id}"` : '(unnamed)'} is not a valid source and was not added`)
+      problems.push(`source ${typeof id === 'string' ? `"${id}"` : '(unnamed)'} is not a valid source; the bundle was not imported`)
       continue
     }
     if (ctx.sources.some(x => x.id === source.id) || newSources.some(x => x.id === source.id)) continue
