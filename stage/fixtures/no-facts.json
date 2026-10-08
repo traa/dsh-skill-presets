@@ -778,7 +778,7 @@
       },
       "stage": "build",
       "positionSource": "session",
-      "gate": "plan.md",
+      "gate": "PR",
       "next": "test"
     },
     "session/position": {
@@ -831,7 +831,7 @@
         "index": 2,
         "of": 5
       },
-      "gate": "plan.md",
+      "gate": "PR",
       "next": "test",
       "practices": [],
       "report": [],
