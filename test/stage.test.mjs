@@ -33,13 +33,63 @@ test('the stage is read from committed artifacts and PR state, never from shell 
 test('shouldSuggest: at session start, and when the current gate artifact lands — not otherwise', () => {
   const before = facts({ artifacts: ['docs/sdlc/x/intent.md'] })
   const after = facts({ artifacts: ['docs/sdlc/x/intent.md', 'docs/sdlc/x/spec.md'] })
+  const planned = facts({ artifacts: ['docs/sdlc/x/intent.md', 'docs/sdlc/x/spec.md', 'docs/sdlc/x/plan.md'] })
+  const open = facts({ artifacts: planned.artifacts, pr: { url: 'u', state: 'OPEN' } })
+  const merged = facts({ artifacts: planned.artifacts, pr: { url: 'u', state: 'MERGED' } })
   assert.equal(shouldSuggest({ explicitPosition: false, stage: 'plan', previous: undefined, facts: before }), true, 'no explicit position yet → offer')
   assert.equal(shouldSuggest({ explicitPosition: true, stage: 'plan', previous: before, facts: before }), false, 'nothing changed')
-  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'design', previous: before, facts: after }), true, 'spec.md is Design\'s gate: it just appeared')
+  // Design writes spec.md and then plan.md; only the LAST one ends the stage.
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'design', previous: before, facts: after }), false, 'spec.md is not Design\'s gate any more: plan.md is')
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'design', previous: after, facts: planned }), true, 'plan.md is Design\'s gate: it just appeared')
   assert.equal(shouldSuggest({ explicitPosition: true, stage: 'build', previous: before, facts: after }), false, 'spec.md is not Build\'s gate')
-  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'test', previous: facts({ artifacts: ['plan.md'] }), facts: facts({ artifacts: ['plan.md'], pr: { url: 'u', state: 'OPEN' } }) }), true, 'the PR is Review\'s gate')
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'build', previous: after, facts: planned }), false, 'plan.md is what Build READS, not what ends it')
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'build', previous: planned, facts: planned }), false, 'plan.md already there, no PR change')
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'build', previous: planned, facts: open }), true, 'the PR is Build\'s gate: it just appeared')
+  // Review ends with the merge and Ship with an incident record: neither is an
+  // artifact the git read can watch land, so they never fire it.
+  for (const stage of ['test', 'deploy', 'maintain']) {
+    assert.equal(shouldSuggest({ explicitPosition: true, stage, previous: planned, facts: open }), false, `${stage}: a PR appearing is not its gate`)
+    assert.equal(shouldSuggest({ explicitPosition: true, stage, previous: open, facts: merged }), false, `${stage}: a merge never fires it`)
+  }
   assert.equal(shouldSuggest({ explicitPosition: true, stage: null, previous: before, facts: after }), false, 'Explore never suggests')
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: null, previous: planned, facts: open }), false, 'Explore never suggests, PR or not')
   assert.equal(shouldSuggest({ explicitPosition: true, stage: 'design', previous: undefined, facts: after }), false, 'first facts read with an explicit position is not "an artifact appeared"')
+  assert.equal(shouldSuggest({ explicitPosition: true, stage: 'build', previous: undefined, facts: open }), false, 'first facts read with a PR already open is not "a PR appeared"')
+})
+
+// One gate table. `gateFor` (flows.ts) is the playbook's answer to "what ends
+// this stage"; `shouldSuggest` must fire on exactly that, observed. The spec's
+// table is spelled out here so a regression in EITHER place fails, and the
+// source check below fails a second, hand-copied table even if it agrees today.
+const SPEC_GATES = { plan: 'intent.md', design: 'plan.md', build: 'PR', test: 'merge', deploy: 'incident record', maintain: undefined, cross: undefined }
+const base = facts({ artifacts: [] })
+const withPr = facts({ artifacts: [], pr: { url: 'u', state: 'OPEN' } })
+/** Every observable transition, labelled by the gate it would be. Merge and incident record are listed so they are proven NOT to fire. */
+const TRANSITIONS = [
+  ['intent.md', base, facts({ artifacts: ['docs/sdlc/x/intent.md'] })],
+  ['spec.md', base, facts({ artifacts: ['docs/sdlc/x/spec.md'] })],
+  ['plan.md', base, facts({ artifacts: ['docs/sdlc/x/plan.md'] })],
+  ['PR', base, withPr],
+  ['merge', withPr, facts({ artifacts: [], pr: { url: 'u', state: 'MERGED' } })],
+  ['incident record', base, facts({ artifacts: ['docs/sdlc/incidents/2026-01-01-x.md'] })],
+]
+const OBSERVABLE = new Set(['intent.md', 'plan.md', 'PR'])
+
+test('shouldSuggest fires on exactly the gate gateFor names, for every stage — no second table', async () => {
+  const { gateFor } = await import('../lib/host/flows.js')
+  for (const [stage, gate] of Object.entries(SPEC_GATES)) {
+    assert.equal(gateFor(stage), gate, `gateFor(${stage}) per the spec table`)
+    for (const [label, previous, now] of TRANSITIONS) {
+      const expected = gate !== undefined && OBSERVABLE.has(gate) && label === gate
+      assert.equal(shouldSuggest({ explicitPosition: true, stage, previous, facts: now }), expected, `${stage}: ${label} appearing ${expected ? 'fires' : 'must not fire'} (gate: ${gate})`)
+    }
+  }
+  // Structural half of the spec: "stage.ts has no second gate table; it uses gateFor".
+  const { readFile } = await import('node:fs/promises')
+  const src = await readFile(new URL('../src/host/stage.ts', import.meta.url), 'utf8')
+  assert.match(src, /import\s*\{[^}]*\bgateFor\b[^}]*\}\s*from\s*['"]\.\/flows\.(?:ts|js)['"]/u, 'stage.ts derives its gate from flows.ts gateFor')
+  const copied = src.match(/\b(?:plan|design|build|test|deploy|maintain)\s*:\s*['"](?:intent\.md|spec\.md|plan\.md|PR|merge|incident record)['"]/gu)
+  assert.equal(copied, null, `stage.ts keeps a hand-copied stage → gate entry: ${copied?.join(', ')}`)
 })
 
 test('suggest fires only above the threshold, when the stage differs, and until muted', () => {

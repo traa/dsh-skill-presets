@@ -167,7 +167,7 @@ test('settings page renders tabs and a loading state before any RPC answers', as
 test('stage control renders nothing without a session id and reads the stage with one', async () => {
   const { mod, React } = await load()
   const { ctx, registrations } = fakeCtx(mod.inject)
-  const card = { sessionId: 's-1', flow: { id: 'full', title: 'Full', stages: ['plan', 'design', 'build', 'test', 'deploy'], guardrails: 'on', builtin: true }, flows: [], stage: 'build', source: 'session', presetId: 'build', owners: ['build'], position: { index: 2, of: 5 }, gate: 'plan.md', next: 'test', practices: [], report: [] }
+  const card = { sessionId: 's-1', flow: { id: 'full', title: 'Full', stages: ['plan', 'design', 'build', 'test', 'deploy'], guardrails: 'on', builtin: true }, flows: [], stage: 'build', source: 'session', presetId: 'build', owners: ['build'], position: { index: 2, of: 5 }, gate: 'PR', next: 'test', practices: [], report: [] }
   globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(card) })
   mod.apply(ctx)
   const Control = registrations.find(r => r.options.name === 'conversation.input.right').component
@@ -180,7 +180,7 @@ test('stage control renders nothing without a session id and reads the stage wit
   assert.match(text(tree).join(' '), /Build/)
   const button = flatten(tree).find(n => (n.props?.className ?? '').includes('skp-ctl'))
   assert.equal(button.props['aria-expanded'], 'false')
-  assert.match(button.props.title, /Full · Build \(3 of 5\) · ends with plan\.md/)
+  assert.match(button.props.title, /Full · Build \(3 of 5\) · ends with PR/)
   assert.equal(nodesWithClass(button, 'skp-swatch').length, 0)
   assert.equal(nodesWithClass(button, 'skp-ctl-label').length, 1)
   assert.equal(text(nodesWithClass(button, 'skp-ctl-label')[0]).join(''), 'Build')
