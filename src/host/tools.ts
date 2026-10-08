@@ -134,7 +134,9 @@ export function buildTools(deps: ToolDeps): unknown[] {
         if (facts.instructionFiles.length > 0) lines.push(`Instructions file: ${facts.instructionFiles.join(', ')}`)
       }
       const has = (f: string): boolean => facts?.artifacts.some(a => a.endsWith(f)) === true
-      const next = !has('intent.md') ? 'intent.md (Plan)' : !has('spec.md') ? 'spec.md (Design)' : !has('plan.md') ? 'plan.md (Design)' : facts?.pr === undefined ? 'a pull request (Build → Test)' : 'review findings in the PR (Test)'
+      // Mirrors the gate table (flows.ts GATES): Plan ends with intent.md,
+      // Design writes spec.md then ends with plan.md, Build ends with the PR.
+      const next = !has('intent.md') ? 'intent.md (Plan)' : !has('spec.md') ? 'spec.md, then plan.md (Design)' : !has('plan.md') ? 'plan.md (Design)' : facts?.pr === undefined ? 'a pull request (Build)' : 'review findings in the PR (Test)'
       lines.push(`Next artifact: ${next}`)
       if (scorecard !== undefined && scorecard.results.length > 0) {
         // Phase 7: only what the model must act on. Red + relevant; unknowns

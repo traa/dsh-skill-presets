@@ -7,8 +7,9 @@ and measure whether the model actually used them.
 
 Grounded in the [AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook):
 six non-linear stages (Plan → Design → Build → Test → Deploy → Maintain), each
-ending by committing an artifact (`intent.md` → `spec.md` → `plan.md` → PR →
-incident record) that the next stage reads; skills as institutional knowledge;
+ending with an artifact the next stage reads (Plan → `intent.md`, Design →
+`spec.md` then `plan.md`, Build → PR, Test → merge, Deploy → incident record,
+which starts a new intent); skills as institutional knowledge;
 guardrails that act as the model acts; worktrees for parallel work; humans at
 the gates.
 
@@ -49,10 +50,21 @@ Resolution is **session → agent-preset default → workspace default**; a sess
 that predates flows (has a preset but no position) reads as Full at that preset's
 stage. Positions live in `positions.json` beside `active.json`.
 
-**Each stage ends with a gate artifact** — `intent.md`, `spec.md`, `plan.md`,
-the PR, the merge — and the next stage reads it. The prompt block and
-`sdlc_status` name the current gate; committing it is what "done with this
-stage" means.
+**Each stage ends with a gate artifact** that the next stage reads:
+
+| Stage | Gate |
+|---|---|
+| Plan | `intent.md` |
+| Design | `plan.md` (written after `spec.md`) |
+| Build | the PR |
+| Test (Review) | the merge |
+| Deploy (Ship) | an incident record |
+| Maintain | none — the incident record starts a new intent |
+
+The prompt block and `sdlc_status` name the current gate; producing it is what
+"done with this stage" means. The start notice below fires only on gates a git
+read can watch land — `intent.md`, `plan.md`, a PR — never on the merge or an
+incident record.
 
 ### The start suggestion
 

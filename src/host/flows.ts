@@ -59,9 +59,17 @@ export const STAGE_TITLE: Readonly<Record<Stage, string>> = {
   plan: 'Plan', design: 'Design', build: 'Build', test: 'Review', deploy: 'Ship', maintain: 'Maintain', cross: 'Cross-stage',
 }
 
-/** The artifact that ends a stage — the gate the next stage reads. */
+/**
+ * The gate of a stage: the artifact that ENDS the stage and that the next
+ * stage reads. Design writes spec.md and then plan.md; its gate is the last
+ * one, the artifact Build reads. Build ends with the PR, Review with the
+ * merge, Ship with an incident record. Maintain has no gate of its own (the
+ * incident record starts a new intent), and Cross-stage is no stage of any
+ * flow. This is the one gate table: `stage.ts` derives its suggestion moment
+ * from `gateFor`, never from a copy.
+ */
 const GATES: Readonly<Partial<Record<Stage, string>>> = {
-  plan: 'intent.md', design: 'spec.md', build: 'plan.md', test: 'PR', deploy: 'merge', maintain: 'incident record',
+  plan: 'intent.md', design: 'plan.md', build: 'PR', test: 'merge', deploy: 'incident record',
 }
 
 export function gateFor(stage: Stage): string | undefined {
