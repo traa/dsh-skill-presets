@@ -1,6 +1,6 @@
 ---
 name: sdlc-stage-handoff
-description: Detect which SDLC stage the work is in from committed artifacts and end each stage by committing the artifact the next stage reads (intent.md → spec.md → plan.md → PR). Use at the start of any non-trivial task and whenever a stage is about to end.
+description: Detect which SDLC stage the work is in from committed artifacts and end each stage by committing the artifact the next stage reads (Plan → intent.md, Design → spec.md then plan.md, Build → PR, Review → merge, Deploy → incident record). Use at the start of any non-trivial task and whenever a stage is about to end.
 when-to-use: Starting work on a feature, fix, or refactor; unsure whether to plan, design, or build; about to say "done" for a stage.
 ---
 
@@ -22,8 +22,8 @@ under `docs/sdlc/<slug>/` (preferred) or the repository root:
 | nothing | Plan | `intent.md` |
 | `intent.md` | Design | `spec.md`, then `plan.md` |
 | `spec.md` + `plan.md` | Build | the diff + tests, then a pull request |
-| an open PR | Test / Review | review findings written into the PR |
-| PR merged | Deploy | deployment evidence in the PR or release notes |
+| an open PR | Test / Review | review findings written into the PR, then the merge |
+| PR merged | Deploy | an incident record (deployment evidence can still go in the PR or release notes) |
 | an incident record | Maintain | a new `intent.md` |
 
 If the active skill preset does not match the stage you detected, **tell the

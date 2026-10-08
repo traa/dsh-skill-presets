@@ -62,9 +62,9 @@ stage. Positions live in `positions.json` beside `active.json`.
 | Maintain | none — the incident record starts a new intent |
 
 The prompt block and `sdlc_status` name the current gate; producing it is what
-"done with this stage" means. The start notice below fires only on gates a git
-read can watch land — `intent.md`, `plan.md`, a PR — never on the merge or an
-incident record.
+"done with this stage" means. The start notice below deliberately fires only
+on `intent.md`, `plan.md` or a PR opening; the merge and an incident record are
+not offered as a "next stage" moment (stage detection still reads both).
 
 ### The start suggestion
 

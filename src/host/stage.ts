@@ -62,17 +62,18 @@ export function detectStage(facts: GitFacts | undefined, _recent: readonly Obser
  * else — not edits, not commands, not time.
  *
  * The gate is `gateFor(stage)` from flows.ts — the one gate table, no copy
- * here. Only gates a git read can watch land fire it: a PR appearing, or a
- * file-shaped gate appearing among the artifacts. No gate, the merge and the
- * incident record never fire it: neither of the last two is a named artifact
- * whose appearance `has` can observe.
+ * here. The gate `'PR'` fires on a PR appearing; any other gate fires on an
+ * artifact of that name appearing. A stage with no gate never fires. The
+ * start-suggestion deliberately fires only on `intent.md`, `plan.md` or a PR
+ * opening: `merge` and `incident record` name no watched artifact, so they
+ * never match — as a consequence, neither is offered as a "next stage" moment.
  */
 export function shouldSuggest(input: { explicitPosition: boolean, stage: Stage | null, previous: GitFacts | undefined, facts: GitFacts | undefined }): boolean {
   if (input.stage === null) return false
   if (!input.explicitPosition) return true
   if (input.previous === undefined || input.facts === undefined) return false
   const gate = gateFor(input.stage)
-  if (gate === undefined || gate === 'merge' || gate === 'incident record') return false
+  if (gate === undefined) return false
   const had = gate === 'PR' ? input.previous.pr !== undefined : has(input.previous, gate)
   const now = gate === 'PR' ? input.facts.pr !== undefined : has(input.facts, gate)
   return !had && now
