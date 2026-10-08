@@ -13,7 +13,7 @@ stage-relevant lines** with one fix action, nothing when green.
 | **Stage** | Unchanged union `plan · design · build · test · deploy · maintain · cross`. Preset ownership unchanged. |
 | **Flow** | `{ id, title, stages: Stage[], guardrails: 'on' \| 'off', builtin? }`. An ordered subset of stages a piece of work passes through. |
 | **Session flow state** | `{ flow: string, stage: Stage \| null, since, by }` per session. `stage === null` only for a flow with no stages (Explore). |
-| **Gate** | The artifact that ends a stage in the *Full* flow: `plan→intent.md`, `design→spec.md`, `build→plan.md then the diff`, `test→PR`, `deploy→merge`. Other flows inherit the gate for each stage they include. |
+| **Gate** | The artifact that ends a stage and that the next stage reads: `plan→intent.md`, `design→plan.md` (written after `spec.md`), `build→PR`, `test→merge`, `deploy→incident record`; `maintain` and `cross` have none. Other flows inherit the gate for each stage they include. (Corrected by `docs/sdlc/gate-table/`: this row was one stage off.) |
 
 Built-in flows (`examples/flows.json`, seeded, editable, exported/imported with presets):
 

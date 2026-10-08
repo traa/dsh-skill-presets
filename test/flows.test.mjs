@@ -73,11 +73,12 @@ test('positionOf / nextStage: where a stage sits in a flow, and what follows', (
 
 test('gateFor: the artifact that ends a stage, from the playbook', () => {
   assert.equal(gateFor('plan'), 'intent.md')
-  assert.equal(gateFor('design'), 'spec.md')
-  assert.equal(gateFor('build'), 'plan.md')
-  assert.equal(gateFor('test'), 'PR')
-  assert.equal(gateFor('deploy'), 'merge')
-  assert.equal(gateFor('maintain'), 'incident record')
+  // Design writes spec.md then plan.md; its gate is the LAST one, the artifact Build reads.
+  assert.equal(gateFor('design'), 'plan.md')
+  assert.equal(gateFor('build'), 'PR', 'Build ends with the PR (README, sdlc_status, pr-always)')
+  assert.equal(gateFor('test'), 'merge')
+  assert.equal(gateFor('deploy'), 'incident record')
+  assert.equal(gateFor('maintain'), undefined, 'the incident record starts a new intent; Maintain has no gate of its own')
   assert.equal(gateFor('cross'), undefined)
 })
 

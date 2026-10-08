@@ -134,7 +134,11 @@ export function buildTools(deps: ToolDeps): unknown[] {
         if (facts.instructionFiles.length > 0) lines.push(`Instructions file: ${facts.instructionFiles.join(', ')}`)
       }
       const has = (f: string): boolean => facts?.artifacts.some(a => a.endsWith(f)) === true
-      const next = !has('intent.md') ? 'intent.md (Plan)' : !has('spec.md') ? 'spec.md (Design)' : !has('plan.md') ? 'plan.md (Design)' : facts?.pr === undefined ? 'a pull request (Build → Test)' : 'review findings in the PR (Test)'
+      // An artifact-keyed hint, not position-keyed: it names the first missing
+      // artifact (intent.md, spec.md, plan.md, then a PR) regardless of the
+      // stage the user is at. Its wording follows the gate table (flows.ts
+      // GATES), so with a PR present it names the merge, Test's gate.
+      const next = !has('intent.md') ? 'intent.md (Plan)' : !has('spec.md') ? 'spec.md, then plan.md (Design)' : !has('plan.md') ? 'plan.md (Design)' : facts?.pr === undefined ? 'a pull request (Build)' : 'review findings in the PR, then the merge (Test)'
       lines.push(`Next artifact: ${next}`)
       if (scorecard !== undefined && scorecard.results.length > 0) {
         // Phase 7: only what the model must act on. Red + relevant; unknowns

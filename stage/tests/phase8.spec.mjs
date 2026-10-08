@@ -66,8 +66,9 @@ test('3. Gate first and 4. Full checks list', async ({ page }, testInfo) => {
   
   const gate = popover.locator('> *:first-child')
   await expect(gate).toHaveClass(/skp-gate/)
-  await expect(gate).toContainText('plan.md is committed')
-  await expect(gate.locator('.skp-gate-state.ok')).toBeVisible()
+  await expect(gate).toContainText('a pull request is open')
+  // Build's gate is a PR; the green fixture has pr: null (no PR yet), so the gate is not met.
+  await expect(gate.locator('.skp-gate-state.todo')).toBeVisible()
   
   const fixGreen = await getFixture('green')
   const posGreen = fixGreen.rpc['session/position']
@@ -142,7 +143,7 @@ test('3. Gate first and 4. Full checks list', async ({ page }, testInfo) => {
   const pop5 = page.locator('.skp-stage-pop')
   const gate5 = pop5.locator('> *:first-child')
   await expect(gate5).toHaveClass(/skp-gate/)
-  await expect(gate5).toContainText('plan.md is committed')
+  await expect(gate5).toContainText('a pull request is open')
   await expect(gate5.locator('.skp-gate-state.unknown')).toBeVisible()
   await expect(gate5.locator('.skp-gate-state.unknown')).toContainText(/unknown/i)
   await expect(gate5.locator('.skp-gate-state.todo')).toHaveCount(0)

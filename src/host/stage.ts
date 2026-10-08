@@ -9,6 +9,7 @@
  * @module dsh-skill-presets/host/stage
  */
 
+import { gateFor } from './flows.ts'
 import type { GitFacts } from './practices/git.ts'
 import type { ObservedCall } from './practices/detectors.ts'
 import type { Stage } from './types.ts'
@@ -59,20 +60,24 @@ export function detectStage(facts: GitFacts | undefined, _recent: readonly Obser
  * position yet ("where should I start?"), and the appearance of the CURRENT
  * stage's gate artifact ("an accepted artifact fires the next gate"). Nothing
  * else — not edits, not commands, not time.
+ *
+ * The gate is `gateFor(stage)` from flows.ts — the one gate table, no copy
+ * here. The gate `'PR'` fires on a PR appearing; any other gate fires on an
+ * artifact of that name appearing. A stage with no gate never fires. The
+ * start-suggestion deliberately fires only on `intent.md`, `plan.md` or a PR
+ * opening: `merge` and `incident record` name no watched artifact, so they
+ * never match — as a consequence, neither is offered as a "next stage" moment.
  */
 export function shouldSuggest(input: { explicitPosition: boolean, stage: Stage | null, previous: GitFacts | undefined, facts: GitFacts | undefined }): boolean {
   if (input.stage === null) return false
   if (!input.explicitPosition) return true
   if (input.previous === undefined || input.facts === undefined) return false
-  const gate = GATE_ARTIFACT[input.stage]
+  const gate = gateFor(input.stage)
   if (gate === undefined) return false
   const had = gate === 'PR' ? input.previous.pr !== undefined : has(input.previous, gate)
   const now = gate === 'PR' ? input.facts.pr !== undefined : has(input.facts, gate)
   return !had && now
 }
-
-/** The artifact whose appearance ends a stage. Mirrors `flows.ts` `gateFor` for the file-shaped ones. */
-const GATE_ARTIFACT: Readonly<Partial<Record<Stage, string>>> = { plan: 'intent.md', design: 'spec.md', build: 'plan.md', test: 'PR' }
 
 /** Dismissal memory per workspace, keyed by `<from>→<to>`. */
 export interface SuggestionsDoc {

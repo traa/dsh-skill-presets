@@ -52,7 +52,7 @@ test('renderGuardrails: only red + relevant practices are listed; unknowns and i
     { id: 'plan-drift', status: 'amber', evidence: ['1 file not in plan.md: x.ts'] },
   ], full, 'build')
   const text = renderGuardrails({ preset: build, skills, overlays: [], practices, flow: full, stage: 'build' })
-  assert.match(text, /Flow: Full · stage 3 of 5: Build → next gate: plan\.md/u)
+  assert.match(text, /Flow: Full · stage 3 of 5: Build → next gate: PR\./u)
   assert.match(text, /Practices at risk:\n- Work in a worktree \[red\]: 2 file mutations.*— load the `worktree-first` skill/u)
   assert.doesNotMatch(text, /Always open a PR/u, 'amber is not a violation the model must act on')
   assert.doesNotMatch(text, /Clean up worktrees/u, 'unknown never reaches the model')
