@@ -85,11 +85,48 @@ test('shouldSuggest fires on exactly the gate gateFor names, for every stage —
     }
   }
   // Structural half of the spec: "stage.ts has no second gate table; it uses gateFor".
+  // A copy can be an object (quoted keys or not), a Map, a tuple array, a
+  // switch, or an if-chain; banning one SHAPE misses the others. So the guard
+  // bans the INGREDIENTS instead: outside the few call sites that legitimately
+  // need them, stage.ts may not spell a gate token at all, shouldSuggest may
+  // not spell a stage name, and nothing but types may come from a module other
+  // than flows.ts (so the table cannot move next door and be imported).
   const { readFile } = await import('node:fs/promises')
-  const src = await readFile(new URL('../src/host/stage.ts', import.meta.url), 'utf8')
+  const raw = await readFile(new URL('../src/host/stage.ts', import.meta.url), 'utf8')
+  // Comments are prose, not code. `//` only counts at line start or after
+  // whitespace, so the regex literal `/incidents?\//u` is not mistaken for one.
+  const src = raw.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|\s)\/\/.*$/gmu, '$1')
+  /** The `{ … }` body of `function name(…)`: match the parameter parens, then the body braces. */
+  const bodyOf = (name) => {
+    const at = src.indexOf(`function ${name}(`)
+    assert.notEqual(at, -1, `stage.ts defines function ${name}`)
+    let i = src.indexOf('(', at)
+    for (let depth = 0; ; i += 1) { if (src[i] === '(') depth += 1; else if (src[i] === ')' && (depth -= 1) === 0) break }
+    let end = src.indexOf('{', i)
+    const open = end
+    for (let depth = 0; ; end += 1) { if (src[end] === '{') depth += 1; else if (src[end] === '}' && (depth -= 1) === 0) break }
+    return src.slice(open, end + 1)
+  }
+  // (1) The gate comes from flows.ts, and only types come from anywhere else.
   assert.match(src, /import\s*\{[^}]*\bgateFor\b[^}]*\}\s*from\s*['"]\.\/flows\.(?:ts|js)['"]/u, 'stage.ts derives its gate from flows.ts gateFor')
-  const copied = src.match(/\b(?:plan|design|build|test|deploy|maintain)\s*:\s*['"](?:intent\.md|spec\.md|plan\.md|PR|merge|incident record)['"]/gu)
-  assert.equal(copied, null, `stage.ts keeps a hand-copied stage → gate entry: ${copied?.join(', ')}`)
+  const valueImports = [...src.matchAll(/^\s*import\s+(?!type\b)[^'"]*from\s*['"]([^'"]+)['"]/gmu)].map(m => m[1]).filter(from => !/^\.\/flows\.(?:ts|js)$/u.test(from))
+  assert.deepEqual(valueImports, [], 'stage.ts imports values only from ./flows — a table in a sibling module is still a second table')
+  // (2) shouldSuggest asks gateFor, and never names a stage itself.
+  const should = bodyOf('shouldSuggest')
+  assert.match(should, /\bgateFor\(\s*input\.stage\s*\)/u, 'shouldSuggest takes its gate from gateFor(input.stage)')
+  const stageNames = should.match(/(['"`])(?:plan|design|build|test|deploy|maintain|cross)\1/gu)
+  assert.equal(stageNames, null, `shouldSuggest special-cases a stage by name: ${stageNames?.join(', ')}`)
+  // (3) Gate tokens appear only where they are not a mapping: detectStage's
+  // `has(facts, '…')` artifact probes, and shouldSuggest's `gate === 'PR'`.
+  const GATE_TOKEN = /(['"`])(?:intent\.md|spec\.md|plan\.md|PR|merge|incident record)\1/gu
+  const detect = bodyOf('detectStage')
+  const rest = src.replace(detect, '').replace(should, '')
+  const strays = [
+    ...(rest.match(GATE_TOKEN) ?? []),
+    ...(detect.replace(/\bhas\(\s*\w+\s*,\s*(['"])(?:intent|spec|plan)\.md\1\s*\)/gu, '').match(GATE_TOKEN) ?? []),
+    ...(should.replace(/\bgate\s*===\s*(['"])PR\1/gu, '').match(GATE_TOKEN) ?? []),
+  ]
+  assert.deepEqual(strays, [], `stage.ts spells gate tokens outside detection probes — a second gate table in some shape: ${strays.join(', ')}`)
 })
 
 test('suggest fires only above the threshold, when the stage differs, and until muted', () => {
